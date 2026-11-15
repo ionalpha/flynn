@@ -6,70 +6,54 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// The attested-event vocabulary a record carries alongside its provenance
-// declaration. An external harness reports its own episode as a stream of lines; the
-// run enforces none of them (the effects it enforces cross the dispatch waist and are
-// recorded there, at TierEnforced). Repeating the harness's account verbatim is what
-// lets a reader tell the two apart: an enforced effect is something the run admitted
-// and ran, an attested event is something the harness said it did. Without the raw
-// lines the record could only say how many claims the harness made, not what they were,
-// which is an audit trail of a number. These string values are the wire contract a
-// producer writes and this package reads, so they must not change.
+// The attested-event vocabulary a record carries beside its provenance
+// declaration. The run enforces none of an external harness's reported lines; the
+// effects it enforces are recorded at TierEnforced. Repeating the harness's
+// account verbatim lets a reader tell an enforced effect from a claim, and see
+// what the claims were, not only how many. These strings are the wire contract
+// between producer and this package and must not change.
 const (
-	// AttestedRecorded is one event the external harness reported about its own episode,
-	// kept verbatim and marked as the harness's claim rather than the run's observation.
+	// AttestedRecorded is one event the harness reported about itself, kept
+	// verbatim as the harness's claim, not the run's observation.
 	AttestedRecorded = "provenance.attested"
 
-	// AttestedKindKey is what the harness's line projected to (text, progress, usage,
-	// error, done, bridge_call, native_command).
+	// AttestedKindKey is what the line projected to (text, progress, usage, error,
+	// done, bridge_call, native_command).
 	AttestedKindKey = "kind"
-	// AttestedTierKey is the provenance tier the event was projected at. It is
-	// TierAttested for every event on this stream; recording it keeps a reader from
-	// having to know that, and leaves room for a harness that can be observed more
-	// strongly.
+	// AttestedTierKey is the tier the event was projected at, TierAttested today.
+	// Recording it leaves room for a harness that can be observed more strongly.
 	AttestedTierKey = "tier"
-	// AttestedRawKey is the harness's original output line, verbatim, up to
-	// AttestedRawLimit bytes.
+	// AttestedRawKey is the original line, up to AttestedRawLimit bytes.
 	AttestedRawKey = "raw"
-	// AttestedDigestKey is the SHA-256 of the WHOLE raw line, hex encoded, whether or not
-	// the line was truncated. A verifier holding the harness's own log can therefore match
-	// a truncated record against the full line it came from.
+	// AttestedDigestKey is the hex SHA-256 of the whole line, truncated or not, so
+	// a verifier holding the harness's log can match a truncated record to it.
 	AttestedDigestKey = "raw_sha256"
-	// AttestedBytesKey is the length of the whole raw line in bytes, before truncation.
+	// AttestedBytesKey is the line length in bytes before truncation.
 	AttestedBytesKey = "raw_bytes"
-	// AttestedTruncatedKey is true when AttestedRawKey holds a prefix rather than the
-	// whole line. Absent means the raw line is complete.
+	// AttestedTruncatedKey is true when AttestedRawKey holds a prefix; absent means
+	// complete.
 	AttestedTruncatedKey = "truncated"
 
-	// AttestedRawLimit is how many bytes of a harness line the record inlines. A line can
-	// carry a whole tool result echoed back (the episode reader raises its own ceiling to
-	// megabytes), and a record is read into memory to verify it, so the raw account is
-	// bounded and the digest carries the rest of the line's identity.
+	// AttestedRawLimit is how many bytes of a line the record inlines. A line can
+	// echo a whole tool result and a record is read into memory to verify, so the
+	// digest carries the rest of the line's identity.
 	AttestedRawLimit = 4096
 )
 
-// AttestedEvent is one event an external harness reported about its own episode, as
-// the record keeps it. The run did not observe the work behind it; the record repeats
-// the claim, marked as a claim.
+// AttestedEvent is one event an external harness reported about itself. The run
+// did not observe the work behind it.
 type AttestedEvent struct {
-	// Kind is what the harness's line projected to (text, progress, bridge_call, ...).
-	Kind string
-	// Tier is the provenance tier the event carries, always TierAttested today.
-	Tier string
-	// Raw is the harness's original line, verbatim, truncated to AttestedRawLimit bytes.
-	Raw string
-	// Digest is the hex SHA-256 of the whole line before truncation.
-	Digest string
-	// Bytes is the length of the whole line before truncation.
-	Bytes int
-	// Truncated reports whether Raw is a prefix of the line rather than all of it.
+	Kind      string
+	Tier      string
+	Raw       string
+	Digest    string
+	Bytes     int
 	Truncated bool
 }
 
-// AttestedEventsOf returns the harness's attested events recorded on a run's stream, in
-// stream order. A native run records none. The events must already be authentic and in
-// order (verify the record first), the same precondition the governance and ground-truth
-// verifiers assume.
+// AttestedEventsOf returns the attested events in stream order; a native run has
+// none. The events must already be verified and in order, as the governance and
+// ground-truth verifiers assume.
 func AttestedEventsOf(events []spine.Event) []AttestedEvent {
 	var out []AttestedEvent
 	for _, e := range events {
@@ -87,15 +71,10 @@ func AttestedEventsOf(events []spine.Event) []AttestedEvent {
 	return out
 }
 
-// VerifyAttestation checks that a run's provenance declaration agrees with the attested
-// events recorded next to it: the declaration's count is what verify prints, and the
-// events are what a reader inspects, so a record whose count exceeds its events is
-// claiming an account it does not carry (lines dropped after the fact), and one whose
-// events exceed its count is carrying claims the declaration never owned. A native run
-// declares no provenance and records no attested events, and passes.
-//
-// It assumes the record already verified: authenticity is what makes the counts worth
-// comparing.
+// VerifyAttestation checks that the provenance declaration's count equals the
+// attested events recorded. A count above the events means lines were dropped
+// after the fact; events above the count are claims the declaration never owned.
+// A native run declares nothing and passes. The record must already be verified.
 func VerifyAttestation(events []spine.Event) error {
 	recorded := len(AttestedEventsOf(events))
 	p, ok := ProvenanceOf(events)

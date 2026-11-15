@@ -1,7 +1,5 @@
-// Package statetest is the conformance suite for state.Provider. Every backend
-// (the in-memory default, SQLite, a host's Postgres) runs RunSuite and must
-// behave identically, so the durable providers are held to byte-for-byte the
-// same contract as the reference in-memory one rather than re-tested by hand.
+// Package statetest is the conformance suite for state.Provider. Every
+// backend runs RunSuite and must match the in-memory reference byte for byte.
 package statetest
 
 import (
@@ -39,19 +37,15 @@ func RunSuite(t *testing.T, newProvider func() state.Provider) {
 	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newProvider()) })
 }
 
-// eventLogged is the optional capability of a provider that exposes the spine its
-// state mutations are recorded on. Every event-sourced backend implements it; the
-// invariant check below holds such a backend to "no write bypasses the log".
+// eventLogged is implemented by every event-sourced provider, exposing the
+// log its mutations are recorded on.
 type eventLogged interface {
 	Log() spine.Log
 }
 
-// testEventSourced enforces the architecture's central invariant: every state
-// mutation appends to the event log, and the log alone fully describes the state.
-// A backend that writes directly to its tables (the bug this guards against) would
-// produce a short or empty stream and fail here, and the suite proves it for every
-// backend rather than re-testing each by hand. Providers with no event log (a host
-// may back state differently) are skipped.
+// testEventSourced checks that every mutation appends to the log and that the
+// log alone reproduces the state, so a backend writing its tables directly
+// fails. Providers without an event log are skipped.
 func testEventSourced(t *testing.T, p state.Provider) {
 	el, ok := p.(eventLogged)
 	if !ok {
@@ -105,8 +99,7 @@ func testEventSourced(t *testing.T, p state.Provider) {
 		t.Errorf("state stream has %d events, want %d (one per mutation)", len(events), len(want))
 	}
 
-	// The log is authoritative: a provider folded purely from it reproduces the
-	// live reads, so state is genuinely a projection of the spine.
+	// A provider folded only from the log must reproduce the live reads.
 	replayed, err := state.Replay(ctx, el.Log())
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +109,8 @@ func testEventSourced(t *testing.T, p state.Provider) {
 	}
 }
 
-// liveSnapshot serialises a provider's observable live state to a stable JSON
-// string so two providers can be compared for byte-for-byte equivalence.
+// liveSnapshot renders a provider's observable state as stable JSON for
+// byte-for-byte comparison.
 func liveSnapshot(t *testing.T, p state.Provider) string {
 	t.Helper()
 	ctx := context.Background()
@@ -369,8 +362,7 @@ func testMemory(t *testing.T, p state.Provider) {
 	if scoped, _ := mem.Recall(ctx, state.RecallQuery{Query: "deploys", Scope: state.Scope{Project: "x"}}); len(scoped) != 1 {
 		t.Fatalf("scoped Recall = %d, want 1", len(scoped))
 	}
-	// A scope also excludes: the global fact is not in project x, so a store that
-	// ignored the scope would pass the check above and fail this one.
+	// A store ignoring scope would pass the check above and fail this one.
 	if other, _ := mem.Recall(ctx, state.RecallQuery{Query: "prefers", Scope: state.Scope{Project: "x"}}); len(other) != 0 {
 		t.Fatalf("scoped Recall returned %d item(s) from outside the scope, want 0", len(other))
 	}

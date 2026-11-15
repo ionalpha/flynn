@@ -10,15 +10,12 @@ import (
 	"strings"
 )
 
-// NewerSchemaError reports that the database has migrations applied which this
-// build does not carry: a newer Flynn has opened it. The migration runner only
-// checks that the migrations it knows are intact, so without this refusal an older
-// build opens the store and runs its own queries against columns a later migration
-// renamed or dropped, and fails on the first query with a raw SQL error.
+// NewerSchemaError reports a database a newer Flynn has migrated. The runner
+// checks only the migrations it knows, so an older build would otherwise fail
+// later with a raw SQL error on a renamed column.
 //
-// The data is intact and belongs to the newer build, so the remedy is to upgrade or to
-// use another data directory, never to reset the database; callers must not route this
-// to the recovery that offers a reset.
+// The data is intact: upgrade or use another data directory. Callers must not
+// route this to a recovery that offers a reset.
 type NewerSchemaError struct {
 	// Applied is the highest migration version recorded in the database, and Name its file.
 	Applied int
@@ -33,12 +30,10 @@ func (e *NewerSchemaError) Error() string {
 		e.Applied, e.Name, e.Known)
 }
 
-// refuseNewerSchema returns a [*NewerSchemaError] when db records a migration above
-// the highest one embedded in this build.
-//
-// It runs after the migrations have been applied rather than before. An older build
-// has nothing left to apply to a newer store, so the run changes nothing, and checking
-// afterwards means a brand new database is never read for a version it cannot yet have.
+// refuseNewerSchema returns a [*NewerSchemaError] when db records a migration
+// above this build's highest. It runs after migrating, so a brand new database
+// is never read for a version it cannot have; an older build has nothing to
+// apply to a newer store.
 func refuseNewerSchema(ctx context.Context, db *sql.DB) error {
 	known, err := highestEmbeddedMigration()
 	if err != nil {
@@ -60,15 +55,12 @@ func refuseNewerSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// highestEmbeddedMigration is the largest NNNN prefix among the embedded migration
-// files, the same number the migration runner records as the version.
 func highestEmbeddedMigration() (int, error) {
 	// The pattern is a constant, so Glob cannot report a malformed one.
 	names, _ := fs.Glob(migrations, "migrations/*.sql")
 	return highestVersion(names)
 }
 
-// highestVersion is the largest numeric prefix among migration file names.
 func highestVersion(names []string) (int, error) {
 	highest := 0
 	for _, n := range names {

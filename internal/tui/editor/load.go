@@ -8,18 +8,14 @@ import (
 	"strings"
 )
 
-// keymapFile is the on-disk keymap shape: chord spellings mapped to command
-// names. A user keymap only writes the bindings it changes.
+// keymapFile maps chord spellings to command names; it lists only changes.
 type keymapFile struct {
 	Bindings map[string]Command `json:"bindings"`
 }
 
-// LoadKeymap reads a JSON keymap and returns it layered over the default
-// map, so a user keymap starts from the complete built-in set and only
-// overrides what it names. Binding a chord to "none" removes its default.
-// Unknown commands and malformed chords are refused rather than ignored: a
-// misspelled name in a keymap file would otherwise silently bind nothing,
-// which is the kind of failure a user cannot debug.
+// LoadKeymap reads a JSON keymap over the default map; binding a chord to
+// "none" removes its default. Unknown commands and malformed chords are errors,
+// since a misspelled name would otherwise bind nothing with no way to debug it.
 func LoadKeymap(r io.Reader) (Keymap, error) {
 	var f keymapFile
 	dec := json.NewDecoder(r)

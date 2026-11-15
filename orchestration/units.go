@@ -15,55 +15,37 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// UnitFanout is the concrete goal.UnitSpawner: it runs the units of a goal's plan as
-// children of the same Spawner the model-driven path uses. It is the last piece of
-// plan-driven fan-out, and it is deliberately thin, because the value of the shape is
-// that a unit is spawned through the waist a model's spawn goes through rather than
-// beside it. Depth, the concurrency cap, the shared budget reservation, the narrowed
-// grant and the owner reference are all the Spawner's, unchanged.
-//
-// It is a separate type from Spawner only because Go will not let one type carry two
-// methods named Spawn, and the two paths take different arguments: a model asks for a
-// sub-goal, a plan names a unit.
+// UnitFanout is the goal.UnitSpawner: it runs a plan's units as children of the
+// [Spawner] a model's spawn uses, so depth, the concurrency cap, the shared
+// budget, the narrowed grant and the owner reference apply unchanged. It is a
+// separate type only because the two Spawn methods take different arguments.
 type UnitFanout struct {
 	sp  *Spawner
 	gov Governor
 }
 
-// Governor is the dispatch waist a spawn is admitted, metered and recorded through. In
-// a real composition it is the *dispatch.Dispatcher the executor already governs the
-// model's own spawn tool with; it is named as an interface here so this states what it
-// needs rather than depending on the concrete type.
+// Governor admits, meters and records a spawn. In practice it is the
+// *dispatch.Dispatcher that governs the model's own spawn tool.
 type Governor interface {
 	Govern(ctx context.Context, a dispatch.Action, work func(context.Context) (dispatch.Metering, error)) error
 }
 
-// Units adapts a Spawner onto the interface the goal reconciler drives its unit graph
-// through, governed through gov. Wire the result with goal.WithUnitSpawner; a
-// reconciler without one stalls any goal that carries a graph rather than ignoring it.
-//
-// Pass the executor's own dispatcher (mission.Executor.Dispatcher) rather than a fresh
-// one. Handing it a second dispatcher is not wrong, but it is a second set of hooks and
-// a second event sink, and then the two fan-out paths are only governed the same way by
-// coincidence of configuration. A nil governor is refused at the first spawn rather than
-// silently ungoverned.
+// Units adapts sp for goal.WithUnitSpawner; a reconciler without one stalls any
+// goal that carries a unit graph. Pass the executor's own dispatcher
+// (mission.Executor.Dispatcher) as gov, so both fan-out paths share one set of
+// hooks. A nil gov fails the first spawn.
 func Units(sp *Spawner, gov Governor) *UnitFanout { return &UnitFanout{sp: sp, gov: gov} }
 
 var _ goal.UnitSpawner = (*UnitFanout)(nil)
 
-// UnitGovernor builds the waist a plan-driven spawn is admitted through when the run's own
-// executor is not one object to borrow a dispatcher from. A Router builds a loop per
-// (driver, model) pair on demand, so no single executor exists at assembly time, and the
-// alternative is an ungoverned fan-out.
+// UnitGovernor builds a [Governor] when there is no single executor to borrow
+// one from, as with a Router that builds a loop per (driver, model) on demand.
+// It uses the model path's capability admitter and containment gate plus the
+// run's brake and budget hooks, so a halt that stops the model delegating stops
+// a plan too.
 //
-// It matches the model path instead of being a second policy: the same capability admitter,
-// the same containment gate over the run's sandbox, and the run's own brake and budget
-// hooks, so a ceiling or halt that stops the model delegating stops a plan too.
-//
-// It takes no event sink. Correlation ids are monotonic within a dispatcher, so two
-// dispatchers writing lifecycle events to one stream emit colliding call ids and the record
-// reads as one call both refused and completed. The spawn is on the record regardless: the
-// child goal is a resource, and the child's own run records onto the same stream.
+// It takes no event sink: correlation ids are per dispatcher, so two writing to
+// one stream would collide. The child goal and its run record the spawn anyway.
 func UnitGovernor(sb sandbox.Sandbox, hooks ...dispatch.Hook) *dispatch.Dispatcher {
 	opts := []dispatch.Option{
 		dispatch.WithAdmitter(capability.Admitter{}),
@@ -77,19 +59,16 @@ func UnitGovernor(sb sandbox.Sandbox, hooks ...dispatch.Hook) *dispatch.Dispatch
 	return dispatch.New(opts...)
 }
 
-// Spawn creates the child that runs one unit, through the same dispatch waist a model's
-// spawn goes through: admitted under ActionSpawn against the parent's own grant, metered,
-// and recorded on the spine. A goal never granted the right to fan out cannot do so by
-// writing a plan; the grant is bound onto the context here because a reconcile carries no
-// run's authority.
+// Spawn creates the child for one unit, admitted under ActionSpawn against the
+// parent's grant, so a goal never granted fan-out cannot get it by writing a
+// plan. The grant is bound here because a reconcile carries no run's authority.
 //
-//   - Its name is derived from the parent and the unit, so the spawn is idempotent: a crash
-//     between the create and the reconciler recording the child gets the same child back.
-//   - It carries the unit's verify clause as its own ledger, so it is judged against the
-//     check the plan author wrote, not its own account. A child that converged without
-//     proving settles the unit failed, so a dependency edge waits on proof.
-//   - Its stop condition is the unit's, never the parent's; inheriting the parent's would
-//     leave a fork running after the work it was forked for is finished.
+//   - The name derives from parent and unit, so a crash before the reconciler
+//     records the child gets the same child back.
+//   - The unit's verify clause is the child's ledger, so it is judged by the
+//     plan's check; a child that converges unproven fails the unit.
+//   - The stop condition is the unit's, or the child would run on after its
+//     work is done.
 func (f *UnitFanout) Spawn(ctx context.Context, parent resource.Resource, u goal.Unit) (string, error) {
 	if f.gov == nil {
 		return "", fault.New(fault.Terminal, "spawn_unit_ungoverned",
@@ -109,8 +88,8 @@ func (f *UnitFanout) Spawn(ctx context.Context, parent resource.Resource, u goal
 		StopCondition: unitStopCondition(u),
 		Ledger:        ledger,
 	}
-	// A goal with no grant is unconstrained, exactly as it is on the model path, so an
-	// empty one is left unbound rather than bound as a grant that allows nothing.
+	// An empty grant means unconstrained, as on the model path, so binding it
+	// would wrongly allow nothing.
 	if len(spec.Grant) > 0 {
 		ctx = capability.Into(ctx, capability.NewGrant(spec.Grant...))
 	}
@@ -128,10 +107,9 @@ func (f *UnitFanout) Spawn(ctx context.Context, parent resource.Resource, u goal
 	return childID, err
 }
 
-// Outcomes reports what each child has produced, in the terms the unit graph settles
-// on: a reference to the verification that proves the unit, or the reason there is
-// none. A child still running is reported not done, which is what keeps the parent
-// parked instead of settling its unit on a partial run.
+// Outcomes reports each child's proof of its unit, or why there is none. A
+// running child is not done, which keeps the parent parked instead of settling
+// on a partial run.
 func (f *UnitFanout) Outcomes(ctx context.Context, childIDs []string) ([]goal.UnitOutcome, error) {
 	out := make([]goal.UnitOutcome, 0, len(childIDs))
 	for _, id := range childIDs {
@@ -155,26 +133,20 @@ func (f *UnitFanout) Outcomes(ctx context.Context, childIDs []string) ([]goal.Un
 	return out, nil
 }
 
-// UnitChildName is the resource name of the child that runs a unit. It is a pure
-// function of the parent and the unit id, which is the whole of the idempotency the
-// reconciler requires: the same unit resolves to the same child on every pass and after
-// every restart, so "has this unit been spawned" is answered by the store rather than by
-// bookkeeping that a crash can lose.
+// UnitChildName is the name of the child that runs a unit. It depends only on
+// its arguments, so the store answers "was this unit spawned" across restarts
+// without bookkeeping a crash can lose.
 func UnitChildName(parent, unitID string) string { return parent + "-unit-" + unitID }
 
-// unitStopCondition is the child's own definition of done, quoting the check the unit
-// declared. The child is a run whose one job is to make that check pass, and telling it
-// so in its own words is the difference between a child that knows what it is for and
-// one working from a generic instruction to accomplish a sub-goal.
+// unitStopCondition quotes the unit's check so the child knows its one job is
+// to make it pass.
 func unitStopCondition(u goal.Unit) string {
 	return "the unit's declared check passes: " + u.Verify
 }
 
-// unitProof reads a finished child's ledger for the verification that proves its unit,
-// and returns the reason there is none when there is none. Every path that does not
-// produce a reference is a failure, including a child that converged: the child's phase
-// says its own loop stopped, and the unit's question is narrower than that, which is
-// whether the check the plan wrote was recorded as passing.
+// unitProof returns the evidence refs that prove a finished child's unit, or a
+// failure. Converged alone is a failure: it says the child's loop stopped, and
+// the unit asks whether the plan's check was recorded as passing.
 func unitProof(status goal.Status) (evidence, failure string) {
 	if status.Phase == goal.PhaseStalled {
 		return "", stalledFailure(status.Message)
@@ -201,9 +173,8 @@ func unitProof(status goal.Status) (evidence, failure string) {
 	return strings.Join(refs, ","), ""
 }
 
-// stalledFailure keeps a stalled child's own account of why, and supplies one when it
-// stopped without saying. A unit whose record trails off after the unit id is a stall
-// nobody can act on.
+// stalledFailure keeps a stalled child's reason, or supplies one so the record
+// is actionable.
 func stalledFailure(message string) string {
 	if strings.TrimSpace(message) == "" {
 		return "the child stalled without recording why"
@@ -211,10 +182,8 @@ func stalledFailure(message string) string {
 	return message
 }
 
-// childScope resolves the scope a child was created in from the spawner's bookkeeping.
-// The zero scope is the right fallback: it is what a child created before this process
-// started is read back under until something adopts it, and it is what the model-driven
-// Poll already uses.
+// childScope returns the scope a child was created in. A child from before this
+// process started reads back under the zero scope, as in Poll.
 func (s *Spawner) childScope(id string) resource.Scope {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -6,18 +6,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Overlay composites over onto base at column x, row y (both zero-based) and
-// returns the resulting lines. The base renders as usual and the overlay is spliced over
-// it before the frame is painted, so dismissing an overlay just stops splicing and the
-// base state is never touched.
+// Overlay splices over onto base at column x, row y (zero-based), leaving base
+// untouched. The splice is width-aware, and an SGR reset on both sides isolates
+// the overlay from the row's styling. That styling does not resume after the
+// overlay: overlays are opaque boxes.
 //
-// The splice is width-aware (grapheme clusters, escape sequences), and the overlay is
-// isolated from the base row's styling with an SGR reset on both sides. The base row's
-// styling does not resume after the overlay: overlays are opaque boxes over the styled
-// content, so re-opening an interrupted style run is not worth the complexity.
-//
-// Rows and columns beyond the base are padded with blanks, so a dialog taller than the
-// live region grows the frame rather than being clipped.
+// Rows and columns beyond the base are padded with blanks, so a tall dialog grows
+// the frame rather than being clipped.
 func Overlay(base, over []string, x, y int) []string {
 	if len(over) == 0 {
 		return base
@@ -47,9 +42,8 @@ func Overlay(base, over []string, x, y int) []string {
 	return out
 }
 
-// Center returns the x, y position that centers a box of the given size
-// within a frame of the given size, clamped to the top-left when the box is
-// larger than the frame.
+// Center returns the position that centers a box in a frame, clamped to the
+// top-left when the box is larger.
 func Center(frameWidth, frameHeight, boxWidth, boxHeight int) (x, y int) {
 	x = (frameWidth - boxWidth) / 2
 	y = (frameHeight - boxHeight) / 2

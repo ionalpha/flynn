@@ -1,25 +1,20 @@
 package conformance
 
-// This file defines the cryptographic and governance conformance tiers (L2, L3, L4)
-// that sit above the L1 structural suite in conformance.go. Where L1 fixes the
-// canonical event encoding, these tiers fix the artifacts a verifier must check
-// against a public key:
+// The L2 to L4 tiers sit above the L1 structural suite and fix artifacts a
+// verifier checks against a public key:
 //
-//   - L2 (checkpoint, run): a COSE_Sign1 signed checkpoint over a Merkle head,
-//     checked with chain.VerifyCheckpoint, and a full signed run record checked
-//     with chain.VerifyRun. Run-record root integrity is L2 because the tier is
-//     defined as Merkle-leaf integrity over carried bytes.
-//   - L3 (event_proof, consistency): a standalone single-event proof checked with
-//     chain.VerifyEventProof, and a consistency proof checked with
-//     chain.VerifyConsistencyProof, the transparency-proof artifacts.
-//   - L4 (governance, ground_truth): a cryptographically valid run whose events carry
-//     the admission lifecycle (chain.VerifyGovernance) or outcome and check records
-//     (chain.VerifyGroundTruth, is a claimed success grounded in a passing check).
+//   - L2 (checkpoint, run): a signed checkpoint ([chain.VerifyCheckpoint]) and a
+//     signed run record ([chain.VerifyRun]); run-root integrity is L2 because
+//     the tier is Merkle-leaf integrity over carried bytes.
+//   - L3 (event_proof, consistency): [chain.VerifyEventProof] and
+//     [chain.VerifyConsistencyProof].
+//   - L4 (governance, ground_truth): a valid run whose events carry the
+//     admission lifecycle ([chain.VerifyGovernance]) or outcome and check
+//     records ([chain.VerifyGroundTruth]).
 //
-// Every artifact is produced from a fixed Ed25519 key over fixed events, and Ed25519
-// signing is deterministic, so the committed golden artifacts are reproducible byte
-// for byte. The suite publishes the signing key's public half (see RootPublicKey) so
-// a verifier in any language can build the same keyring and reach the same verdicts.
+// Artifacts come from a fixed Ed25519 key over fixed events, and Ed25519 is
+// deterministic, so the golden artifacts are byte-reproducible. [RootPublicKey]
+// lets a verifier in any language build the same keyring.
 
 import (
 	"crypto/ed25519"
@@ -32,33 +27,29 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// CryptoSuiteVersion identifies the cryptographic vector set; bumped with the canon.
+// CryptoSuiteVersion identifies the cryptographic vector set.
 const CryptoSuiteVersion = "0.1.0"
 
-// Kind is the artifact a cryptographic vector carries, which selects the verifier a
-// conforming implementation must apply.
+// Kind is the artifact a vector carries, which selects the verifier to apply.
 type Kind string
 
 const (
-	// KindCheckpoint is a COSE_Sign1 signed checkpoint, checked with VerifyCheckpoint.
+	// KindCheckpoint is checked with VerifyCheckpoint.
 	KindCheckpoint Kind = "checkpoint"
-	// KindRun is a marshalled sealed run, checked with VerifyRun.
+	// KindRun is checked with VerifyRun.
 	KindRun Kind = "run"
-	// KindEventProof is a marshalled single-event proof, checked with VerifyEventProof.
+	// KindEventProof is checked with VerifyEventProof.
 	KindEventProof Kind = "event_proof"
-	// KindConsistency is a marshalled consistency proof between two signed checkpoints,
-	// checked with VerifyConsistencyProof.
+	// KindConsistency is checked with VerifyConsistencyProof.
 	KindConsistency Kind = "consistency"
-	// KindGovernance is a marshalled sealed run whose events carry governance lifecycle
-	// records, checked with VerifyRun (cryptographic) then VerifyGovernance (semantic).
+	// KindGovernance is checked with VerifyRun, then VerifyGovernance.
 	KindGovernance Kind = "governance"
-	// KindGroundTruth is a marshalled sealed run whose events carry outcome and check
-	// records, checked with VerifyRun then VerifyGroundTruth (is a success grounded?).
+	// KindGroundTruth is checked with VerifyRun, then VerifyGroundTruth.
 	KindGroundTruth Kind = "ground_truth"
 )
 
-// CryptoVector is one L2, L3, or L4 case: a single artifact and the verdict a
-// conforming verifier must reach over it, checked against the suite keyring.
+// CryptoVector is one L2, L3 or L4 case: an artifact and the verdict a
+// verifier must reach over it with the suite keyring.
 type CryptoVector struct {
 	ID          string
 	Tier        string
@@ -69,25 +60,21 @@ type CryptoVector struct {
 	Artifact    []byte
 }
 
-// The suite's fixed signing material. The seeds are arbitrary fixed constants, never
-// derived from a clock or a random source, so the signatures and therefore the
-// golden artifacts are byte-for-byte reproducible. rootKeyID is the only key the
-// published keyring carries; altSeed signs the "unknown key" rejection and its public
-// half is deliberately withheld from the ring.
+// The seeds are fixed constants, never clock or random, so signatures are
+// reproducible. rootKeyID is the only key in the published keyring; altSeed
+// signs the "unknown key" rejection and its public half is withheld.
 const (
 	rootKeyID = "provetrail-conformance-root"
 	checkOrig = "run/conformance"
-	// checkpointAlg and checkpointContentType mirror the chain package's protected
-	// header constants (Ed25519 as COSE -19 per RFC 9864, and the vendor-tree
-	// checkpoint media type) so a defect vector differs from a valid artifact only
-	// in the axis under test.
+	// checkpointAlg (Ed25519 as COSE -19, RFC 9864) and checkpointContentType
+	// mirror the chain package's protected header, so a defect vector differs
+	// from a valid one only in the axis under test.
 	checkpointAlg         = cose.Algorithm(-19)
 	checkpointContentType = "application/vnd.provetrail.checkpoint+cbor"
 )
 
-// rawEd25519Signer is a cose.Signer carrying algorithm -19: go-cose v1.3.0 only
-// dispatches the deprecated -8 label, and the crafted defect vectors need the same
-// header algorithm the chain package signs with.
+// rawEd25519Signer carries algorithm -19 because go-cose v1.3.0 dispatches only
+// the deprecated -8, and defect vectors need the header chain signs with.
 type rawEd25519Signer struct{ key ed25519.PrivateKey }
 
 func (s rawEd25519Signer) Algorithm() cose.Algorithm { return checkpointAlg }
@@ -96,9 +83,8 @@ func (s rawEd25519Signer) Sign(_ io.Reader, content []byte) ([]byte, error) {
 	return ed25519.Sign(s.key, content), nil
 }
 
-// spoofAlgSigner signs with Ed25519 math while claiming an arbitrary algorithm
-// label, which is how the algorithm-substitution vectors are crafted: the signature
-// bytes are internally consistent, and only the claimed algorithm is the defect.
+// spoofAlgSigner signs with Ed25519 under an arbitrary algorithm label, so an
+// algorithm-substitution vector's only defect is the claimed algorithm.
 type spoofAlgSigner struct {
 	alg cose.Algorithm
 	key ed25519.PrivateKey
@@ -110,10 +96,8 @@ func (s spoofAlgSigner) Sign(_ io.Reader, content []byte) ([]byte, error) {
 	return ed25519.Sign(s.key, content), nil
 }
 
-// signHeaders builds a COSE_Sign1 over payload with exactly the given protected
-// header, signed by the root key with Ed25519 math. Unlike signWith it controls the
-// whole header, so a vector can carry a substituted algorithm or omit the content
-// type entirely.
+// signHeaders controls the whole protected header, unlike signWith, so a vector
+// can substitute the algorithm or omit the content type.
 func signHeaders(protected cose.ProtectedHeader, payload []byte) []byte {
 	alg, err := protected.Algorithm()
 	if err != nil {
@@ -138,11 +122,9 @@ var (
 	}
 )
 
-// cryptoEnc mirrors the canonical encoder the chain package is defined by (RFC 8949
-// Core Deterministic Encoding). It is used only to re-serialize a decoded run record
-// after a deliberate mutation, so a semantic-layer rejection vector (a wrong size, a
-// root that does not match) is itself in canonical form and is therefore rejected by
-// the intended check rather than by the container check.
+// cryptoEnc is RFC 8949 Core Deterministic Encoding. It re-serializes a mutated
+// run so the vector is canonical and fails the intended check, not the
+// container check.
 var cryptoEnc = func() cbor.EncMode {
 	em, err := cbor.CoreDetEncOptions().EncMode()
 	if err != nil {
@@ -151,8 +133,7 @@ var cryptoEnc = func() cbor.EncMode {
 	return em
 }()
 
-// runWire mirrors the chain package's sealed-run wire layout so a valid record can be
-// decoded, mutated, and re-encoded in canonical form here.
+// runWire mirrors chain's sealed-run wire layout.
 type runWire struct {
 	Checkpoint []byte   `cbor:"checkpoint"`
 	Events     [][]byte `cbor:"events"`
@@ -166,8 +147,7 @@ func mustSigner(seed [ed25519.SeedSize]byte, keyID string) *chain.Ed25519RootSig
 	return s
 }
 
-// RootPublicKey is the public half of the suite's root signing key, the single key a
-// verifier loads into its keyring to check every accept vector. RootKeyID names it.
+// RootPublicKey is the only key a verifier loads to check every accept vector.
 func RootPublicKey() ed25519.PublicKey {
 	return ed25519.NewKeyFromSeed(rootSeed[:]).Public().(ed25519.PublicKey)
 }
@@ -175,9 +155,8 @@ func RootPublicKey() ed25519.PublicKey {
 // RootKeyID is the key id the suite's signed artifacts carry.
 func RootKeyID() string { return rootKeyID }
 
-// cryptoEvents returns n canonical events on one stream with strictly increasing Seq,
-// the same shape the structural suite uses, so the cryptographic tiers are layered
-// over identical events.
+// cryptoEvents returns n canonical events with increasing Seq, the same shape
+// as the structural suite.
 func cryptoEvents(n int) [][]byte {
 	out := make([][]byte, n)
 	for i := range out {
@@ -188,7 +167,6 @@ func cryptoEvents(n int) [][]byte {
 	return out
 }
 
-// validCheckpoint signs a checkpoint over a tree built from the given events.
 func validCheckpoint(signer chain.RootSigner, events [][]byte) chain.SignedCheckpoint {
 	tree := chain.NewTree()
 	for _, cb := range events {
@@ -207,11 +185,9 @@ func validCheckpoint(signer chain.RootSigner, events [][]byte) chain.SignedCheck
 	return sc
 }
 
-// signWith builds a COSE_Sign1 over payload with the given protected content type and
-// key id, signed by the root key. It exists to craft checkpoint artifacts that are
-// validly signed yet defective in a way the high-level signer never produces (a wrong
-// content type, a payload that is not a checkpoint), so each VerifyCheckpoint failure
-// path has an exact vector.
+// signWith crafts validly signed checkpoints with a defect the real signer
+// never produces (wrong content type, payload not a checkpoint), so each
+// VerifyCheckpoint failure has a vector.
 func signWith(contentType, keyID string, payload []byte) []byte {
 	headers := cose.Headers{Protected: cose.ProtectedHeader{
 		cose.HeaderLabelAlgorithm:   checkpointAlg,
@@ -225,8 +201,7 @@ func signWith(contentType, keyID string, payload []byte) []byte {
 	return msg
 }
 
-// mustMarshal panics on a marshal error from a static artifact, which can only be a
-// generator bug, never a runtime condition.
+// mustMarshal panics: an error here is a generator bug.
 func mustMarshal(b []byte, err error) []byte {
 	if err != nil {
 		panic("conformance: marshal artifact: " + err.Error())
@@ -234,8 +209,8 @@ func mustMarshal(b []byte, err error) []byte {
 	return b
 }
 
-// flipLast returns a copy of b with its final byte flipped, the smallest mutation
-// that invalidates a signature while leaving the surrounding structure parseable.
+// flipLast is the smallest mutation that invalidates a signature and leaves
+// the structure parseable.
 func flipLast(b []byte) []byte {
 	out := append([]byte{}, b...)
 	if len(out) > 0 {
@@ -244,7 +219,6 @@ func flipLast(b []byte) []byte {
 	return out
 }
 
-// decodeRun decodes a marshalled run into the local wire mirror for mutation.
 func decodeRun(record []byte) runWire {
 	var w runWire
 	if err := cbor.Unmarshal(record, &w); err != nil {
@@ -253,7 +227,6 @@ func decodeRun(record []byte) runWire {
 	return w
 }
 
-// encodeRun re-encodes a (possibly mutated) run wire in canonical form.
 func encodeRun(w runWire) []byte {
 	b, err := cryptoEnc.Marshal(w)
 	if err != nil {
@@ -262,11 +235,8 @@ func encodeRun(w runWire) []byte {
 	return b
 }
 
-// GenerateCrypto returns the full L2, L3, and L4 vector set, deterministically. L2
-// covers every VerifyCheckpoint outcome; L3 covers every VerifyRun, VerifyEventProof,
-// and VerifyConsistencyProof outcome; L4 covers the governance admission invariants
-// (VerifyGovernance) and the ground-truth invariant (VerifyGroundTruth) over a
-// cryptographically valid run, so each failure code has an exact vector.
+// GenerateCrypto returns the L2 to L4 vectors deterministically, one for each
+// failure code of the verifiers.
 func GenerateCrypto() []CryptoVector {
 	root := mustSigner(rootSeed, rootKeyID)
 	alt := mustSigner(altSeed, "provetrail-conformance-alt")
@@ -441,7 +411,7 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	// L3: consistency proofs (the append-only property between two signed roots).
+	// L3: consistency proofs between two signed roots.
 	validConsistency, forgedConsistency := consistencyArtifacts(root, alt)
 	l3consistency := []CryptoVector{
 		{
@@ -463,8 +433,7 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	// L4: governance. Sealed runs whose events carry the admission lifecycle; the
-	// crypto layer is valid, so only the governance semantics decide the verdict.
+	// L4: governance. The cryptography is valid, so only governance decides.
 	l4 := []CryptoVector{
 		{
 			ID: "crypto.governance.valid.01", Tier: "L4", Kind: KindGovernance, Expect: Accept,
@@ -534,9 +503,8 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	// L2: the checkpoint header and payload axes the mutant matrix exposed. The
-	// payload of the valid three-event run's checkpoint is rebuilt here so a header
-	// defect is the only fault in each vector.
+	// L2: checkpoint header and payload axes. The payload is rebuilt so a header
+	// defect is the only fault.
 	runPayload := func() []byte {
 		w := decodeRun(validRun)
 		tree := chain.NewTree()
@@ -618,8 +586,7 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	// L2: the run-container axes from the mutant differential test (m02-m19). Each
-	// container carries the valid events, so the container framing or the embedded
+	// L2: run-container axes. The events are valid, so the framing or embedded
 	// checkpoint header is the only defect.
 	l2run := []CryptoVector{
 		{
@@ -686,7 +653,7 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	// L3: the operational proof codes, made pinnable.
+	// L3: operational proof codes.
 	proofIndexOOR := func() []byte {
 		pf, err := sealed.EventProof(1)
 		if err != nil {
@@ -734,9 +701,9 @@ func GenerateCrypto() []CryptoVector {
 	return out
 }
 
-// nonCanonicalCheckpointPayload encodes the checkpoint fields in declaration order
-// (origin, size, root) without key sorting; canonical order is root, size, origin,
-// so these bytes decode to a checkpoint but are not its canonical encoding.
+// nonCanonicalCheckpointPayload encodes fields in declaration order (origin,
+// size, root) rather than canonical order (root, size, origin): it decodes but
+// is not canonical.
 func nonCanonicalCheckpointPayload() []byte {
 	w := struct {
 		Origin string `cbor:"origin"`
@@ -750,7 +717,6 @@ func nonCanonicalCheckpointPayload() []byte {
 	return b
 }
 
-// dupContainerKey grows a valid run container by a duplicated events entry.
 func dupContainerKey(record []byte) []byte {
 	if record[0] != 0xA2 {
 		panic("conformance: run container does not start as a two-entry map")
@@ -760,7 +726,6 @@ func dupContainerKey(record []byte) []byte {
 	return append(out, 0x66, 'e', 'v', 'e', 'n', 't', 's', 0x80)
 }
 
-// indefContainer re-frames a valid run container as an indefinite-length map.
 func indefContainer(record []byte) []byte {
 	if record[0] != 0xA2 {
 		panic("conformance: run container does not start as a two-entry map")
@@ -769,8 +734,8 @@ func indefContainer(record []byte) []byte {
 	return append(out, 0xFF)
 }
 
-// nonMinimalHeadContainer re-frames a valid run container's map head as a one-byte
-// length argument (0xB8 0x02): same structure, not the shortest encoding.
+// nonMinimalHeadContainer writes the map head as a one-byte length (0xB8 0x02),
+// not the shortest encoding.
 func nonMinimalHeadContainer(record []byte) []byte {
 	if record[0] != 0xA2 {
 		panic("conformance: run container does not start as a two-entry map")
@@ -778,8 +743,7 @@ func nonMinimalHeadContainer(record []byte) []byte {
 	return append([]byte{0xB8, 0x02}, record[1:]...)
 }
 
-// gtCheck builds a check-verdict event at the given stream sequence: a verification
-// recorded with its own id and whether it passed.
+// gtCheck builds a check-verdict event with its own id and pass result.
 func gtCheck(seq, id int64, passed bool) spine.Event {
 	e := baseEvent()
 	e.Seq = seq
@@ -788,8 +752,8 @@ func gtCheck(seq, id int64, passed bool) spine.Event {
 	return e
 }
 
-// gtOutcome builds an outcome-claim event. When bound, it names the check that grounds
-// it; when not, it claims a result with no backing check.
+// gtOutcome builds an outcome claim; bound names its grounding check, unbound
+// has none.
 func gtOutcome(seq int64, result string, checkID int64, bound bool) spine.Event {
 	e := baseEvent()
 	e.Seq = seq
@@ -802,9 +766,8 @@ func gtOutcome(seq int64, result string, checkID int64, bound bool) spine.Event 
 	return e
 }
 
-// govEvent builds a governance lifecycle event at the given stream sequence: a typed
-// dispatch event carrying the correlation id that pairs an action's admission with
-// its completion or rejection.
+// govEvent carries the correlation id that pairs an admission with its
+// completion or rejection.
 func govEvent(seq int64, typ string, call int64) spine.Event {
 	e := baseEvent()
 	e.Seq = seq
@@ -813,9 +776,8 @@ func govEvent(seq int64, typ string, call int64) spine.Event {
 	return e
 }
 
-// govRun seals a run over the given governance events, signed by signer, and returns
-// the portable record. The events are sealed as-is, so a record with a deliberate
-// governance defect is still cryptographically valid: only VerifyGovernance rejects it.
+// govRun seals the events as-is, so a governance defect stays cryptographically
+// valid and only VerifyGovernance rejects it.
 func govRun(signer chain.RootSigner, events ...spine.Event) []byte {
 	b := chain.NewBuilder(checkOrig)
 	for _, e := range events {
@@ -830,9 +792,8 @@ func govRun(signer chain.RootSigner, events ...spine.Event) []byte {
 	return mustMarshal(sealed.Marshal())
 }
 
-// growingCheckpoints builds a Merkle log of five events signed by signer and returns
-// the signed checkpoint at size 2, the signed checkpoint at size 5, and the
-// consistency path between them.
+// growingCheckpoints returns the checkpoints at sizes 2 and 5 of a five-event
+// log, and the consistency path between them.
 func growingCheckpoints(signer chain.RootSigner) (before, after []byte, path [][]byte) {
 	tree := chain.NewTree()
 	sign := func(n uint64) []byte {
@@ -862,8 +823,8 @@ func growingCheckpoints(signer chain.RootSigner) (before, after []byte, path [][
 	return before, after, p
 }
 
-// consistencyArtifacts returns a valid consistency proof signed by root, and a
-// variant whose path byte is flipped so it no longer connects the two roots.
+// consistencyArtifacts returns a valid proof and a variant with a flipped path
+// byte that no longer connects the roots.
 func consistencyArtifacts(root, _ chain.RootSigner) (valid, forged []byte) {
 	before, after, path := growingCheckpoints(root)
 	valid = mustMarshal((&chain.ConsistencyProof{Before: before, After: after, Proof: path}).Marshal())
@@ -877,15 +838,13 @@ func consistencyArtifacts(root, _ chain.RootSigner) (valid, forged []byte) {
 	return valid, forged
 }
 
-// altConsistencyArtifact returns a structurally valid consistency proof whose
-// checkpoints are signed by alt, a key the published keyring does not carry.
+// altConsistencyArtifact is signed by alt, which the keyring lacks.
 func altConsistencyArtifact(alt chain.RootSigner) []byte {
 	before, after, path := growingCheckpoints(alt)
 	return mustMarshal((&chain.ConsistencyProof{Before: before, After: after, Proof: path}).Marshal())
 }
 
-// threeEvents returns the three events the run vectors are sealed over, as spine
-// events so they can be added to a builder.
+// threeEvents returns the events the run vectors are sealed over.
 func threeEvents() []spine.Event {
 	out := make([]spine.Event, 3)
 	for i := range out {
@@ -896,7 +855,7 @@ func threeEvents() []spine.Event {
 	return out
 }
 
-// mustSealed builds and seals the three-event run used to derive proof vectors.
+// mustSealed seals the run proof vectors derive from.
 func mustSealed(signer chain.RootSigner) *chain.SealedRun {
 	b := chain.NewBuilder(checkOrig)
 	for _, e := range threeEvents() {

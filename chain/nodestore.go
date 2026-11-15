@@ -2,49 +2,37 @@ package chain
 
 import "crypto/sha256"
 
-// hashSize is the width of every stored Merkle node hash. The log is defined over the
-// RFC 6962 SHA-256 hasher, so every leaf and internal-node hash is exactly this many
-// bytes; the tiled layout addresses a node inside a tile by offset and relies on the
-// fixed width.
+// hashSize is the width of every node hash (RFC 6962 SHA-256). The tiled layout
+// addresses a node by offset and relies on the fixed width.
 const hashSize = sha256.Size
 
-// tileHeight sets the tile width as a power of two: each tile holds up to 2^tileHeight
-// node hashes at one level. A growing log writes nodes left to right at each level, so
-// a tile fills densely and can be paged out as a single fixed-width blob, which is what
-// lets proof material move to slower storage without keeping the whole node set in
-// memory.
+// tileHeight sets the tile width: each tile holds up to 2^tileHeight node hashes
+// at one level. A log writes nodes left to right, so a tile fills densely and
+// pages out as one fixed-width blob.
 const (
 	tileHeight = 8
 	tileWidth  = 1 << tileHeight // 256 hashes per tile
 )
 
-// NodeStore holds the Merkle node hashes keyed by (level, index): Append writes each
-// completed node and proof assembly reads them back. Separating node storage behind
-// this interface is what lets one ever-growing log keep only the O(log n) append
-// frontier in memory (the compact range) while proofs are assembled from nodes that
-// may live packed in a tile, on disk, or in a colder tier. A durable store implements
-// it to persist a long-lived stream's proof material without holding it all in memory.
+// NodeStore holds Merkle node hashes by (level, index). It lets a growing log keep
+// only the O(log n) append frontier in memory while proofs read nodes from a
+// tile, disk or a colder tier.
 //
-// A node is written once and never changes, so a stored hash is stable and a Node
-// result may be retained without copying.
+// A node is written once and never changes, so a Node result may be retained
+// without copying.
 type NodeStore interface {
-	// Node returns the hash at (level, index) and whether it is present.
 	Node(level uint, index uint64) ([]byte, bool, error)
-	// PutNode records the hash at (level, index).
 	PutNode(level uint, index uint64, hash []byte) error
 }
 
-// cloneableStore is a NodeStore that can snapshot itself for a sealed run. The
-// in-memory stores implement it; a durable store need not, because a run sealed
-// through a Builder always accumulates its nodes in memory.
+// cloneableStore can snapshot itself for a sealed run. A durable store need not:
+// a Builder always accumulates in memory.
 type cloneableStore interface {
 	NodeStore
 	clone() NodeStore
 }
 
-// memNodeStore is the direct in-memory node map: one entry per node. It is the default
-// store and preserves the original in-RAM layout, so a caller that does not page nodes
-// out behaves exactly as before.
+// memNodeStore is the default store: one map entry per node.
 type memNodeStore struct {
 	nodes map[nodeKey][]byte
 }
@@ -77,12 +65,9 @@ type tileID struct {
 	index uint64 // node index / tileWidth
 }
 
-// tiledNodeStore packs node hashes into fixed-width tiles: a tile is the concatenation
-// of up to tileWidth consecutive node hashes at one level, addressed by offset. A
-// durable store persists one blob per tile, so holding nodes as tiles rather than one
-// map entry each is what bounds how much of a long log's proof material has to be
-// resident to serve a proof. A tile fills densely from the left as the log grows; the
-// stored length marks the filled prefix, so an unwritten slot is simply absent rather
+// tiledNodeStore packs up to tileWidth consecutive node hashes per level into a
+// tile, addressed by offset; a durable store persists one blob per tile. The
+// stored length marks the filled prefix, so an unwritten slot is absent rather
 // than an ambiguous zero hash.
 type tiledNodeStore struct {
 	tiles map[tileID][]byte

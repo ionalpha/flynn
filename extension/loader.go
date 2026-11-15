@@ -11,17 +11,10 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Loader turns a stored Extension resource into live surfaces by routing each
-// declared surface block to its registered handler. It is the bridge from data to
-// behaviour: the resource store admits and versions the spec, and the loader
-// mounts it. A load is all-or-nothing. If any surface fails to mount, the surfaces
-// already mounted for that extension are unloaded before the error returns, so an
-// extension is never left half-wired.
-//
-// The loader is level-triggered: Load both mounts a new extension and replaces one
-// already loaded (it unmounts the previous surfaces first), so re-applying the same
-// spec is idempotent and applying a changed spec reconciles to it. It is safe for
-// concurrent use.
+// Loader mounts each surface of a stored extension through its handler. A load
+// is all-or-nothing: on failure, surfaces already mounted are unloaded first.
+// Load is level-triggered, so re-applying a spec is idempotent and a changed
+// spec replaces the old one. Safe for concurrent use.
 type Loader struct {
 	reg *Registry
 
@@ -34,12 +27,9 @@ func NewLoader(reg *Registry) *Loader {
 	return &Loader{reg: reg, loaded: map[string][]string{}}
 }
 
-// Load mounts every surface an extension declares. It decodes the spec, resolves a
-// handler for each surface (fail-closed on an unknown surface), and calls OnLoad in
-// a deterministic, sorted order so a load is reproducible. If the extension was
-// already loaded, its previous surfaces are unmounted first. On any failure, the
-// surfaces mounted during this call are rolled back and the original error is
-// returned. It returns the sorted list of surface keys that ended up mounted.
+// Load mounts every declared surface in sorted order and returns the mounted
+// keys. An unknown surface fails the load. On failure this call's mounts are
+// rolled back and the original error returned.
 func (l *Loader) Load(ctx context.Context, r resource.Resource) ([]string, error) {
 	if r.ID == "" {
 		return nil, fault.New(fault.Terminal, "extension_no_id", "extension: cannot load a resource with no id")
@@ -51,8 +41,8 @@ func (l *Loader) Load(ctx context.Context, r resource.Resource) ([]string, error
 
 	keys := sortedSurfaceKeys(spec.Surfaces)
 
-	// Resolve every handler before mounting any, so an extension that declares one
-	// unknown surface is rejected whole rather than partly mounted then rolled back.
+	// Resolve every handler before mounting any, so an unknown surface
+	// rejects the extension without a partial mount.
 	handlers := make([]Point, len(keys))
 	for i, key := range keys {
 		h, err := l.reg.Resolve(key)
@@ -65,12 +55,9 @@ func (l *Loader) Load(ctx context.Context, r resource.Resource) ([]string, error
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Replacing an already-loaded extension: unmount its current surfaces first so
-	// the new spec fully supersedes the old one.
 	if prev, ok := l.loaded[r.ID]; ok {
-		// A best-effort release of the prior surfaces; the new spec supersedes them
-		// regardless, and OnUnload is idempotent, so a release error must not block the
-		// reload.
+		// Best effort: OnUnload is idempotent and the new spec supersedes the
+		// old, so an unload error must not block the reload.
 		_ = l.unmount(ctx, r.ID, prev)
 		delete(l.loaded, r.ID)
 	}
@@ -79,8 +66,7 @@ func (l *Loader) Load(ctx context.Context, r resource.Resource) ([]string, error
 	for i, key := range keys {
 		m := Mount{ID: r.ID, Name: r.Name, Spec: spec, Surface: key, Block: spec.Surfaces[key]}
 		if err := handlers[i].OnLoad(ctx, m); err != nil {
-			// Roll back the surfaces mounted so far, then surface the original error
-			// (the rollback's own error is secondary to the load failure that triggered it).
+			// Return the load error; a rollback error is secondary.
 			_ = l.unmount(ctx, r.ID, mounted)
 			return nil, fault.Wrap(fault.Terminal, "extension_surface_load", err)
 		}
@@ -93,10 +79,8 @@ func (l *Loader) Load(ctx context.Context, r resource.Resource) ([]string, error
 	return mounted, nil
 }
 
-// Unload releases every surface mounted for an extension id. It is idempotent:
-// unloading an extension that is not loaded is a no-op. Handler OnUnload errors are
-// collected and returned joined, but every surface is still attempted so one
-// stubborn handler cannot strand the others.
+// Unload releases every surface for id, idempotently. Errors are joined, and
+// every surface is attempted so one failing handler strands no others.
 func (l *Loader) Unload(ctx context.Context, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -119,9 +103,8 @@ func (l *Loader) Mounted(id string) []string {
 	return out
 }
 
-// unmount calls OnUnload for each surface in reverse mount order, collecting
-// errors. The caller holds l.mu. A handler that is no longer registered is skipped
-// rather than failing the unload, so an unmount always makes progress.
+// unmount unloads in reverse mount order, skipping unregistered handlers so it
+// always progresses. The caller holds l.mu.
 func (l *Loader) unmount(ctx context.Context, id string, keys []string) error {
 	var errs []error
 	for i := len(keys) - 1; i >= 0; i-- {
@@ -139,8 +122,6 @@ func (l *Loader) unmount(ctx context.Context, id string, keys []string) error {
 	return fault.Wrap(fault.Terminal, "extension_unload", errors.Join(errs...))
 }
 
-// sortedSurfaceKeys returns the surface keys of a spec in sorted order, the
-// deterministic mount order the loader uses so a load is reproducible.
 func sortedSurfaceKeys(surfaces map[string]json.RawMessage) []string {
 	keys := make([]string, 0, len(surfaces))
 	for k := range surfaces {

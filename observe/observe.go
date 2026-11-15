@@ -1,14 +1,7 @@
-// Package observe is the agent's observability layer: structured logging, tracing,
-// and metrics, all reached through Flynn-owned ports so the agent never depends on a
-// concrete backend. This mirrors OpenTelemetry's own API/SDK split: this package
-// is a dependency-light API with no-op defaults, and an opt-in adapter
-// (observe/otel) substitutes the real SDK without any call site changing.
-//
-// The standalone build uses the no-op defaults here (logs discarded, spans and
-// metrics dropped) so the agent runs with zero setup and near-zero overhead. A
-// host such as an Ion Alpha instance injects a real slog.Handler plus Tracer and
-// Meter adapters via New, without this package importing either. Only this package
-// may import log/slog; every other package logs through the Logger port.
+// Package observe is the agent's logging, tracing and metrics API, with no-op
+// defaults so the standalone agent needs no setup. A host injects a
+// slog.Handler and Tracer and Meter adapters through [New]; observe/otel is the
+// OpenTelemetry adapter. Only this package may import log/slog.
 package observe
 
 import (
@@ -17,7 +10,7 @@ import (
 	"log/slog"
 )
 
-// Observability bundles the logger, tracer, and meter threaded through the
+// Observability bundles the logger, tracer and meter threaded through the
 // runtime. The zero value is not usable; construct one with Default or New.
 type Observability struct {
 	Log    Logger
@@ -25,10 +18,9 @@ type Observability struct {
 	Meter  Meter
 }
 
-// Default returns an Observability that discards everything: a no-op logger, a
-// no-op tracer, and a no-op meter. It is the zero-setup standalone default. The
-// logger is a true no-op (not slog over io.Discard), so a disabled log call on the
-// standalone path builds no attributes and reaches no handler.
+// Default returns an Observability that discards everything. Its logger is
+// [NopLogger] instead of slog over io.Discard, so a log call builds no
+// attributes.
 func Default() *Observability {
 	return &Observability{
 		Log:    NopLogger{},
@@ -37,9 +29,8 @@ func Default() *Observability {
 	}
 }
 
-// New builds an Observability from a slog.Handler, a Tracer, and a Meter. A nil
-// handler discards logs; a nil tracer or meter falls back to the no-op. Hosts call
-// this to inject their logging handler and telemetry backends.
+// New builds an Observability for a host's backends. A nil handler discards
+// logs; a nil tracer or meter is a no-op.
 func New(h slog.Handler, t Tracer, m Meter) *Observability {
 	if h == nil {
 		h = slog.NewTextHandler(io.Discard, nil)
@@ -53,9 +44,8 @@ func New(h slog.Handler, t Tracer, m Meter) *Observability {
 	return &Observability{Log: NewSlogLogger(h), Tracer: t, Meter: m}
 }
 
-// Field is a typed key/value attribute on a log record, span, or metric. Build one
-// with the typed constructors (String, Int, Err, ...) so call sites never touch
-// the logging backend's own attribute types.
+// Field is a key/value attribute on a log record, span or metric, so call sites
+// never touch a backend's attribute types.
 type Field struct {
 	Key   string
 	Value any
@@ -79,35 +69,31 @@ func Bool(key string, v bool) Field { return Field{key, v} }
 // Any returns a Field with an arbitrary value.
 func Any(key string, v any) Field { return Field{key, v} }
 
-// Err is a Field carrying an error under the conventional "error" key.
+// Err returns err under the key "error".
 func Err(err error) Field { return Field{"error", err} }
 
-// Logger is the agent's structured logging port. Call sites depend on this, never
-// on log/slog, so the backend stays swappable and the dependency is
-// lint-enforceable. slog backs the default; a host may inject any slog.Handler.
+// Logger is the structured logging port. Call sites depend on it instead of
+// log/slog, so a lint rule can keep slog in this package.
 type Logger interface {
 	Debug(ctx context.Context, msg string, fields ...Field)
 	Info(ctx context.Context, msg string, fields ...Field)
 	Warn(ctx context.Context, msg string, fields ...Field)
 	Error(ctx context.Context, msg string, fields ...Field)
-	// With returns a Logger that includes fields on every record (a scoped logger),
-	// e.g. binding run_id and scope once at the waist.
+	// With returns a Logger that adds fields to every record, such as a run_id
+	// bound once at dispatch.
 	With(fields ...Field) Logger
 }
 
-// slogLogger adapts log/slog to Logger. When a host enables source locations they
-// point at this adapter rather than the caller, the known cost of wrapping slog;
-// it can be revisited with caller-PC capture if a host needs precise sources.
+// slogLogger adapts log/slog to Logger. Source locations, when enabled, point
+// at this adapter and not the caller.
 type slogLogger struct{ l *slog.Logger }
 
 // NewSlogLogger returns a Logger backed by the slog.Handler h.
 func NewSlogLogger(h slog.Handler) Logger { return slogLogger{slog.New(h)} }
 
-// NewWarnLogger returns a Logger that writes Warn and Error records to w as text
-// and discards Debug and Info. It exists so a command can report a condition an
-// operator must see (a leak the watchdog found, a bundle that failed to seal)
-// without importing log/slog itself and without turning on the agent's own logging,
-// which belongs to a host that asked for it.
+// NewWarnLogger writes Warn and Error records to w as text and drops the rest,
+// so a command can report what an operator must see (a leak, a bundle that
+// failed to seal) without turning on the agent's own logging.
 func NewWarnLogger(w io.Writer) Logger {
 	return NewSlogLogger(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
@@ -137,9 +123,8 @@ func (s slogLogger) With(f ...Field) Logger {
 }
 
 func (s slogLogger) log(ctx context.Context, level slog.Level, msg string, f []Field) {
-	// Skip the whole record when the handler has the level disabled: no attribute
-	// slice is built and nothing reaches slog. A production host that runs at Info
-	// pays nothing for the Debug calls threaded through hot paths.
+	// A disabled level builds nothing, so Debug calls on hot paths cost a host
+	// running at Info nothing.
 	if !s.l.Enabled(ctx, level) {
 		return
 	}
@@ -152,52 +137,47 @@ func (s slogLogger) log(ctx context.Context, level slog.Level, msg string, f []F
 
 var _ Logger = slogLogger{}
 
-// NopLogger is a Logger that discards every record without touching its fields. It
-// is the standalone Default so the disabled-log path allocates nothing; a host that
-// wants real logging injects a slog.Handler through New instead.
+// NopLogger discards every record without touching its fields, so it allocates
+// nothing.
 type NopLogger struct{}
 
-// Debug implements Logger by discarding the record.
+// Debug implements Logger.
 func (NopLogger) Debug(context.Context, string, ...Field) {}
 
-// Info implements Logger by discarding the record.
+// Info implements Logger.
 func (NopLogger) Info(context.Context, string, ...Field) {}
 
-// Warn implements Logger by discarding the record.
+// Warn implements Logger.
 func (NopLogger) Warn(context.Context, string, ...Field) {}
 
-// Error implements Logger by discarding the record.
+// Error implements Logger.
 func (NopLogger) Error(context.Context, string, ...Field) {}
 
-// With implements Logger by returning the same no-op logger.
+// With implements Logger.
 func (NopLogger) With(...Field) Logger { return NopLogger{} }
 
 var _ Logger = NopLogger{}
 
-// Tracer starts spans around units of work. It is deliberately minimal: the agent
-// depends on this interface, and an adapter maps it onto a backend such as
-// OpenTelemetry. Implementations must be safe for concurrent use.
+// Tracer starts spans around units of work. Implementations must be safe for
+// concurrent use.
 type Tracer interface {
-	// Start begins a span named name and returns a context carrying it together
-	// with the Span to end. The returned context must be used for nested work.
+	// Start begins a span. Nested work must use the returned context.
 	Start(ctx context.Context, name string) (context.Context, Span)
 }
 
-// Span is a single unit of traced work. End must be called exactly once;
-// deferring it at the call site is the expected usage.
+// Span is one unit of traced work. End must be called exactly once, usually
+// deferred.
 type Span interface {
-	// SetAttr records a key/value attribute on the span.
 	SetAttr(key string, value any)
-	// RecordError marks the span as failed and attaches err.
+	// RecordError marks the span failed.
 	RecordError(err error)
-	// End closes the span.
 	End()
 }
 
-// NopTracer is a Tracer that does nothing; it is the standalone default.
+// NopTracer is a Tracer that does nothing.
 type NopTracer struct{}
 
-// Start implements Tracer by returning the context unchanged and a no-op Span.
+// Start implements Tracer and returns ctx unchanged.
 func (NopTracer) Start(ctx context.Context, _ string) (context.Context, Span) {
 	return ctx, nopSpan{}
 }
@@ -208,10 +188,8 @@ func (nopSpan) SetAttr(string, any) {}
 func (nopSpan) RecordError(error)   {}
 func (nopSpan) End()                {}
 
-// Meter creates metric instruments. Like the tracer it is a minimal port with a
-// no-op default; an adapter (observe/otel) maps it onto a backend such as
-// OpenTelemetry, exporting to VictoriaMetrics. Fetching an instrument is cheap, so
-// call sites may fetch one per use.
+// Meter creates metric instruments. Fetching one is cheap, so call sites may
+// fetch per use.
 type Meter interface {
 	// Counter returns a monotonic counter (requests, tokens, errors).
 	Counter(name string) Counter
@@ -229,7 +207,7 @@ type Histogram interface {
 	Record(ctx context.Context, value float64, fields ...Field)
 }
 
-// NopMeter is a Meter whose instruments do nothing; the standalone default.
+// NopMeter is a Meter whose instruments do nothing.
 type NopMeter struct{}
 
 // Counter implements Meter.
@@ -246,7 +224,6 @@ type nopHistogram struct{}
 
 func (nopHistogram) Record(context.Context, float64, ...Field) {}
 
-// Compile-time checks that the no-op types satisfy the observe interfaces.
 var (
 	_ Tracer    = NopTracer{}
 	_ Span      = nopSpan{}
@@ -257,19 +234,17 @@ var (
 
 type ctxKey struct{}
 
-// nopObs is the shared fallback returned by FromContext when no Observability is
-// bound, so the lookup never allocates on the hot path.
+// nopObs is shared so FromContext never allocates.
 var nopObs = Default()
 
-// Into returns a context carrying o, so deep call sites reach the active logger,
-// tracer, and meter via FromContext instead of threading them as parameters. The
-// dispatch waist binds the run's Observability once; leaf code reads it back.
+// Into returns a context carrying o, which dispatch binds once per run so leaf
+// code reads it with FromContext instead of taking it as a parameter.
 func Into(ctx context.Context, o *Observability) context.Context {
 	return context.WithValue(ctx, ctxKey{}, o)
 }
 
-// FromContext returns the Observability bound to ctx, or the no-op default if none
-// is present, so a caller can always log, trace, and measure without a nil check.
+// FromContext returns the Observability bound to ctx, or a no-op one, so it is
+// never nil.
 func FromContext(ctx context.Context) *Observability {
 	if o, ok := ctx.Value(ctxKey{}).(*Observability); ok && o != nil {
 		return o

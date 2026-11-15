@@ -15,9 +15,8 @@ type sessions struct{ p *Store }
 const sessionCols = `id, title, model, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
-// sessionGetLiveSQL is the live-session point read, prepared twice at Open: on
-// the read pool (Sessions().Get) and on the write connection (the tx-scoped
-// lookup in the turn/delete command paths).
+// sessionGetLiveSQL is prepared at Open on both the read pool and the write
+// connection.
 const sessionGetLiveSQL = `SELECT ` + sessionCols + ` FROM sessions WHERE id = ? AND deleted = 0`
 
 func scanSession(sc interface{ Scan(...any) error }) (state.Session, error) {
@@ -37,10 +36,8 @@ func scanSession(sc interface{ Scan(...any) error }) (state.Session, error) {
 	return s, nil
 }
 
-// upsertSessionRow writes the session post-image in place. It is an ON CONFLICT
-// upsert rather than INSERT OR REPLACE: REPLACE would delete the existing row,
-// which the turns foreign key forbids once a session has turns. DO UPDATE mutates
-// the row in place, so the projection stays consistent and Rebuild is idempotent.
+// upsertSessionRow uses ON CONFLICT DO UPDATE because INSERT OR REPLACE would
+// delete the row, which the turns foreign key forbids once a session has turns.
 const upsertSessionSQL = `INSERT INTO sessions (` + sessionCols + `) VALUES (?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title, model=excluded.model,
@@ -65,8 +62,7 @@ const insertTurnSQL = `INSERT INTO turns (id, session_id, seq, role, content, cr
 		updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 		last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`
 
-// insertTurnRow writes a turn post-image. Turns are append-only, but an upsert by
-// id keeps Rebuild idempotent (replaying the same event is a no-op write).
+// insertTurnRow upserts by id so replaying an event is a no-op.
 func insertTurnRow(ctx context.Context, tx *sql.Tx, p *Store, t state.Turn) error {
 	_, err := tx.StmtContext(ctx, p.stmts.turnInsert).ExecContext(ctx,
 		t.ID, t.SessionID, t.Seq, t.Role, t.Content, formatTime(t.CreatedAt),
@@ -176,8 +172,6 @@ func (s *sessions) Delete(ctx context.Context, id string) error {
 	})
 }
 
-// getSessionTx loads a live session within tx (for the envelope it bumps), or
-// returns ErrNotFound if it is missing or tombstoned.
 func getSessionTx(ctx context.Context, tx *sql.Tx, p *Store, id string) (state.Session, error) {
 	row := tx.StmtContext(ctx, p.stmts.sessionGetTx).QueryRowContext(ctx, id)
 	ses, err := scanSession(row)

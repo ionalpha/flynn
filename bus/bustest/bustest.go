@@ -1,8 +1,6 @@
-// Package bustest is the conformance suite for bus.Bus. Every backend (the
-// in-process MemoryBus default, a NATS adapter, a host's broker) runs RunSuite
-// and must behave identically, so an opt-in broker is held to the exact pub/sub,
-// subject-matching, ordering, and lifecycle contract of the reference MemoryBus
-// rather than re-tested by hand.
+// Package bustest is the conformance suite for bus.Bus. Every backend runs
+// RunSuite, so a broker adapter is held to the matching, ordering and lifecycle
+// behaviour of bus.MemoryBus.
 package bustest
 
 import (
@@ -15,12 +13,11 @@ import (
 	"github.com/ionalpha/flynn/bus"
 )
 
-// deliverWait bounds how long a test waits for an asynchronous delivery before
-// failing. Generous so a slow CI box does not flake, short enough to fail fast.
+// deliverWait is long enough that a slow CI runner does not flake.
 const deliverWait = 2 * time.Second
 
-// RunSuite runs the full bus.Bus contract against buses built by newBus. Each
-// subtest gets a fresh bus, closed at the end of the subtest.
+// RunSuite runs the bus.Bus contract; each subtest gets a fresh bus from newBus
+// and closes it.
 func RunSuite(t *testing.T, newBus func() bus.Bus) {
 	t.Helper()
 	t.Run("DeliversToMatchingSubscriber", func(t *testing.T) { testDelivers(t, newBus()) })
@@ -36,7 +33,6 @@ func RunSuite(t *testing.T, newBus func() bus.Bus) {
 	t.Run("HandlerErrorIsolated", func(t *testing.T) { testHandlerErrorIsolated(t, newBus()) })
 }
 
-// collector is a handler that records every message it receives, in order.
 type collector struct {
 	mu   sync.Mutex
 	got  []bus.Message
@@ -53,8 +49,6 @@ func (c *collector) handle(_ context.Context, m bus.Message) error {
 	return nil
 }
 
-// waitFor blocks until the collector has received n messages or deliverWait
-// elapses, then returns the messages received so far.
 func (c *collector) waitFor(t *testing.T, n int) []bus.Message {
 	t.Helper()
 	deadline := time.After(deliverWait)
@@ -68,9 +62,8 @@ func (c *collector) waitFor(t *testing.T, n int) []bus.Message {
 	return c.snapshot()
 }
 
-// waitExactly is waitFor followed by a settle window: it fails when more than n
-// messages arrive. Without the window an over-delivering bus passes any check
-// that stops counting at n, because the extra message is still in flight.
+// waitExactly fails when more than n messages arrive. The settle window is
+// needed because an extra delivery may still be in flight at n.
 func (c *collector) waitExactly(t *testing.T, n int) []bus.Message {
 	t.Helper()
 	got := c.waitFor(t, n)
@@ -181,8 +174,6 @@ func testOrder(t *testing.T, b bus.Bus) {
 		mustPublish(t, b, "seq", itoa(i))
 	}
 	got := c.waitExactly(t, n)
-	// Payloads were published as ascending indices; delivery to one subscription
-	// must preserve that order exactly.
 	for i := range got {
 		if pubIndex(got[i].Payload) != i {
 			t.Fatalf("out of order: message %d has index %d (payload %q)", i, pubIndex(got[i].Payload), got[i].Payload)
@@ -200,7 +191,6 @@ func testUnsubscribe(t *testing.T, b bus.Bus) {
 	if err := s.Unsubscribe(); err != nil {
 		t.Fatalf("Unsubscribe: %v", err)
 	}
-	// Idempotent.
 	if err := s.Unsubscribe(); err != nil {
 		t.Fatalf("second Unsubscribe: %v", err)
 	}
@@ -237,7 +227,6 @@ func testClosed(t *testing.T, b bus.Bus) {
 	if _, err := b.Subscribe(context.Background(), "x", func(context.Context, bus.Message) error { return nil }); err == nil {
 		t.Fatal("Subscribe after Close = nil error, want ErrClosed")
 	}
-	// Close is idempotent.
 	if err := b.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
@@ -249,14 +238,12 @@ func testHandlerErrorIsolated(t *testing.T, b bus.Bus) {
 	mustSubscribe(t, b, "x", func(context.Context, bus.Message) error { return errors.New("boom") })
 	mustSubscribe(t, b, "x", good.handle)
 	mustPublish(t, b, "x", "ok")
-	// The erroring subscriber must not prevent the healthy one from receiving.
 	if got := good.waitExactly(t, 1); len(got) != 1 {
 		t.Fatalf("healthy subscriber got %d, want 1", len(got))
 	}
 }
 
-// itoa and pubIndex avoid an strconv import in this helper and encode/decode the
-// publish index embedded in the order test's payloads.
+// itoa and pubIndex encode the publish index in the order test's payloads.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

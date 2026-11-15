@@ -18,30 +18,21 @@ type memory struct{ p *Store }
 const memoryCols = `id, kind, content, subject, supersedes, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at, tainted,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
-// memoryColsQualified is memoryCols against the `m` alias, for the recall query,
-// which joins the FTS table and so cannot use bare column names. Recall appends
-// one more expression, the relevance score, after these nineteen.
+// memoryColsQualified uses the `m` alias because recall joins the FTS table.
+// Recall appends the score after these nineteen.
 const memoryColsQualified = `m.id, m.kind, m.content, m.subject, m.supersedes, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at, m.tainted,
 	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
 
-// memoryScoreCol is the ordinal of the relevance score in a recall's select list,
-// which ORDER BY names rather than repeating the bm25 expression, so it is
-// evaluated once per row. It tracks the column count in memoryColsQualified.
+// memoryScoreCol is the score's ordinal, so ORDER BY evaluates bm25 once per
+// row. It must track memoryColsQualified's column count.
 const memoryScoreCol = 20
 
-// memoryLiveSQL is the predicate for a row a recall may return: not tombstoned,
-// and not past its expiry as of the bound instant. Both recall shapes use it, so
-// the prepared single-scope statement and the built query cannot disagree on what
-// "live" means. It binds one parameter, the read time in unix nanoseconds.
+// memoryLiveSQL is shared by both recall shapes so they agree on "live": not
+// tombstoned, not expired. It binds the read time in unix nanoseconds.
 const memoryLiveSQL = `m.deleted = 0 AND (m.expires_at = 0 OR m.expires_at > ?)`
 
-// encodeSources renders provenance for storage as a JSON array. Empty provenance
-// is the empty string rather than "[]" so an item that never had a source keeps a
-// cheap, obviously-empty column value.
-//
-// It returns no error because it cannot fail: encoding a []string is total, so
-// dropping the error is honest, where a defensive error return would add a branch
-// no test could ever reach and no caller could ever handle.
+// encodeSources renders a JSON array, or "" for none. Encoding a []string
+// cannot fail, so there is no error return.
 func encodeSources(sources []string) string {
 	if len(sources) == 0 {
 		return ""
@@ -50,7 +41,6 @@ func encodeSources(sources []string) string {
 	return string(b)
 }
 
-// decodeSources reads back what encodeSources wrote.
 func decodeSources(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, nil
@@ -62,10 +52,8 @@ func decodeSources(raw string) ([]string, error) {
 	return out, nil
 }
 
-// encodeSupersedes renders the superseded ids the same way provenance is rendered:
-// a JSON array, or the empty string for none. They are a separate pair of helpers
-// rather than a reuse of encodeSources so the decode error names the column the
-// operator has to go and look at.
+// encodeSupersedes matches encodeSources but has its own decoder, so a decode
+// error names its column.
 func encodeSupersedes(ids []string) string {
 	if len(ids) == 0 {
 		return ""
@@ -74,7 +62,6 @@ func encodeSupersedes(ids []string) string {
 	return string(b)
 }
 
-// decodeSupersedes reads back what encodeSupersedes wrote.
 func decodeSupersedes(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, nil
@@ -86,10 +73,8 @@ func decodeSupersedes(raw string) ([]string, error) {
 	return out, nil
 }
 
-// encodeAnchors renders anchors for storage as a JSON array of {kind, id}. Like
-// encodeSources, no anchors is the empty string rather than "[]". The item's
-// anchors are already canonical (state.NormalizeAnchors, on the write path), so
-// this preserves their order rather than imposing one.
+// encodeAnchors renders a JSON array of {kind, id}, or "" for none, in the
+// order [state.NormalizeAnchors] already fixed.
 func encodeAnchors(anchors []state.Anchor) string {
 	if len(anchors) == 0 {
 		return ""
@@ -102,7 +87,6 @@ func encodeAnchors(anchors []state.Anchor) string {
 	return string(b)
 }
 
-// decodeAnchors reads back what encodeAnchors wrote.
 func decodeAnchors(raw string) ([]state.Anchor, error) {
 	if raw == "" {
 		return nil, nil
@@ -118,16 +102,13 @@ func decodeAnchors(raw string) ([]state.Anchor, error) {
 	return out, nil
 }
 
-// storedAnchor is the JSON shape of an anchor in the anchors column: lowercase
-// keys, matching the memory facade's resource spec, so the same anchor reads the
-// same on either backend.
+// storedAnchor uses lowercase keys to match the memory facade's resource spec.
 type storedAnchor struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
 }
 
-// expiryNanos renders an expiry for storage: unix nanoseconds, with 0 reserved for
-// "never", which is what the zero time means on the item.
+// expiryNanos stores unix nanoseconds, with 0 for the zero time ("never").
 func expiryNanos(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
@@ -135,7 +116,6 @@ func expiryNanos(t time.Time) int64 {
 	return t.UnixNano()
 }
 
-// expiryTime is expiryNanos in reverse.
 func expiryTime(n int64) time.Time {
 	if n == 0 {
 		return time.Time{}
@@ -143,10 +123,8 @@ func expiryTime(n int64) time.Time {
 	return time.Unix(0, n).UTC()
 }
 
-// scanMemoryRow scans the memory columns named by memoryCols, and the trailing
-// relevance score too when score is non-nil (the recall shapes select it as one
-// more expression). One scanner so the column list and its readers cannot drift
-// apart.
+// scanMemoryRow scans memoryCols, plus the trailing score when score is
+// non-nil. Every reader shares it so none drifts from the column list.
 func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.MemoryItem, error) {
 	var (
 		m             state.MemoryItem
@@ -200,8 +178,6 @@ func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
 	return scanMemoryRow(sc, nil)
 }
 
-// scanScoredMemory scans a recall row: the item's columns plus the trailing
-// relevance score.
 func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
 	var score float64
 	return scanMemoryRow(sc, &score)
@@ -226,9 +202,8 @@ func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error
 	return err
 }
 
-// projectMemory writes a memory-item post-image: the row and its FTS index
-// together. Shared by the live command path and applyEvent (Rebuild), so both
-// project identically.
+// projectMemory writes the row and its FTS entry. The live path and Rebuild
+// both call it, so they project identically.
 func projectMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	if err := upsertMemoryRow(ctx, tx, it); err != nil {
 		return err
@@ -239,15 +214,9 @@ func projectMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	return reindexMemoryAnchors(ctx, tx, it)
 }
 
-// reindexMemoryAnchors keeps the anchor lookup table holding rows only while the
-// item is live, the same rule reindexMemory applies to the content index, so an
-// anchored recall and a lexical one agree on what a tombstone means without either
-// read having to filter for it.
-//
-// It rewrites the item's rows wholesale rather than diffing: an item carries a
-// handful of anchors, and a delete-then-insert is both cheaper to reason about and
-// correct for the case a rebuild replays a post-image whose anchors differ from
-// what is on disk.
+// reindexMemoryAnchors keeps anchor rows only while the item is live, as
+// reindexMemory does, so neither recall filters tombstones. It deletes and
+// reinserts, which stays correct when a rebuild replays different anchors.
 func reindexMemoryAnchors(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_anchors WHERE item_id = ?`, it.ID); err != nil {
 		return err
@@ -293,23 +262,17 @@ func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryIt
 func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	query := strings.TrimSpace(q.Query)
 	chain := q.ScopeChain()
-	// One clock reading bound into both recall shapes and into the Go post-filter,
-	// so a single call cannot judge two rows against two different instants. This is
-	// the read time itself, not an expiry, so it goes through UnixNano directly:
-	// expiryNanos reserves 0 for "never", which is a meaningless answer for a clock.
+	// One clock reading for SQL and post-filter, so rows share an instant.
+	// UnixNano directly, since expiryNanos maps the zero time to 0.
 	now := m.p.clk.Now()
 	liveAt := now.UnixNano()
 
-	// Anything the query language cannot answer correctly is applied after the
-	// rows come back, and forces the cap to be applied there too - a SQL LIMIT
-	// would otherwise truncate rows that the Go stage was going to drop anyway,
-	// returning fewer results than asked for.
+	// A Go-side filter moves the cap there too, or a SQL LIMIT would return
+	// fewer rows than asked for.
 	postFilter := !q.Since.IsZero() || !q.Until.IsZero() || q.MinScore > 0
 
-	// The single-scope, no-FTS shape is the agent-startup read; it runs on the
-	// prepared statement. A widened read cannot: the prepared statement binds
-	// exactly one scope triple, so it falls through to the built query, which is
-	// the only shape that can express a variable-length resolution chain.
+	// The startup read (one scope, no FTS) uses the prepared statement, which
+	// binds one scope triple; a widened chain needs the built query.
 	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && len(q.Subjects) == 0 && len(q.Anchors) == 0 && !postFilter {
 		return m.recallPrepared(ctx, q, liveAt)
 	}
@@ -317,9 +280,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	if query == "" {
 		return m.recallMatching(ctx, q, "", chain, now, postFilter)
 	}
-	// The plan is strict first and widens only on an empty answer, judged after the
-	// post-filter: a strict read whose every row the window or score floor then
-	// drops has answered nothing, so the wider read gets its turn.
+	// Widen only on an empty answer, judged after the post-filter.
 	items := make([]state.MemoryItem, 0)
 	for _, a := range recallplan.Plan(query) {
 		var err error
@@ -331,8 +292,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	return items, nil
 }
 
-// recallMatching runs one attempt: the recall SQL for match, an FTS5 expression, or
-// for every live item when match is empty.
+// recallMatching runs one attempt; an empty match selects every live item.
 func (m *memory) recallMatching(ctx context.Context, q state.RecallQuery, match string, chain []state.Scope, now time.Time, postFilter bool) ([]state.MemoryItem, error) {
 	sqlText, args := buildRecallQuery(q, match, chain, now.UnixNano(), postFilter)
 	rows, err := m.p.reads().QueryContext(ctx, sqlText, args...)
@@ -349,9 +309,7 @@ func (m *memory) recallMatching(ctx context.Context, q state.RecallQuery, match 
 	return postFilterRecall(items, q, now), nil
 }
 
-// recallPrepared answers the agent-startup read on the prepared statement. A
-// non-positive Limit becomes SQLite's LIMIT -1, no limit, so both limit shapes share
-// the statement.
+// recallPrepared maps Limit <= 0 to LIMIT -1 so one statement serves both.
 func (m *memory) recallPrepared(ctx context.Context, q state.RecallQuery, liveAt int64) ([]state.MemoryItem, error) {
 	limit := q.Limit
 	if limit <= 0 {
@@ -365,37 +323,32 @@ func (m *memory) recallPrepared(ctx context.Context, q state.RecallQuery, liveAt
 	if err != nil {
 		return nil, err
 	}
-	// No query, so nothing was graded and every row is an equally good match.
+	// No query: every row scores 1.
 	for i := range items {
 		items[i].Score = 1
 	}
 	return items, nil
 }
 
-// buildRecallQuery builds the recall SQL for every shape the prepared statement
-// cannot answer, and the arguments it binds. match is the FTS5 expression to rank
-// against, or empty for a read with no text query.
+// buildRecallQuery builds the SQL for shapes the prepared statement cannot
+// answer. match is an FTS5 expression or empty.
 func buildRecallQuery(q state.RecallQuery, match string, chain []state.Scope, liveAt int64, postFilter bool) (string, []any) {
 	var sb strings.Builder
 	args := make([]any, 0, 8)
 	if match == "" {
-		// Nothing to rank against, so every row scores 1: state.MemoryItem.Score
-		// reserves 1 for "matched, no opinion on how well".
+		// Score 1 means matched with no ranking.
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, 1.0
 			FROM memory_items m WHERE ` + memoryLiveSQL)
 		args = append(args, liveAt)
 	} else {
-		// FTS5 computes bm25 for the MATCH regardless; the contract used to discard
-		// it. bm25 is <= 0 with a more negative value meaning a better match, so
-		// -b/(1-b) maps it onto [0,1) increasing in match quality, which is the
-		// direction and range Score is defined in.
+		// bm25 is <= 0, more negative is better; -b/(1-b) maps it onto [0,1)
+		// increasing, the range Score is defined in.
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, (-bm25(memory_fts)) / (1.0 - bm25(memory_fts))
 			FROM memory_items m JOIN memory_fts ON memory_fts.item_id = m.id
 			WHERE memory_fts MATCH ? AND ` + memoryLiveSQL)
 		args = append(args, match, liveAt)
 	}
-	// Kind and subject are exact matches on indexed columns, so they belong in the
-	// query rather than in a post-filter: they cut the rows the sort has to order.
+	// Indexed exact matches go in SQL to cut what the sort orders.
 	args = writeInClause(&sb, args, "m.kind", q.Kinds)
 	args = writeInClause(&sb, args, "m.subject", q.Subjects)
 	args = writeAnchorClause(&sb, args, q.Anchors)
@@ -408,14 +361,9 @@ func buildRecallQuery(q state.RecallQuery, match string, chain []state.Scope, li
 	return sb.String(), args
 }
 
-// writeAnchorClause restricts the recall to items anchored to any of anchors.
-//
-// Anchors are an indexed lookup through the projection table, expressed as an
-// EXISTS rather than a join so an item anchored to two of the refs asked for comes
-// back once. It belongs in SQL for the same reason kind does: it is the selector
-// that cuts the row set hardest, and a ride-along read supplies it with no lexical
-// query at all, so filtering afterwards would mean pulling the whole scope back to
-// keep a handful of rows.
+// writeAnchorClause matches items anchored to any of anchors. EXISTS, so an
+// item matching two anchors returns once. It is in SQL because it cuts the
+// most rows, often with no text query at all.
 func writeAnchorClause(sb *strings.Builder, args []any, anchors []state.Anchor) []any {
 	if len(anchors) == 0 {
 		return args
@@ -432,9 +380,7 @@ func writeAnchorClause(sb *strings.Builder, args []any, anchors []state.Anchor) 
 	return args
 }
 
-// writeScopeClause restricts the recall to the scope chain: one scope, or that
-// scope's ancestors when the read widened, so the predicate is an OR over its
-// triples. Nil means unfiltered, no predicate.
+// writeScopeClause ORs the chain's scope triples; nil writes nothing.
 func writeScopeClause(sb *strings.Builder, args []any, chain []state.Scope) []any {
 	if len(chain) == 0 {
 		return args
@@ -451,15 +397,9 @@ func writeScopeClause(sb *strings.Builder, args []any, chain []state.Scope) []an
 	return args
 }
 
-// writeRecallOrder orders the recall.
-//
-// A widened recall ranks most-specific scope first, matching state.Scope.Depth and
-// state.SortRecall, so a workspace's own memory outranks the project memory it
-// inherits. The CASE takes no arguments because it reads the innermost set column
-// rather than comparing against the chain: within one ancestor chain every level has
-// a distinct innermost column, which is exactly what Depth reports. It has to be
-// ordered in SQL rather than after collection, because LIMIT would otherwise
-// truncate the wrong rows.
+// writeRecallOrder ranks the most specific scope first, as [state.SortRecall]
+// does. The CASE reads the innermost set column, distinct per level of one
+// chain, so it binds nothing. It orders in SQL so LIMIT drops the right rows.
 func writeRecallOrder(sb *strings.Builder, q state.RecallQuery) {
 	sb.WriteString(` ORDER BY`)
 	if q.Order == state.OrderRelevance {
@@ -475,13 +415,9 @@ func writeRecallOrder(sb *strings.Builder, q state.RecallQuery) {
 	sb.WriteString(` m.created_at DESC, m.id DESC`)
 }
 
-// postFilterRecall applies what the SQL could not, and the cap with it.
-//
-// The CreatedAt window is applied here rather than as a SQL range. Since migration
-// 0029 created_at is fixed-width and does compare lexicographically, so a SQL range
-// is now correct and would let the index serve the window; it is a separate change
-// because MinScore also lands in this stage and only the window can move, so the
-// post-filter and its deferred LIMIT stay either way.
+// postFilterRecall applies the CreatedAt window, MinScore and the cap. The
+// fixed-width created_at would allow a SQL range, but MinScore keeps this
+// stage and its deferred LIMIT regardless.
 func postFilterRecall(items []state.MemoryItem, q state.RecallQuery, now time.Time) []state.MemoryItem {
 	out := items[:0]
 	for _, it := range items {
@@ -496,12 +432,9 @@ func postFilterRecall(items []state.MemoryItem, q state.RecallQuery, now time.Ti
 	return out
 }
 
-// writeInClause appends ` AND <col> IN (?, ?, ...)` to sb and the values to args,
-// returning the extended args. An empty value list writes nothing at all, which is
-// what an unset filter means: matching everything, not matching an empty set.
-//
-// The column name is a constant from this file and never a caller's string, so the
-// only thing crossing into the SQL text is one this package wrote.
+// writeInClause appends an IN clause. No values writes nothing: an unset
+// filter matches everything. col is always a constant from this file, never
+// caller input.
 func writeInClause(sb *strings.Builder, args []any, col string, vals []string) []any {
 	if len(vals) == 0 {
 		return args
@@ -518,7 +451,7 @@ func writeInClause(sb *strings.Builder, args []any, col string, vals []string) [
 	return args
 }
 
-// collectMemory drains rows into memory items, closing rows on every path.
+// collectMemory closes rows on every path.
 func collectMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
 	defer func() { _ = rows.Close() }()
 	out := make([]state.MemoryItem, 0)
@@ -532,7 +465,6 @@ func collectMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
 	return out, rows.Err()
 }
 
-// collectScoredMemory drains recall rows, which carry a trailing score column.
 func collectScoredMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
 	defer func() { _ = rows.Close() }()
 	out := make([]state.MemoryItem, 0)

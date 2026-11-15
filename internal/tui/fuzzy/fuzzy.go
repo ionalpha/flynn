@@ -1,14 +1,11 @@
-// Package fuzzy ranks completion candidates against a typed pattern. The
-// matcher is the subsequence kind every editor's file picker uses: the
-// pattern's characters must appear in the candidate in order, and the score
-// prefers matches at path-segment and word starts, consecutive runs, and
-// short candidates, so "sre" finds "screen/render.go" ahead of an accidental
-// scatter of the same letters. Matching is case-insensitive; an exact-case
-// hit earns a small bonus.
+// Package fuzzy ranks completion candidates against a typed pattern. The pattern
+// must appear in the candidate as an in-order subsequence, and the score prefers
+// matches at path-segment and word starts, consecutive runs and short
+// candidates, so "sre" finds "screen/render.go" ahead of a scatter of the same
+// letters. Matching ignores case; an exact-case hit earns a small bonus.
 //
-// Everything here is pure and deterministic: same inputs, same order, no
-// clock, no randomness. Ties in Rank break by shorter candidate, then
-// lexically, so the menu never reshuffles between keystrokes.
+// The package is pure and deterministic. Ties in Rank break by shorter
+// candidate, then lexically, so the menu never reshuffles between keystrokes.
 package fuzzy
 
 import (
@@ -16,9 +13,9 @@ import (
 	"unicode"
 )
 
-// Scoring weights. The exact values matter less than their order: a segment
-// start outranks a camelCase hump, which outranks mere adjacency, and every
-// bonus outranks the per-gap penalty, so structure wins over proximity.
+// Scoring weights. Their order is what counts: a segment start outranks a
+// camelCase hump, which outranks adjacency, and every bonus outranks the gap
+// penalty, so structure beats proximity.
 const (
 	bonusSegmentStart = 8 // match right after a separator, or at the start
 	bonusCamel        = 6 // match on an upper rune following a lower rune
@@ -27,10 +24,10 @@ const (
 	penaltyGap        = 1 // per candidate rune skipped between matches
 )
 
-// Score reports how well pattern matches candidate, and whether it matches
-// at all. The empty pattern matches everything with score zero. A greedy
-// forward scan keeps the cost linear in the candidate; it can under-score an
-// adversarial alignment, but it never misses a match.
+// Score reports how well pattern matches candidate, and whether it matches. The
+// empty pattern matches everything with score zero. A greedy forward scan keeps
+// the cost linear; it can under-score an adversarial alignment but never misses
+// a match.
 func Score(pattern, candidate string) (int, bool) {
 	if pattern == "" {
 		return 0, true
@@ -66,8 +63,8 @@ func Score(pattern, candidate string) (int, bool) {
 	return score, true
 }
 
-// isSeparator reports whether r starts a new segment for scoring purposes:
-// path separators, the word punctuation common in file names, and spaces.
+// isSeparator reports whether r starts a segment: a path separator, common file
+// name punctuation or a space.
 func isSeparator(r rune) bool {
 	switch r {
 	case '/', '\\', '-', '_', '.', ' ':
@@ -76,10 +73,9 @@ func isSeparator(r rune) bool {
 	return false
 }
 
-// Rank returns the best matches for pattern among candidates, best first,
-// at most limit long. An optional bonus hook adds candidate-specific score
-// (recent picks, pinned entries); nil adds nothing. Order is deterministic:
-// score descending, then shorter candidate, then lexical.
+// Rank returns the best matches for pattern, best first, at most limit. The
+// optional bonus adds candidate-specific score (recent picks, pinned entries).
+// Order is score descending, then shorter candidate, then lexical.
 func Rank(pattern string, candidates []string, limit int, bonus func(string) int) []string {
 	if limit <= 0 {
 		return nil

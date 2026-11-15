@@ -11,28 +11,23 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// lexerDir is the embedded directory of serialised lexer definitions.
 const lexerDir = "lexers"
 
-// lexerFS holds the lexer definitions this renderer highlights with, produced
-// from chroma's own lexers by TestEmbeddedLexersMatchChroma (run with -update
-// after a chroma upgrade). They live here rather than coming from chroma's
-// lexers package because importing that package parses all 279 of its
-// definitions during package init, and Go runs the init of every linked
-// package: `flynn --version`, `flynn mcp serve`, and a headless CI run each
-// paid 5.2ms and 2.7MB to build a syntax registry they never used. Parsing is
-// deferred to the first code block instead, and only the languages a session
-// actually meets are carried.
+// lexerFS holds the lexer definitions, produced from chroma's own by
+// TestEmbeddedLexersMatchChroma (run with -update after a chroma upgrade).
+// Chroma's lexers package parses all 279 definitions during init, which every
+// linked binary would pay (5.2ms and 2.7MB for `flynn --version`), so parsing
+// waits for the first code block and only the languages a session meets are
+// carried.
 //
 //go:embed lexers/*.xml
 var lexerFS embed.FS
 
-// lexerRegistry builds the registry on first use. chroma parses only each
-// definition's config header here; a lexer's rules are compiled lazily on its
-// first Tokenise. A definition that fails to parse is skipped rather than
-// fatal, so a corrupt file costs one language its colors instead of taking
-// down the renderer mid-stream; TestEveryEmbeddedLexerRegisters is what keeps
-// that path from being reached in a shipped build.
+// lexerRegistry builds the registry on first use, parsing only each config
+// header; rules compile on the first Tokenise. A definition that fails to parse
+// is skipped, so a corrupt file costs one language its colors instead of taking
+// down the renderer mid-stream. TestEveryEmbeddedLexerRegisters keeps a shipped
+// build off that path.
 var lexerRegistry = sync.OnceValue(func() *chroma.LexerRegistry {
 	reg := chroma.NewLexerRegistry()
 	entries, err := fs.ReadDir(lexerFS, lexerDir)
@@ -49,9 +44,9 @@ var lexerRegistry = sync.OnceValue(func() *chroma.LexerRegistry {
 	return reg
 })
 
-// Highlight renders source code as themed rows of at most width cells, using
-// the lexer registered for lang (or plain code styling when the language is
-// unknown). Code wraps hard rather than word-wraps: whitespace is content.
+// Highlight renders code as rows of at most width cells with the lexer for lang,
+// or plain code styling when it is unknown. Code wraps hard because whitespace
+// is content.
 func Highlight(th *theme.Theme, lang, code string, width int) []string {
 	if width < 1 {
 		return nil
@@ -63,15 +58,13 @@ func Highlight(th *theme.Theme, lang, code string, width int) []string {
 	return clampRows(out, width)
 }
 
-// highlightLines tokenizes code and buckets the lexer's token types into the
-// theme's syntax roles, one span list per source line. Tokenization failure
-// (or an unknown language) degrades to unstyled code, never to an error: a
-// model can emit any string as a fence info tag.
+// highlightLines buckets the lexer's token types into the theme's syntax roles,
+// one span list per source line. Tokenization failure or an unknown language
+// degrades to unstyled code, because a model can emit any string as a fence tag.
 func highlightLines(th *theme.Theme, lang, code string) [][]span {
-	// Tabs are zero-width to the cell accounting and stripped by the
-	// control-byte guard, so expand them up front to keep indentation; and
-	// normalize to valid UTF-8 so widths cannot shift after wrap points are
-	// chosen (see Markdown.Render).
+	// Tabs are zero-width and stripped by the control-byte guard, so expand them to
+	// keep indentation. Valid UTF-8 keeps widths from shifting after wrap points
+	// are chosen (see Markdown.Render).
 	code = strings.ToValidUTF8(strings.ReplaceAll(code, "\t", "    "), "�")
 	base := th.Style(theme.Code)
 	lexer := lexerRegistry().Get(lang)
@@ -101,16 +94,14 @@ func highlightLines(th *theme.Theme, lang, code string) [][]span {
 			lines[len(lines)-1] = append(lines[len(lines)-1], span{val, st})
 		}
 	}
-	// Tokenizers keep the source's trailing newlines; trim the empty lines
-	// they open so both highlighter paths agree that trailing blank lines in
-	// a code block are noise.
+	// Trim the empty lines opened by trailing newlines so both highlighter paths
+	// treat trailing blank lines as noise.
 	for len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
 	}
 	return lines
 }
 
-// plainCodeLines is the no-lexer fallback: every line one Code-styled span.
 func plainCodeLines(code string, base theme.Style) [][]span {
 	split := strings.Split(strings.TrimRight(code, "\n"), "\n")
 	out := make([][]span, len(split))
@@ -122,8 +113,7 @@ func plainCodeLines(code string, base theme.Style) [][]span {
 	return out
 }
 
-// syntaxStyle buckets a chroma token type into the theme's small syntax role
-// set. Anything unbucketed renders as plain code.
+// syntaxStyle buckets a chroma token type into a syntax role; the rest is plain.
 func syntaxStyle(th *theme.Theme, t chroma.TokenType) theme.Style {
 	switch {
 	case t == chroma.KeywordType || t == chroma.NameClass:

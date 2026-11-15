@@ -8,37 +8,32 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// FlushNodeStore is a NodeStore that can force its buffered nodes to durable storage. A
-// durable log flushes before it signs a checkpoint, so the checkpoint's size is always
-// fully backed by persisted proof nodes.
+// FlushNodeStore is a [NodeStore] that can persist its buffered nodes. A
+// checkpoint is signed only after a flush, so its size is always backed by
+// persisted proof nodes.
 type FlushNodeStore interface {
 	NodeStore
 	Flush() error
 }
 
-// CheckpointStore persists and recovers a stream's signed tree heads. A durable log
-// records its authenticated length as it grows and recovers it after a restart.
+// CheckpointStore persists and recovers a stream's signed tree heads.
 type CheckpointStore interface {
 	SaveCheckpoint(ctx context.Context, stream string, size uint64, cose []byte) error
-	// LatestCheckpoint returns the newest saved head for stream. A stream that has
-	// never been checkpointed reports ok false with a nil error, so a recorder starting
-	// on a fresh stream is not an error case it has to distinguish from a read failure.
+	// LatestCheckpoint reports ok false with a nil error for a stream never
+	// checkpointed, so a fresh stream is distinct from a read failure.
 	LatestCheckpoint(ctx context.Context, stream string) (size uint64, cose []byte, ok bool, err error)
 }
 
-// DurableRecorder wraps a spine.Log and maintains a per-stream RFC 6962 Merkle log whose
-// proof nodes are paged to durable tiles, signing a checkpoint every so often. Unlike a
-// RecordingLog, which accumulates a whole run in memory and seals it once, a
-// DurableRecorder is built for a long-lived stream: its resident state is the append
-// frontier plus the tiles not yet flushed, and its history is recovered after a restart
-// from the latest checkpoint plus the events after it. It is itself a spine.Log, so it
-// drops in wherever a Log is expected.
+// DurableRecorder wraps a [spine.Log] and keeps a per-stream RFC 6962 Merkle log
+// with proof nodes paged to durable tiles, signing a checkpoint periodically.
+// Unlike a [RecordingLog], which holds a whole run in memory, it suits a
+// long-lived stream: resident state is the append frontier plus unflushed tiles,
+// and a restart recovers from the latest checkpoint plus later events.
 //
-// Recording never fails an Append: the wrapped append is the source of truth, so a
-// recording or checkpoint error is routed to an error handler and the event is still
-// returned, exactly as the RecordingLog keeps producing events when its integrity layer
-// stumbles. A stream is caught up from the log after a transient failure, and an explicit
-// Checkpoint (used to seal a stream's tip) does surface its error.
+// Recording never fails an Append: the wrapped append is the source of truth, so
+// a recording or checkpoint error goes to the error handler and the event is
+// still returned. The stream catches up from the log after a transient failure.
+// An explicit Checkpoint does surface its error.
 type DurableRecorder struct {
 	spine.Log
 
@@ -50,29 +45,25 @@ type DurableRecorder struct {
 	onErr       func(error)
 	maxResident int
 
-	// mu guards only the streams map and the eviction tick, so a stream that is
-	// flushing tiles, signing a checkpoint, and persisting it does not block recording
-	// on any other stream. The per-stream work runs under durableStream.mu.
+	// mu guards only the streams map and the eviction tick, so one stream's
+	// checkpoint does not block another. Per-stream work runs under
+	// durableStream.mu.
 	mu      sync.Mutex
 	streams map[string]*durableStream
 	tick    uint64 // monotonic last-touch source for LRU eviction
 }
 
-// defaultMaxResident bounds how many streams' live Merkle logs a recorder keeps in
-// memory at once. A server that touches many streams over its life evicts the least
-// recently loaded rather than holding a tree per stream forever; an evicted stream
-// rebuilds from its checkpoint plus the log on the next append, so eviction is only a
-// reload cost, never a loss.
+// defaultMaxResident bounds live Merkle logs in memory. The least recently
+// touched is evicted and rebuilds on its next append, so eviction costs a
+// reload, never history.
 const defaultMaxResident = 128
 
 type durableStream struct {
-	// mu serializes this stream's record and checkpoint work (load, encode+append,
-	// flush+sign+persist). It is a per-stream lock, so different streams record
-	// concurrently; it is never held with DurableRecorder.mu, which only guards the map.
-	// A stream is a single-writer append path, so its events still fold into the tree in
-	// Seq order under this lock.
+	// mu serializes this stream's load, append and checkpoint work. Streams
+	// record concurrently, and it is never held with DurableRecorder.mu. A
+	// stream has a single writer, so events fold in Seq order.
 	mu      sync.Mutex
-	loaded  bool // tree/store are resolved from the checkpoint and the log's uncheckpointed tail
+	loaded  bool
 	tree    *Tree
 	store   FlushNodeStore
 	pending int // events recorded since the last checkpoint
@@ -82,11 +73,9 @@ type durableStream struct {
 
 var _ spine.Log = (*DurableRecorder)(nil)
 
-// NewDurableRecorder wraps inner. nodes provides the durable node store for a stream,
-// ckpts persists its checkpoints, signer signs them, and originFor maps a stream to its
-// checkpoint origin (nil uses the stream id). A checkpoint is written every `every`
-// recorded events; a non-positive `every` checkpoints only on an explicit Checkpoint
-// call.
+// NewDurableRecorder wraps inner. originFor maps a stream to its checkpoint
+// origin (nil uses the stream id). A checkpoint is written every `every` events;
+// a non-positive `every` checkpoints only on an explicit Checkpoint.
 func NewDurableRecorder(inner spine.Log, nodes func(stream string) FlushNodeStore, ckpts CheckpointStore, signer RootSigner, originFor OriginFunc, every int) *DurableRecorder {
 	return &DurableRecorder{
 		Log:         inner,
@@ -100,9 +89,8 @@ func NewDurableRecorder(inner spine.Log, nodes func(stream string) FlushNodeStor
 	}
 }
 
-// WithMaxResident overrides how many streams stay resident before the recorder evicts
-// the excess. A non-positive n disables eviction (every touched stream stays resident).
-// It returns the recorder for chaining.
+// WithMaxResident sets how many streams stay resident. A non-positive n
+// disables eviction.
 func (r *DurableRecorder) WithMaxResident(n int) *DurableRecorder {
 	r.maxResident = n
 	return r
@@ -115,17 +103,15 @@ func (r *DurableRecorder) originFor(stream string) string {
 	return stream
 }
 
-// OnError sets the handler called when best-effort recording or an automatic checkpoint
-// fails during Append. It returns the recorder for chaining. With no handler set, such an
-// error is dropped (the stream still catches up from the log later).
+// OnError sets the handler for a recording or automatic checkpoint failure
+// during Append. Without one the error is dropped.
 func (r *DurableRecorder) OnError(fn func(error)) *DurableRecorder {
 	r.onErr = fn
 	return r
 }
 
-// Append delegates to the wrapped log, then records the assigned event's leaf into its
-// stream's durable Merkle log, checkpointing when the cadence is reached. Recording is
-// best effort: a failure never fails the append, it is routed to the error handler.
+// Append delegates to the wrapped log, then records the leaf, checkpointing on
+// cadence. A recording failure never fails the append.
 func (r *DurableRecorder) Append(ctx context.Context, in spine.AppendInput) (spine.Event, error) {
 	e, err := r.Log.Append(ctx, in)
 	if err != nil {
@@ -137,10 +123,8 @@ func (r *DurableRecorder) Append(ctx context.Context, in spine.AppendInput) (spi
 	return e, nil
 }
 
-// record folds one event into its stream's durable Merkle log and checkpoints on cadence.
-// It takes the global lock only to resolve the stream's handle; the load, encode+append,
-// and any checkpoint run under that handle's own lock, so a checkpoint on one stream never
-// blocks recording on another.
+// record takes the global lock only to resolve the handle; the rest runs under
+// the stream's own lock.
 func (r *DurableRecorder) record(ctx context.Context, e spine.Event) error {
 	s := r.handle(e.Stream)
 	s.mu.Lock()
@@ -162,10 +146,8 @@ func (r *DurableRecorder) record(ctx context.Context, e spine.Event) error {
 	return nil
 }
 
-// handle returns the stream's resident record, creating an empty one on first touch, and
-// marks it most-recently-used. It holds the global lock only for the map access and
-// eviction bookkeeping; the returned handle is loaded lazily under its own lock. A handle
-// carries no tree until ensureLoaded runs, so this never does I/O under r.mu.
+// handle marks the stream most recently used. A new handle has no tree until
+// ensureLoaded runs, so this does no I/O under r.mu.
 func (r *DurableRecorder) handle(stream string) *durableStream {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -180,10 +162,9 @@ func (r *DurableRecorder) handle(stream string) *durableStream {
 	return s
 }
 
-// Checkpoint forces a signed checkpoint for a stream at its current recorded length,
-// flushing the tiles first. It is how a caller seals the tail of a stream (at the end of
-// a run, or before shutdown) so the log's full length is durably attested. A stream not
-// yet touched in this process is loaded and caught up to its tip first.
+// Checkpoint signs the stream's current length after flushing tiles, to seal a
+// tail at the end of a run or before shutdown. A stream not yet touched in this
+// process is first loaded and caught up to its tip.
 func (r *DurableRecorder) Checkpoint(ctx context.Context, stream string) error {
 	s := r.handle(stream)
 	s.mu.Lock()
@@ -194,11 +175,10 @@ func (r *DurableRecorder) Checkpoint(ctx context.Context, stream string) error {
 	return r.checkpointStream(ctx, stream, s)
 }
 
-// CheckpointAll seals the tip of every stream recorded in this process, so a graceful
-// shutdown persists the full length of each live stream. It returns the first error and
-// keeps going, so one stream's failure does not skip the rest. It snapshots the resident
-// handles under the global lock, then checkpoints each under its own lock, so the sweep
-// holds neither lock across another stream's I/O.
+// CheckpointAll seals every stream recorded in this process, for graceful
+// shutdown. It returns the first error and keeps going. It snapshots the
+// handles under the global lock, then checkpoints each under its own, so no lock
+// spans another stream's I/O.
 func (r *DurableRecorder) CheckpointAll(ctx context.Context) error {
 	r.mu.Lock()
 	type entry struct {
@@ -227,15 +207,11 @@ func (r *DurableRecorder) CheckpointAll(ctx context.Context) error {
 	return first
 }
 
-// ensureLoaded resolves the stream's live Merkle log on first touch, into the handle held
-// under s.mu. It resumes from the latest checkpoint (rebuilding the frontier from the
-// tiles) and folds in the events after it that the tiles do not yet cover, up to but
-// excluding beforeSeq. Passing the current event's Seq brings the tree exactly to the
-// state before that event, so the caller then appends it once; passing math.MaxInt64
-// catches the tree up to the stream's tip. Loading (checkpoint read, log read, and the
-// re-fold) runs under the per-stream lock, off the global lock, so a cold stream's reload
-// never blocks recording on the resident ones. It is a no-op once loaded. The caller holds
-// s.mu.
+// ensureLoaded resumes from the latest checkpoint and folds in events the tiles
+// do not cover, up to but excluding beforeSeq. The current event's Seq brings the
+// tree to just before it, so the caller appends it once; math.MaxInt64 reaches
+// the tip. It runs off the global lock, so a cold reload does not block resident
+// streams. The caller holds s.mu.
 func (r *DurableRecorder) ensureLoaded(ctx context.Context, stream string, s *durableStream, beforeSeq int64) error {
 	if s.loaded {
 		return nil
@@ -256,9 +232,7 @@ func (r *DurableRecorder) ensureLoaded(ctx context.Context, stream string, s *du
 	} else {
 		tree = NewTreeWithStore(store)
 	}
-	// Fold in events the tree does not yet cover (after the checkpoint, before the
-	// caller's event). The read is Seq-ordered, so stop at the first event at or past
-	// the exclusive bound.
+	// The read is Seq-ordered, so stop at the first event at or past the bound.
 	events, err := r.Read(ctx, spine.Query{Stream: stream, AfterSeq: afterSeq})
 	if err != nil {
 		return err
@@ -281,12 +255,9 @@ func (r *DurableRecorder) ensureLoaded(ctx context.Context, stream string, s *du
 	return nil
 }
 
-// evictExcessLocked drops resident streams beyond the cap, coldest first, never the one
-// just touched (keep). An evicted stream reloads from its checkpoint plus the log the next
-// time it is appended to, so this bounds memory without losing any history. Because a
-// stream is a single-writer append path, its next append (which triggers the reload) only
-// begins after its previous one returned, so an evicted-then-reloaded stream never has two
-// live trees over the same tiles. The caller holds r.mu.
+// evictExcessLocked drops the coldest streams beyond the cap, never keep. A
+// stream has a single writer, so its next append, which reloads it, starts after
+// the previous returned: two live trees never share tiles. The caller holds r.mu.
 func (r *DurableRecorder) evictExcessLocked(keep string) {
 	if r.maxResident <= 0 {
 		return
@@ -310,10 +281,8 @@ func (r *DurableRecorder) evictExcessLocked(keep string) {
 	}
 }
 
-// checkpointStream flushes the stream's tiles, signs its current head, and persists the
-// checkpoint. It runs the flush, signature, and two store writes without the global lock,
-// so a checkpoint on one stream does not stall appends on the others. The caller holds
-// s.mu. A stream not yet loaded (no tree) has nothing to seal.
+// checkpointStream runs without the global lock, so it does not stall other
+// streams. The caller holds s.mu. An unloaded stream has nothing to seal.
 func (r *DurableRecorder) checkpointStream(ctx context.Context, stream string, s *durableStream) error {
 	if !s.loaded || s.tree.Size() == 0 {
 		return nil

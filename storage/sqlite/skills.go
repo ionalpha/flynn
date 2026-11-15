@@ -14,16 +14,13 @@ import (
 
 type skills struct{ p *Store }
 
-// skillCols matches the skills table column order.
 const skillCols = `id, slug, name, description, body, tags, offers, reads, wins, check_cmd, scope_instance, scope_project, scope_workspace,
 	version, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
-// skillColsQualified is skillCols against the `s` alias, for the search query, which
-// joins the FTS table and so cannot use bare column names. It is a constant beside
-// skillCols rather than a list written out at the call site: the two were duplicated
-// by hand, and the copy silently fell one column behind, which scanSkill can only
-// report as an argument-count mismatch at run time.
+// skillColsQualified uses the `s` alias for the FTS join. It sits beside
+// skillCols so the two cannot drift; scanSkill would catch drift only at run
+// time.
 const skillColsQualified = `s.id, s.slug, s.name, s.description, s.body, s.tags, s.offers, s.reads, s.wins, s.check_cmd,
 	s.scope_instance, s.scope_project, s.scope_workspace,
 	s.version, s.created_at, s.updated_at,
@@ -118,8 +115,7 @@ func (s *skills) List(ctx context.Context, scope state.Scope) ([]state.Skill, er
 func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.Skill, error) {
 	q := strings.TrimSpace(query)
 	if q == "" {
-		// An empty query matches everything, ordered by slug (FTS5 rejects an
-		// empty MATCH), capped at limit.
+		// FTS5 rejects an empty MATCH, so list by slug.
 		sqlStr := `SELECT ` + skillCols + ` FROM skills WHERE deleted = 0 ORDER BY slug`
 		var (
 			rows *sql.Rows
@@ -136,8 +132,7 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 		}
 		return collectSkills(rows)
 	}
-	// Strict first, widening only on an empty answer: see recallplan.Plan. A query
-	// with no words in it has no attempts and matches nothing.
+	// A query with no words has no attempts and matches nothing.
 	for _, a := range recallplan.Plan(q) {
 		found, err := s.searchMatching(ctx, ftsMatch(a), limit)
 		if err != nil || len(found) > 0 {
@@ -147,16 +142,9 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 	return []state.Skill{}, nil
 }
 
-// searchMatching runs one attempt of a text search: the live skills match, an FTS5
-// expression, selects, best first.
-//
-// Ordered by how well the row matches, then by slug for a stable answer. A limit
-// cuts this list, so ordering it by slug would make the cap select alphabetically:
-// for a term many skills share, everything sorted after the first few is
-// unreachable however well it matches. The bm25 weights follow the columns of
-// skills_fts and say where a hit counts most: the description is what a skill
-// publishes about when to reach for it, the name is the handle, and the body is the
-// long text a stray word lands in.
+// searchMatching orders by match quality, then slug, since ordering by slug
+// alone would make the limit cut alphabetically. The bm25 weights follow
+// skills_fts columns: description highest, then name, then body.
 func (s *skills) searchMatching(ctx context.Context, match string, limit int) ([]state.Skill, error) {
 	sqlStr := `SELECT ` + skillColsQualified + `
 		FROM skills s JOIN skills_fts f ON f.skill_id = s.id
@@ -198,9 +186,7 @@ func collectSkills(rows *sql.Rows) ([]state.Skill, error) {
 	return out, rows.Err()
 }
 
-// getSkillBySlugTx loads the stored skill for (scope, slug) within tx, tombstones
-// included so an upsert over a tombstone can resurrect it (the row holds the
-// slot). It returns nil when no row exists.
+// getSkillBySlugTx includes tombstones so an upsert can resurrect one.
 func getSkillBySlugTx(ctx context.Context, tx *sql.Tx, scope state.Scope, slug string) (*state.Skill, error) {
 	row := tx.QueryRowContext(ctx,
 		`SELECT `+skillCols+` FROM skills
@@ -216,8 +202,6 @@ func getSkillBySlugTx(ctx context.Context, tx *sql.Tx, scope state.Scope, slug s
 	return &sk, nil
 }
 
-// getLiveSkillTx loads a live skill by id or slug within tx, or returns
-// ErrNotFound.
 func getLiveSkillTx(ctx context.Context, tx *sql.Tx, idOrSlug string) (state.Skill, error) {
 	row := tx.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`, idOrSlug)
 	sk, err := scanSkill(row)
@@ -235,9 +219,8 @@ func getLiveSkillTx(ctx context.Context, tx *sql.Tx, idOrSlug string) (state.Ski
 	return sk, err
 }
 
-// projectSkill writes a skill post-image: the row and its FTS index together.
-// Shared by the live command path and applyEvent (Rebuild), so both project
-// identically.
+// projectSkill writes the row and FTS entry for both the live path and
+// Rebuild, so they project identically.
 func projectSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 	if err := upsertSkillRow(ctx, tx, sk); err != nil {
 		return err
@@ -245,8 +228,7 @@ func projectSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 	return reindexSkill(ctx, tx, sk)
 }
 
-// reindexSkill rewrites a skill's FTS row so search reflects the latest content,
-// and holds an entry only while the skill is live.
+// reindexSkill keeps an FTS entry only while the skill is live.
 func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM skills_fts WHERE skill_id = ?`, sk.ID); err != nil {
 		return err

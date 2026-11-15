@@ -5,87 +5,62 @@ import (
 	"time"
 )
 
-// UsageOrigin records why a memory item was used: whether the session went and
-// found it, or whether it was already in front of the session because something
-// had pushed it there.
-//
-// The split is the whole point of the field. A store that pushes memory at a
-// session (a wake-time digest, a ride-along surfacing) destroys last-recalled-at
-// as a signal on its own, because everything pushed is "recalled" every time.
-// Decay driven by an undivided count would then protect exactly the items the
-// push already favours and starve everything else, which is rich-get-richer with
-// extra steps. Counting the two separately is what lets a selection policy ask
-// the only question worth asking: is this item earning its place, or is it only
-// here because we keep putting it here.
+// UsageOrigin records whether a session found a memory item itself or had it
+// pushed in front of it. Pushed items look recalled every time, so decay on an
+// undivided count would protect what the push already favours. Counting the
+// two apart lets a selection policy see whether an item is used for itself.
 type UsageOrigin string
 
 const (
-	// UsageOrganic is a use of an item the reader went and found - an explicit
-	// recall, or a surfaced item acted on with no push behind it.
+	// UsageOrganic is a use of an item the reader found: an explicit recall,
+	// or a surfaced item acted on with no push behind it.
 	UsageOrganic UsageOrigin = "organic"
-	// UsagePrimed is a use of an item that had already been pushed in front of
-	// the reader. It is a real use and it counts, but it is not evidence the item
-	// would have been found without the push.
+	// UsagePrimed is a use of an item already pushed at the reader. It counts,
+	// but says nothing about whether it would have been found unprompted.
 	UsagePrimed UsageOrigin = "primed"
 )
 
-// Valid reports whether o is one of the two recognised origins. There is no
-// default: a caller that records a use knows which of the two it is, and guessing
-// on their behalf would quietly corrupt the one measurement this field exists for.
+// Valid reports whether o is one of the two origins. There is no default: the
+// caller knows which it is, and a guess would corrupt the measurement.
 func (o UsageOrigin) Valid() bool { return o == UsageOrganic || o == UsagePrimed }
 
-// MemoryUsage is how one instance has used one memory item: how often it has been
-// pushed at a reader, how often it was actually used, and when each last happened.
-// It is an observation about a record, never part of the record: MemoryItem stays
-// append-only and its content hash never moves because something read it.
+// MemoryUsage is how one instance has pushed and used one memory item. It is
+// kept apart from the item, so MemoryItem stays append-only and its content
+// hash never changes on a read.
 //
-// One row per (MemoryID, InstanceID), and an instance only ever writes its own.
-// That is what makes usage safe to replicate: two instances cannot conflict on a
-// counter they do not share, so summing the rows is exact where a single shared
-// counter merged last-writer-wins would silently drop increments. It is also what
-// makes cross-instance overlap measurable at all (see Monoculture) - an aggregate
-// counter would have already thrown that away.
+// There is one row per (MemoryID, InstanceID), and an instance writes only its
+// own. Replication is then conflict-free and summing rows is exact, where a
+// shared last-writer-wins counter would drop increments; per-instance rows are
+// also what [Monoculture] needs.
 type MemoryUsage struct {
-	// MemoryID is the item this usage is about. It is a plain id, not a foreign
-	// key: usage outlives a tombstone, so a curator reviewing what got pushed and
-	// never used can still see the deleted item's record.
-	MemoryID string
-	// InstanceID is the instance whose reads this row counts.
+	// MemoryID is a plain id with no foreign key, because usage outlives a
+	// tombstone and a curator still needs the deleted item's record.
+	MemoryID   string
 	InstanceID string
-	// PushCount is how many times this instance put the item in front of a reader
-	// without being asked for it. Pushed often and used never is the signature of
-	// noise, and it is the signal a selection policy demotes on.
+	// PushCount is how often this instance put the item in front of a reader
+	// unasked. Pushed often and never used is what a selection policy demotes.
 	PushCount int64
-	// LastPushedAt is when the last push happened, zero if never.
+	// LastPushedAt is zero if never pushed.
 	LastPushedAt time.Time
-	// OrganicUses and PrimedUses split UseCount by UsageOrigin. Organic uses are
-	// the ones that say something about the item; primed uses mostly say something
-	// about the push.
+	// OrganicUses and PrimedUses split UseCount by [UsageOrigin].
 	OrganicUses int64
 	PrimedUses  int64
-	// LastUsedAt is when the item was last used, of either origin, zero if never.
-	// It is deliberately a second timestamp rather than a reuse of LastPushedAt:
-	// keeping them apart is what stops a push from looking like a read.
+	// LastUsedAt is the last use of either origin, zero if never. It is separate
+	// from LastPushedAt so a push never looks like a read.
 	LastUsedAt time.Time
 	Envelope
 }
 
-// UseCount is the total number of uses of either origin.
+// UseCount is OrganicUses plus PrimedUses.
 func (u MemoryUsage) UseCount() int64 { return u.OrganicUses + u.PrimedUses }
 
-// Ignored reports whether the item has been pushed and never used - the shape a
-// selection policy demotes and a curator reviews. It is not a deletion signal:
-// nothing in this package removes a memory item because it went unused.
+// Ignored reports whether the item was pushed and never used. Nothing in this
+// package deletes an item for it.
 func (u MemoryUsage) Ignored() bool { return u.PushCount > 0 && u.UseCount() == 0 }
 
-// TotalUsage sums per-instance rows into the fleet-wide total for one item. The
-// counters add because each instance counts only its own reads; the timestamps
-// take the latest of any instance, and InstanceID is left empty because the sum
-// belongs to no single instance.
-//
-// Rows for more than one item sum too, and the result is then meaningless, so the
-// caller is expected to group first. TotalUsage does not group for them: an
-// unasked-for grouping is how a helper ends up deciding a policy question.
+// TotalUsage sums one item's per-instance rows: counters add, timestamps take
+// the latest, and InstanceID is empty. It does not group by item, so the
+// caller must pass one item's rows; mixed rows give a meaningless sum.
 func TotalUsage(rows []MemoryUsage) MemoryUsage {
 	var out MemoryUsage
 	for _, r := range rows {
@@ -103,19 +78,14 @@ func TotalUsage(rows []MemoryUsage) MemoryUsage {
 	return out
 }
 
-// Monoculture is how alike the pushed sets of different instances are, as the mean
-// pairwise Jaccard similarity over rows with a push on them: 0 when no two
-// instances have pushed the same item, 1 when every instance pushes exactly the
-// same set.
+// Monoculture is the mean pairwise Jaccard similarity of instances' pushed
+// sets, in [0, 1]: 1 means every instance pushes the same set. A value rising
+// toward 1 over a corpus that is not shrinking means the selection policy is
+// homogenizing the fleet.
 //
-// It checks the selection policy, not the memory: a policy that homogenizes a
-// fleet gives every instance the same handful of facts, and a number climbing
-// toward 1 over a corpus that is not shrinking is the policy's problem.
-//
-// Fewer than two instances with pushes returns 0, not 1: there is no overlap to
-// measure, and 1 would read as maximum monoculture where the metric means
-// nothing. It measures instances, the identity this store records, so several
-// agents inside one instance count as one and the metric under-reports for it.
+// Fewer than two pushing instances returns 0, since there is no overlap to
+// measure. Agents sharing one instance count as one, so it under-reports
+// there.
 func Monoculture(rows []MemoryUsage) float64 {
 	sets := map[string]map[string]bool{}
 	for _, r := range rows {
@@ -146,8 +116,8 @@ func Monoculture(rows []MemoryUsage) float64 {
 	return sum / float64(pairs)
 }
 
-// jaccard is the size of the intersection over the size of the union. Both sets
-// are non-empty by construction here, so the union is never zero.
+// jaccard is |a and b| over |a or b|; both sets are non-empty, so the union
+// is never zero.
 func jaccard(a, b map[string]bool) float64 {
 	var inter int
 	for k := range a {
@@ -159,8 +129,8 @@ func jaccard(a, b map[string]bool) float64 {
 	return float64(inter) / float64(union)
 }
 
-// SortUsage orders usage rows by item then instance, so every backend returns one
-// deterministic order.
+// SortUsage orders rows by item then instance, so every backend returns the
+// same order.
 func SortUsage(rows []MemoryUsage) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].MemoryID != rows[j].MemoryID {

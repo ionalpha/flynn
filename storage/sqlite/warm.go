@@ -1,23 +1,14 @@
 package sqlite
 
-// The warm tier. A payload body starts life in the hot `blobs` table (content-addressed,
-// deduped, verbatim). Once every event that references it has been sealed under a
-// checkpoint - so the body belongs to closed, provable history and will not be appended
-// to again - ArchiveSealedBlobs relocates it into the warm store: a separate SQLite file
-// holding the same content-addressed bodies zstd-compressed. The hot file then keeps only
-// the bodies of unsealed (recent) events, so its footprint tracks the working set rather
-// than all history, while the full record stays reachable: a read that misses the hot
-// `blobs` table falls back to the warm store and decompresses (see spine.go Read).
+// The warm tier holds payload bodies whose every referencing event is sealed
+// under a checkpoint, zstd-compressed in a separate SQLite file, so the hot
+// file tracks the working set. A hot miss falls back to warm.
 //
-// Relocation is copy-then-delete, never move-in-place, and both halves are idempotent by
-// content id. A body is written to warm first and only deleted from hot once it is present
-// in warm, so a crash between the two leaves the body in BOTH stores (harmless - the hot
-// read wins) and never in neither. A reader concurrent with archival always resolves the
-// body: from hot until the delete commits, from warm after. Because the body is addressed
-// by its own SHA-256 and the event envelope commits to that id, moving where it is stored
-// changes nothing the Merkle tree signed - a warm body rehydrates to the exact bytes the
-// chain already proved, and a warm store that has lost or corrupted a body is DETECTABLE
-// (the id names what is missing), never a silent gap.
+// Relocation copies to warm, then deletes from hot, idempotently by content
+// id: a crash between leaves the body in both, never neither, and a concurrent
+// reader always finds it. Bodies are addressed by the SHA-256 the envelope
+// commits to, so moving one changes nothing the Merkle tree signed, and a lost
+// warm body is detectable by its id.
 
 import (
 	"context"
@@ -32,25 +23,18 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// warmStore is the compressed archive of sealed payload bodies, backed by its own SQLite
-// file so it can live on cheaper or loss-tolerant storage than the hot database and its
-// bytes never inflate the hot file. It holds a single content-addressed table; a lost warm
-// file costs replayability of archived history, never the verifiability of the log, so it
-// runs with the same crash-safe-but-relaxed durability as the hot store.
+// warmStore has its own file so it can sit on cheaper storage. Losing it costs
+// replay of archived history, never verifiability of the log.
 type warmStore struct {
 	db *sql.DB
 }
 
-// warmDSNSuffix names the warm file beside the hot one (e.g. "flynn.db" -> "flynn.db.warm").
-// A ":memory:" hot store gets a distinct ":memory:" warm store, which persists for the
-// process on its single connection just as the hot in-memory store does.
+// warmDSNSuffix names the warm file beside the hot one: "flynn.db.warm".
 const warmDSNSuffix = ".warm"
 
-// warmSchema is the warm store's one table. `body` holds the zstd-compressed bytes;
-// `size` is the ORIGINAL byte length (what the hot `blobs.size` held before relocation),
-// kept so warm accounting and the rehydrated-length check need no decompress; `packed` is
-// the compressed length, for the compression-ratio report. `refs` carries the hot refcount
-// across so a later cold tier or GC keeps the same content-addressed sharing invariant.
+// warmSchema: `size` is the uncompressed length, so accounting and the length
+// check need no decompress; `packed` is the compressed length; `refs` carries
+// the hot refcount so later tiers keep content-addressed sharing.
 const warmSchema = `CREATE TABLE IF NOT EXISTS warm_blobs (
   content_id TEXT    NOT NULL PRIMARY KEY,
   body       BLOB    NOT NULL,
@@ -59,8 +43,8 @@ const warmSchema = `CREATE TABLE IF NOT EXISTS warm_blobs (
   refs       INTEGER NOT NULL DEFAULT 0
 )`
 
-// warmDSN derives the warm store's dsn from the hot store's. A ":memory:" hot store maps to
-// ":memory:" (a separate in-process database), any file path to that path plus the suffix.
+// warmDSN maps ":memory:" to a separate ":memory:" database and a path to
+// path plus warmDSNSuffix.
 func warmDSN(hotDSN string) string {
 	if hotDSN == ":memory:" {
 		return ":memory:"
@@ -68,11 +52,8 @@ func warmDSN(hotDSN string) string {
 	return hotDSN + warmDSNSuffix
 }
 
-// openWarm opens (creating if needed) the warm store beside the hot database and ensures
-// its table exists. It uses the same relaxed-but-crash-safe WAL pragmas as the hot store
-// and a single connection: warm writes are the low-rate archival sweep, warm reads are the
-// rare replay-of-archived-history fallback, so one connection is ample and keeps a
-// ":memory:" warm store alive with a consistent view.
+// openWarm uses one connection: warm traffic is a slow sweep and rare
+// fallback reads, and one connection keeps ":memory:" alive.
 func openWarm(ctx context.Context, hotDSN string) (*warmStore, error) {
 	dsn := warmDSN(hotDSN)
 	db, err := sql.Open("sqlite", dsn+warmPragmas+sqlitex.WriteTxLock)
@@ -87,16 +68,11 @@ func openWarm(ctx context.Context, hotDSN string) (*warmStore, error) {
 	return &warmStore{db: db}, nil
 }
 
-// warmPragmas mirrors the hot store's write-side configuration (WAL, relaxed fsync, wait on
-// a lock); the warm store declares no foreign keys and needs no read pool, so it omits
-// query_only and the pool-only tuning.
+// warmPragmas mirrors the hot store's write side, minus read-pool tuning.
 const warmPragmas = "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 
-// put writes one compressed body under its content id, idempotently: re-archiving a body
-// already present overwrites it with the same bytes and refreshes its refcount, so a
-// retried or crash-resumed sweep converges rather than erroring. It runs on the warm store
-// alone (a different database than the hot transaction), which is why relocation copies
-// here first and only then deletes from hot.
+// put is idempotent, so a resumed sweep converges. It cannot join the hot
+// transaction, which is why relocation copies before deleting.
 func (w *warmStore) put(ctx context.Context, contentID string, packed []byte, size, refs int64) error {
 	_, err := w.db.ExecContext(ctx,
 		`INSERT INTO warm_blobs (content_id, body, size, packed, refs) VALUES (?, ?, ?, ?, ?)
@@ -109,10 +85,8 @@ func (w *warmStore) put(ctx context.Context, contentID string, packed []byte, si
 	return nil
 }
 
-// get returns the decompressed body for a content id and whether it was present. A missing
-// id is (nil, false, nil) so the caller can distinguish "not in warm" (try elsewhere, or
-// report which id is absent) from a decode failure (a corrupt warm record, returned as an
-// error rather than wrong bytes).
+// get returns (nil, false, nil) for a missing id, distinct from the error a
+// corrupt record returns.
 func (w *warmStore) get(ctx context.Context, contentID string) ([]byte, bool, error) {
 	var packed []byte
 	err := w.db.QueryRowContext(ctx, `SELECT body FROM warm_blobs WHERE content_id = ?`, contentID).Scan(&packed)
@@ -129,8 +103,7 @@ func (w *warmStore) get(ctx context.Context, contentID string) ([]byte, bool, er
 	return raw, true, nil
 }
 
-// has reports whether a content id is present in the warm store, without decompressing.
-// Relocation uses it to delete a body from hot only once its warm copy is durable.
+// has lets relocation confirm a warm copy before deleting from hot.
 func (w *warmStore) has(ctx context.Context, contentID string) (bool, error) {
 	var one int
 	err := w.db.QueryRowContext(ctx, `SELECT 1 FROM warm_blobs WHERE content_id = ?`, contentID).Scan(&one)
@@ -143,13 +116,10 @@ func (w *warmStore) has(ctx context.Context, contentID string) (bool, error) {
 	return true, nil
 }
 
-// close closes the warm store's database.
 func (w *warmStore) close() error { return w.db.Close() }
 
-// WarmBlobStats reports the warm store's accounting: the number of bodies archived, their
-// original (uncompressed) total bytes, and their compressed total bytes. The ratio of the
-// two is the warm-tier compression report the size gate reads; distinct-versus-referenced
-// dedup is unchanged from the hot tier and reported there.
+// WarmBlobStats reports archived bodies and their uncompressed and compressed
+// bytes, the ratio the size gate reads.
 func (s *Store) WarmBlobStats(ctx context.Context) (count, rawBytes, packedBytes int64, err error) {
 	if s.warm == nil {
 		return 0, 0, 0, nil
@@ -160,13 +130,9 @@ func (s *Store) WarmBlobStats(ctx context.Context) (count, rawBytes, packedBytes
 	return count, rawBytes, packedBytes, err
 }
 
-// sealedBlobsSelectSQL selects the hot bodies eligible to relocate to warm: every event
-// that references the body sits at or below its stream's highest checkpoint size, so the
-// body belongs entirely to sealed history and no future append can add a reference to it.
-// A stream with no checkpoint has sealed size 0, so its bodies are never eligible - the
-// tier only ever moves what is provably closed. The NOT EXISTS names an unsealed reference
-// as the disqualifier, so a body shared across streams waits until it is sealed in all of
-// them.
+// sealedBlobsSelectSQL selects bodies with no reference above its stream's
+// latest checkpoint. A stream with no checkpoint seals nothing, and a body
+// shared across streams waits until sealed in all.
 //
 // The `payload_blob != ”` term is redundant with the join (a content id is never empty)
 // but explicit: it lets SQLite prove the query implies the partial index's predicate, so
@@ -180,8 +146,6 @@ const sealedBlobsSelectSQL = `SELECT b.content_id, b.body, b.size, b.refs
 		  AND e.seq > COALESCE((SELECT MAX(size) FROM checkpoints c WHERE c.stream = e.stream), 0)
 	)`
 
-// sealedBlob is one hot body eligible to relocate: its content id, raw bytes, original
-// (uncompressed) size, and hot reference count.
 type sealedBlob struct {
 	id   string
 	raw  []byte
@@ -189,9 +153,8 @@ type sealedBlob struct {
 	refs int64
 }
 
-// selectSealedBlobs reads the hot bodies whose every referencing event is sealed (see
-// sealedBlobsSelectSQL). It runs on the read pool and materializes the result before the
-// write phase, so the archival sweep holds no read cursor while it mutates the hot store.
+// selectSealedBlobs materializes its result so the sweep holds no read cursor
+// while it mutates the hot store.
 func (s *Store) selectSealedBlobs(ctx context.Context) ([]sealedBlob, error) {
 	rows, err := s.reads().QueryContext(ctx, sealedBlobsSelectSQL)
 	if err != nil {
@@ -209,20 +172,11 @@ func (s *Store) selectSealedBlobs(ctx context.Context) ([]sealedBlob, error) {
 	return eligible, rows.Err()
 }
 
-// ArchiveSealedBlobs relocates every hot payload body whose referencing events are all
-// sealed into the warm store, compressed, records the relocation as one governed retention
-// event, and returns how many bodies moved. Afterwards the hot `blobs` table holds only
-// bodies referenced by unsealed events, so its footprint tracks the working set.
-//
-// Two phases make the mutation atomic with its audit record. First every eligible body is
-// copied to warm (idempotent by content id) and confirmed durable. Then, in one write
-// transaction, the confirmed bodies are deleted from hot and a RetentionArchived event
-// (count, bytes, a manifest digest of which bodies moved) is appended to the retention
-// stream, so a reader never sees bodies relocated with no event explaining where they went.
-//
-// A crash after phase one leaves the bodies in both stores (the hot read wins) and no event;
-// the retried sweep completes phase two. A crash inside phase two rolls back. A body is addressed by its SHA-256, which the envelope commits to,
-// so the warm copy rehydrates to identical bytes. A sweep that moves nothing records nothing.
+// ArchiveSealedBlobs moves sealed bodies to warm and returns the count. Each
+// body is copied and confirmed first; then one transaction deletes them from
+// hot and appends a RetentionArchived event with a manifest digest, so no
+// body moves unrecorded. A crash between phases leaves both copies and no
+// event, and a retry finishes. A sweep that moves nothing records nothing.
 func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 	if s.warm == nil {
 		return 0, nil
@@ -232,9 +186,7 @@ func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 		return 0, err
 	}
 
-	// Phase one: copy each eligible body to warm and confirm it is durable there before it
-	// becomes a candidate for deletion from hot. A body warm reports absent after a put is
-	// left hot rather than deleted into a gap.
+	// Phase one: a body warm reports absent after put stays hot.
 	var (
 		confirmed           []sealedBlob
 		hotBytes, warmBytes int64
@@ -259,8 +211,7 @@ func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 		return 0, nil
 	}
 
-	// Phase two: delete the confirmed bodies from hot and record the tiering action, both
-	// in one transaction so the mutation and its audit record commit together.
+	// Phase two: delete and record in one transaction.
 	ids := make([]string, len(confirmed))
 	for i, b := range confirmed {
 		ids[i] = b.id
@@ -280,10 +231,8 @@ func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 	return len(confirmed), nil
 }
 
-// retentionArchivedEvent builds the governed event recording one hot->warm relocation: the
-// action, the destination tier, the body and byte counts, and the manifest digest over the
-// moved content ids. Its payload is small and self-describing, so it is appended inline
-// (see appendControlTx) and never itself externalized into the tier it governs.
+// retentionArchivedEvent's payload is small and always inline, never
+// externalized into the tier it records.
 func retentionArchivedEvent(ids []string, hotBytes, warmBytes int64) spine.AppendInput {
 	return spine.AppendInput{
 		Stream: chain.RetentionStream,

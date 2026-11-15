@@ -1,13 +1,7 @@
-// Package spine is the agent's canonical event log: one durable, ordered,
-// replayable stream of events per run. It is the single source of truth from
-// which state, audit, metrics, replay, and live progress are all derived - the
-// "event spine" the architecture is built around.
-//
-// Generalising the orchestration event spine into this foundation is the single
-// biggest refactor-avoider: checkpoint/replay, rollback, monitoring, and
-// human-in-the-loop approvals all project from one log instead of parallel,
-// drifting ones. The durable SQLite Log (storage/sqlite) implements these
-// semantics; MemoryLog is the in-memory reference they are matched against.
+// Package spine is the agent's event log: one ordered, append-only, replayable
+// stream per run, from which state, audit, metrics, replay and live progress
+// are all folded. storage/sqlite holds the durable [Log]; [MemoryLog] is the
+// reference it is matched against.
 package spine
 
 import (
@@ -23,22 +17,20 @@ import (
 type ActorType string
 
 const (
-	// ActorAgent is the agent itself (a worker or coordinator run).
+	// ActorAgent is a worker or coordinator run.
 	ActorAgent ActorType = "agent"
-	// ActorHuman is a person (an approval, a correction, an instruction).
+	// ActorHuman is a person: an approval, a correction, an instruction.
 	ActorHuman ActorType = "human"
-	// ActorSystem is the runtime (scheduling, heartbeats, lifecycle).
+	// ActorSystem is the runtime: scheduling, heartbeats, lifecycle.
 	ActorSystem ActorType = "system"
 )
 
-// DefaultSchemaVersion is the version stamped on an event whose SchemaVersion is
-// left unset (0) at append time. It is the baseline shape every event type starts
-// at, so existing logs and callers that do not yet care about versioning all read
-// as version 1.
+// DefaultSchemaVersion is stamped on an event appended with SchemaVersion 0, so
+// every event type starts at version 1.
 const DefaultSchemaVersion = 1
 
-// Event is one immutable, ordered record on a stream. Seq is monotonic within a
-// stream; events are never mutated or deleted.
+// Event is one record on a stream. Seq is monotonic within a stream; events are
+// never mutated or deleted.
 type Event struct {
 	Stream  string
 	Seq     int64
@@ -47,45 +39,34 @@ type Event struct {
 	Actor   ActorType
 	Payload map[string]any
 
-	// SchemaVersion is the version of this event's payload shape for its Type.
-	// Because Payload is a map, adding a key is backward compatible, but renaming,
-	// removing, or retyping one is not. The version lets newer code recognise an
-	// older payload and migrate it (see UpcastRegistry) instead of misreading it.
-	// The log stamps an unset (0) version to DefaultSchemaVersion on append, so
-	// every stored event carries an explicit version.
+	// SchemaVersion is the payload shape for Type. Adding a key needs no bump;
+	// renaming, removing or retyping one does, with an [Upcaster] so older
+	// events are migrated instead of misread. Never 0 once stored.
 	SchemaVersion int
 
-	// Trace linkage cross-references the OpenTelemetry span layer so ops traces
-	// and the semantic spine line up. May be empty until the tracing adapter
-	// populates them. CausationID is the event (or span) that caused this one,
-	// enabling exact causal replay.
+	// TraceID and SpanID line the event up with its OpenTelemetry span and may
+	// be empty. CausationID is the event or span that caused this one.
 	TraceID     string
 	SpanID      string
 	CausationID string
 
-	// OriginInstanceID is the instance that first produced this event. Set from
-	// the start so multi-instance (fleet/P2P) sync never forces an ID refactor.
+	// OriginInstanceID is the instance that first produced the event, so fleet
+	// sync can attribute it.
 	OriginInstanceID string
 
-	// Principal is the identity on whose authority the event was produced: which
-	// agent in a fan-out, or which human in a multi-user host. It is the audit
-	// "who", distinct from the coarse Actor kind (agent/human/system). Empty means
-	// the standalone agent itself. Carried from the start so multi-agent and
-	// multi-user attribution never forces an event-schema migration.
+	// Principal is the identity whose authority produced the event: which agent
+	// in a fan-out, or which human in a multi-user host. Actor is only the kind.
+	// Empty means the standalone agent.
 	Principal string
 }
 
-// AppendInput appends one event to a stream. The Log assigns Seq, assigns Time
-// from its clock when Time is zero, and stamps SchemaVersion to
-// DefaultSchemaVersion when it is left unset (0).
+// AppendInput is one event to append. The Log assigns Seq, fills a zero Time
+// from its clock and a zero SchemaVersion with [DefaultSchemaVersion].
 //
-// The payload is supplied in exactly one of two forms. Payload is the decoded
-// form. RawPayload is its pre-encoded form: the JSON encoding of a single object,
-// produced by a caller that already serialized its record once (a stamper) so the
-// log does not re-encode it. A log stores the same bytes either way and always
-// returns the decoded form on Event.Payload, so which form a producer used is
-// unobservable downstream (readers, folds, and the canonical chain encoding see
-// one shape). Setting both is a contract violation and Append rejects it.
+// Set at most one of Payload and RawPayload. RawPayload is the JSON of one
+// object, for a producer that has already encoded it. The log stores the same
+// bytes either way and returns the decoded form, so readers, folds and the
+// chain encoding cannot tell which was used.
 type AppendInput struct {
 	Stream           string
 	Type             string
@@ -101,20 +82,14 @@ type AppendInput struct {
 	Principal        string
 }
 
-// ErrPayloadConflict is returned by Append when an AppendInput carries both the
-// decoded Payload and the pre-encoded RawPayload; a producer must pick one form.
+// ErrPayloadConflict is returned when an AppendInput sets both Payload and
+// RawPayload.
 var ErrPayloadConflict = errors.New("spine: AppendInput sets both Payload and RawPayload")
 
-// Materialize builds the stored Event for this input at seq, applying the Log's
-// defaulting rules - an unset Time is stamped from clk (as UTC), an unset
-// SchemaVersion becomes DefaultSchemaVersion - and returns the payload in its
-// canonical stored-bytes form alongside it: RawPayload verbatim when the producer
-// pre-encoded it, else the JSON encoding of Payload. A durable backend stores
-// those bytes and assigns Seq itself (the in-memory log counts under its lock; the
-// SQLite log passes 0 and stamps Event.Seq from the row the database assigns), so
-// both logs build their returned Event through this one method and a new Event
-// field is threaded here once instead of in every backend. Setting both Payload
-// and RawPayload is a contract violation and returns ErrPayloadConflict.
+// Materialize builds the stored Event at seq with the defaults applied (Time in
+// UTC) and the bytes to store: RawPayload verbatim, else Payload's JSON. Every
+// Log backend builds its Event here, so a new Event field is added once. A
+// backend whose database assigns Seq passes 0 and sets Event.Seq itself.
 func (in AppendInput) Materialize(clk clock.Clock, seq int64) (Event, json.RawMessage, error) {
 	if in.Payload != nil && len(in.RawPayload) > 0 {
 		return Event{}, nil, ErrPayloadConflict
@@ -138,9 +113,7 @@ func (in AppendInput) Materialize(clk clock.Clock, seq int64) (Event, json.RawMe
 			return Event{}, nil, err
 		}
 	default:
-		// A decoded Payload is marshalled to the stored bytes; a nil Payload
-		// encodes as "null", matching what a RawPayload-free append has always
-		// stored, so an event with no payload round-trips to a nil Payload.
+		// A nil Payload stores "null" and reads back as nil.
 		decoded = in.Payload
 		b, err := json.Marshal(in.Payload)
 		if err != nil {
@@ -165,9 +138,8 @@ func (in AppendInput) Materialize(clk clock.Clock, seq int64) (Event, json.RawMe
 	return e, raw, nil
 }
 
-// clonePayload shallow-copies a payload map so a stored or returned event is
-// decoupled from the caller's map (an event is immutable). Nested values are
-// shared and must be treated as read-only.
+// clonePayload shallow-copies p so the caller's map cannot change a stored
+// event. Nested values are shared and must be treated as read-only.
 func clonePayload(p map[string]any) map[string]any {
 	if p == nil {
 		return nil
@@ -186,11 +158,10 @@ type Query struct {
 	Limit    int   // <= 0 means no limit
 }
 
-// Log is the append-only event store - the spine port. Append assigns a
-// monotonic Seq within a stream; Read returns events in Seq order. It also keeps
-// stream snapshots: materialized checkpoints a Fold resumes from so reading state
-// stays fast as a stream grows without bound (see Snapshot). A host supplies a
-// durable implementation; the agent ships MemoryLog.
+// Log is the append-only event store. Append assigns a monotonic Seq within a
+// stream; Read returns events in Seq order. It also keeps the [Snapshot]s a
+// Fold resumes from. A host supplies a durable Log; the agent ships
+// [MemoryLog].
 type Log interface {
 	Append(ctx context.Context, in AppendInput) (Event, error)
 	Read(ctx context.Context, q Query) ([]Event, error)
@@ -202,9 +173,8 @@ type Log interface {
 	LatestSnapshot(ctx context.Context, stream string, upToSeq int64) (Snapshot, bool, error)
 }
 
-// Fold replays events through a reducer to project state: state is a function of
-// the log. This is the core of the event-sourcing foundation - every view
-// (progress, metrics, the current session) is a Fold over the spine.
+// Fold replays events through reduce. Every view (progress, metrics, the
+// current session) is a Fold over the log.
 func Fold[S any](events []Event, initial S, reduce func(S, Event) S) S {
 	state := initial
 	for _, e := range events {
