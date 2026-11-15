@@ -10,35 +10,4 @@
 # violation left, so a change that fixes comments lowers or deletes the
 # lines it fixed. Never add a line or raise a count: fix the comment.
 chain/conformance/crypto.go length 1
-inbox/triage.go matters 1
 internal/conformtest/conformtest.go deliberately 2
-memory/consolidate/consolidate.go matters 1
-memory/curate/curate.go filler 1
-memory/digest/builder.go matters 1
-memory/digest/digest.go deliberately 3
-memory/digest/digest.go filler 1
-memory/digest/digest.go length 1
-memory/distil/govern.go deliberately 1
-memory/guard/guard.go deliberately 1
-memory/guard/taint.go deliberately 1
-memory/hybrid/hybrid.go deliberately 1
-memory/memorytest/memorytest.go deliberately 4
-memory/memorytest/memorytest.go filler 5
-memory/memorytest/memorytest.go matters 1
-memory/ridealong/ridealong.go deliberately 1
-memory/usage.go filler 1
-notices/applies.go matters 1
-notices/client.go deliberately 1
-notices/doc.go deliberately 1
-notices/feed.go filler 2
-notices/feed.go matters 1
-notices/fetch.go deliberately 1
-notices/keyring.go deliberately 2
-notices/store.go filler 1
-skill/pack.go length 1
-skill/skillmd/load.go length 1
-skill/skillmd/load.go matters 1
-skill/skillmd/skillmd.go deliberately 2
-skill/skillmd/skillmd.go filler 1
-skill/skillmd/write.go deliberately 2
-skill/skillrecall/skillrecall.go deliberately 1
