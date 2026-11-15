@@ -6,42 +6,23 @@ import (
 	"strings"
 )
 
-// Resolving a thread is a write the model never makes.
-//
-// A reviewer that could resolve conversations on request could be argued into closing
-// the one finding that mattered. So there is no resolve tool: the verdict resolves,
-// deterministically, from what the run actually found. The rule below is the whole of
-// the reviewer's authority to close a conversation, and it is readable in one screen
-// on purpose.
-
-// sameLogin reports whether two logins name the same actor.
-//
-// The two GitHub APIs disagree about a bot's name. REST reports an App's login with
-// the suffix ("vouchbot[bot]"), which is what a reviewer is configured with and what
-// appears on a pull request. GraphQL reports the Bot actor's login without it
-// ("vouchbot"). Comparing them literally makes a reviewer a stranger to its own
-// conversations, and it resolves nothing, silently: every thread simply looks like
-// somebody else's. The suffix is not part of the identity, so it is not compared.
+// sameLogin ignores a "[bot]" suffix, because REST reports an App's login with
+// it ("vouchbot[bot]") and GraphQL without it ("vouchbot"). A literal compare
+// would make every one of the reviewer's threads look like someone else's.
 func sameLogin(a, b string) bool {
 	return strings.TrimSuffix(a, "[bot]") == strings.TrimSuffix(b, "[bot]")
 }
 
-// resolvableThread reports whether the reviewer may close this thread, and why not
-// when it may not. The reason is returned for the error path and for tests: a rule
-// this consequential should be able to say which clause refused.
+// resolvableThread is the reviewer's whole authority to close a thread. No tool
+// resolves on request, so the model cannot be argued into closing a live
+// finding. The returned reason names the clause that refused.
 //
-// found is the set of markers the run posted or updated. A finding still present is a
-// finding still open, whatever GitHub thinks about the diff hunk moving.
-//
-// self is the reviewer's own login. The marker alone does not establish who wrote a
-// comment: it is plain text in a body anyone can read and copy, so a person quoting a
-// finding back at the reviewer would be quoting the key to their own conversation. The
-// author is the fact; the marker only says which finding the thread belongs to.
+// found holds the markers this run posted or updated; those stay open even if
+// GitHub marks the hunk outdated. The author is checked against self because
+// anyone can copy a marker.
 func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool, string) {
 	switch {
 	case self == "":
-		// Without an identity there is nothing to compare the author against, so the
-		// reviewer cannot tell its own conversation from anyone else's, and closes none.
 		return false, "the reviewer has no identity to check the author against"
 	case !sameLogin(t.Author, self):
 		return false, "opened by someone else"
@@ -51,46 +32,29 @@ func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool,
 	case t.Resolved:
 		return false, "already resolved"
 	case t.Truncated:
-		// More comments than were read, so whether anybody replied is unknown. Silence is
-		// only evidence when the whole conversation was heard.
+		// An unread comment may be a reply.
 		return false, "the conversation is longer than one page"
 	case t.Participants > 1:
-		// Someone replied. A bot closing a conversation under a person talking in it is
-		// worse than a stale comment: it destroys the reply's context and reads as the
-		// bot overruling them.
+		// Closing under a person's reply hides its context.
 		return false, "someone replied"
 	case found[t.Marker]:
 		return false, "the finding was raised again in this review"
 	case t.Outdated:
-		// GitHub's own judgement: the diff hunk this thread is anchored to no longer
-		// matches the head. The code it objected to is gone.
+		// GitHub says the anchored hunk no longer matches the head.
 		return true, ""
 	default:
-		// The reviewer read the whole diff and did not raise this finding again, so the
-		// defect it described is no longer there. The caller has already established that
-		// the diff arrived complete; without that, absence would mean nothing.
-		//
-		// This reads a silence, so the silence has to mean something. The reviewer's
-		// standing instruction, and both tool descriptions, tell it to post again every
-		// finding whose defect is still present, and the comment tool updates the existing
-		// comment rather than opening a second conversation. Without that contract, a
-		// reviewer told not to repeat itself would say nothing about a live defect and
-		// watch its own objection be retracted.
+		// The caller checked the diff was complete and the finding was not
+		// reposted, so the defect is gone. This relies on the tool descriptions
+		// telling the reviewer to repost every live finding.
 		return true, ""
 	}
 }
 
-// resolveStaleThreads closes the reviewer's own threads whose findings are gone, and
-// reports how many it closed.
-//
-// diffComplete gates the whole operation. A finding can be absent from a review
-// because the author fixed it, or because the diff arrived truncated and the reviewer
-// never saw the code. Those are indistinguishable from here, and resolving on absence
-// alone would eventually close a live defect on a large pull request. This is the same
-// invariant github_submit_review enforces before it will approve, for the same reason:
-// a claim about a diff nobody read is a false claim.
-// posted is the set of findings this review raised, passed in rather than read back
-// from the Set: submitting the verdict ends the review and takes its record with it.
+// resolveStaleThreads closes the reviewer's threads whose findings are gone and
+// returns the count. It does nothing unless diffComplete, because a finding
+// missing from a truncated diff may still be live (the rule behind
+// ErrIncompleteDiff). posted is passed in because the verdict has already
+// taken the Set's record.
 func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete bool, posted []ReviewComment) (int, error) {
 	if !diffComplete {
 		return 0, nil
@@ -116,18 +80,12 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 		if ok, _ := resolvableThread(t, self, found); !ok {
 			continue
 		}
-		// Resolving needs write access to the repository. A reviewer granted only
-		// pull_requests:write cannot resolve, and GitHub says so per thread rather than
-		// leaving it to be discovered as a 403. Where it may not resolve, it retracts the
-		// finding the way it can: it folds its own comment away, marked outdated. That
-		// leaves the conversation on the record and leaves it unresolved, so a repository
-		// requiring resolution still waits for someone who can.
+		// Resolving needs repository write access, which pull_requests:write lacks;
+		// GitHub reports it per thread. Without it the comments are minimized as
+		// outdated, and the thread stays unresolved for someone who can.
 		if t.CanResolve {
 			if err := s.client.resolveThread(ctx, t.ID); err != nil {
-				// Report the failure rather than swallowing it. An unresolved thread blocks
-				// the merge on any repository that requires thread resolution, so a reviewer
-				// that quietly failed to close its own conversations would look like it had
-				// wedged the pull request for no reason.
+				// Reported because an unresolved thread can block the merge.
 				return resolved, fmt.Errorf("resolve thread: %w", err)
 			}
 			resolved++
@@ -149,12 +107,8 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 	return resolved, nil
 }
 
-// selfLogin returns the login this reviewer acts as, asking GitHub once and caching it.
-//
-// Config.SelfLogin overrides it, for a host that knows better. Otherwise the credential
-// is asked who it belongs to, because a reviewer that does not know its own name cannot
-// tell its own comments from a maintainer's, and every authorship check below it would
-// have to be skipped or guessed.
+// selfLogin returns Config.SelfLogin, or asks GitHub once and caches the answer.
+// Every authorship check depends on it.
 func (s *Set) selfLogin(ctx context.Context) (string, error) {
 	if s.cfg.SelfLogin != "" {
 		return s.cfg.SelfLogin, nil

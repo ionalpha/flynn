@@ -18,36 +18,30 @@ var ErrNotFound = errors.New("credential: not found")
 // ErrInvalid is returned when a credential is missing a required field.
 var ErrInvalid = errors.New("credential: invalid")
 
-// Store is the typed credential facade over a resource.Store. Credentials live in
-// one scope (the instance's), addressed by "<integration>/<name>"; the facade keeps
-// the single-default-per-integration invariant and resolves a selection reference to
-// a concrete credential.
+// Store keeps credentials in the instance scope and holds the invariant that an
+// integration has at most one default.
 type Store struct {
 	rs    resource.Store
 	scope resource.Scope
-	// mu serializes the read-modify-write operations that maintain the
-	// single-default-per-integration invariant (Put and SetDefault), so two concurrent
-	// default writes cannot interleave and leave an integration with two defaults.
+	// mu serializes Put and SetDefault so two concurrent default writes cannot
+	// leave an integration with two defaults.
 	mu sync.Mutex
 }
 
-// NewStore returns a credential facade over rs. The caller must have registered the
-// Credential kind with the registry rs admits against (see RegisterKind).
+// NewStore returns a Store over rs, whose registry must already hold the kind
+// (see [RegisterKind]).
 func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 
-// Put creates or updates a credential. When the credential is marked default, any
-// other default for the same integration is cleared first, so an integration always
-// has at most one default. The secret value is not touched here: a credential is
-// metadata, and the value is written to the vault separately under the credential's
-// Ref.
+// Put creates or updates a credential. A new default clears the integration's
+// other defaults. The vault is not touched; the caller writes the value under
+// [Credential.Ref].
 func (s *Store) Put(ctx context.Context, spec Spec) (Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putChecked(ctx, spec)
 }
 
-// putChecked validates a spec and applies the default invariant. The caller holds
-// s.mu, so the clear-then-write is atomic against other invariant operations.
+// putChecked runs with s.mu held.
 func (s *Store) putChecked(ctx context.Context, spec Spec) (Credential, error) {
 	if spec.Integration == "" || spec.Name == "" {
 		return Credential{}, fmt.Errorf("%w: a credential needs an integration and a name", ErrInvalid)
@@ -75,7 +69,7 @@ func (s *Store) putChecked(ctx context.Context, spec Spec) (Credential, error) {
 	return s.put(ctx, spec)
 }
 
-// Get returns the credential named within an integration, or ErrNotFound.
+// Get returns the named credential, or [ErrNotFound].
 func (s *Store) Get(ctx context.Context, integration, name string) (Credential, error) {
 	r, err := s.rs.Get(ctx, Kind, s.scope, resourceName(integration, name))
 	if err != nil {
@@ -84,8 +78,7 @@ func (s *Store) Get(ctx context.Context, integration, name string) (Credential, 
 	return toCredential(r)
 }
 
-// All returns every credential across the store, ordered by integration then name.
-// It backs a listing that spans integrations.
+// All returns every credential, ordered by integration then name.
 func (s *Store) All(ctx context.Context) ([]Credential, error) {
 	out, err := s.all(ctx)
 	if err != nil {
@@ -100,7 +93,7 @@ func (s *Store) All(ctx context.Context) ([]Credential, error) {
 	return out, nil
 }
 
-// List returns the credentials of an integration, ordered by name.
+// List returns one integration's credentials, ordered by name.
 func (s *Store) List(ctx context.Context, integration string) ([]Credential, error) {
 	all, err := s.all(ctx)
 	if err != nil {
@@ -116,8 +109,7 @@ func (s *Store) List(ctx context.Context, integration string) ([]Credential, err
 	return out, nil
 }
 
-// Default returns an integration's default credential, or ErrNotFound when the
-// integration has no default.
+// Default returns the integration's default credential, or [ErrNotFound].
 func (s *Store) Default(ctx context.Context, integration string) (Credential, error) {
 	creds, err := s.List(ctx, integration)
 	if err != nil {
@@ -131,11 +123,8 @@ func (s *Store) Default(ctx context.Context, integration string) (Credential, er
 	return Credential{}, ErrNotFound
 }
 
-// Resolve resolves a selection reference to a concrete credential. A reference of
-// the form "<integration>/<name>" selects that credential by name; a bare
-// "<integration>" selects the integration's default. It is the call-site entry
-// point: a request that names a credential gets exactly that one, and a request that
-// names only the integration gets its default.
+// Resolve selects a credential: "<integration>/<name>" by name, a bare
+// "<integration>" its default.
 func (s *Store) Resolve(ctx context.Context, ref string) (Credential, error) {
 	integration, name, named := strings.Cut(ref, "/")
 	if integration == "" {
@@ -152,8 +141,7 @@ func (s *Store) Resolve(ctx context.Context, ref string) (Credential, error) {
 	return s.Default(ctx, integration)
 }
 
-// SetDefault makes the named credential the integration's default, clearing any
-// previous default.
+// SetDefault makes the named credential the integration's only default.
 func (s *Store) SetDefault(ctx context.Context, integration, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,14 +154,12 @@ func (s *Store) SetDefault(ctx context.Context, integration, name string) error 
 	return err
 }
 
-// Delete removes a credential. It does not touch the vault; deleting the secret
-// value is the caller's separate, deliberate step.
+// Delete removes a credential's metadata. The caller deletes the vault value
+// separately.
 func (s *Store) Delete(ctx context.Context, integration, name string) error {
 	return translateErr(s.rs.Delete(ctx, Kind, s.scope, resourceName(integration, name)))
 }
 
-// clearDefaults unsets IsDefault on every default credential of an integration whose
-// name differs from keep, so a new default does not coexist with the old one.
 func (s *Store) clearDefaults(ctx context.Context, integration, keep string) error {
 	creds, err := s.List(ctx, integration)
 	if err != nil {
@@ -190,8 +176,7 @@ func (s *Store) clearDefaults(ctx context.Context, integration, keep string) err
 	return nil
 }
 
-// put writes a credential resource without the default-clearing logic, the inner
-// half of Put used both by Put and by clearDefaults.
+// put writes without clearing other defaults.
 func (s *Store) put(ctx context.Context, spec Spec) (Credential, error) {
 	body, err := json.Marshal(spec)
 	if err != nil {
@@ -211,7 +196,6 @@ func (s *Store) put(ctx context.Context, spec Spec) (Credential, error) {
 	return toCredential(out)
 }
 
-// all returns every credential across the store's scope.
 func (s *Store) all(ctx context.Context) ([]Credential, error) {
 	rs, err := s.rs.List(ctx, Kind, s.scope, nil)
 	if err != nil {
@@ -228,7 +212,6 @@ func (s *Store) all(ctx context.Context) ([]Credential, error) {
 	return out, nil
 }
 
-// toCredential maps a resource to the typed credential.
 func toCredential(r resource.Resource) (Credential, error) {
 	spec, err := DecodeSpec(r)
 	if err != nil {
@@ -237,7 +220,6 @@ func toCredential(r resource.Resource) (Credential, error) {
 	return Credential{ID: r.ID, Spec: spec, Version: int(r.Version)}, nil
 }
 
-// translateErr maps the resource store's errors onto this package's sentinels.
 func translateErr(err error) error {
 	switch {
 	case err == nil:

@@ -24,15 +24,12 @@ const (
 	maxPages = 20
 )
 
-// client issues authenticated REST calls against one repository.
 type client struct {
 	cfg  Config
 	auth tokenSource
 }
 
-// PullRequest is the subset of a pull request a review needs. The size counts are
-// GitHub's own totals for the whole change, independent of how much of the diff a
-// fetch actually returned, which is what makes them safe to gate a verdict on.
+// PullRequest is the subset of a pull request a review needs.
 type PullRequest struct {
 	Number      int    `json:"number"`
 	Title       string `json:"title"`
@@ -42,8 +39,8 @@ type PullRequest struct {
 	HeadSHA     string `json:"-"`
 	AuthorLogin string `json:"-"`
 
-	// ChangedFiles, Additions, and Deletions are the authoritative totals for the
-	// pull request, reported by GitHub on the pull request itself.
+	// ChangedFiles, Additions and Deletions are GitHub's totals, independent of
+	// how much diff was fetched, so they are safe to gate a verdict on.
 	ChangedFiles int `json:"changed_files"`
 	Additions    int `json:"additions"`
 	Deletions    int `json:"deletions"`
@@ -56,11 +53,10 @@ type PullRequest struct {
 	} `json:"user"`
 }
 
-// ChangedLines is the pull request's total churn: lines added plus lines removed.
+// ChangedLines is additions plus deletions.
 func (p PullRequest) ChangedLines() int { return p.Additions + p.Deletions }
 
-// ChangedFile is one file in a pull request's diff, with its patch when GitHub
-// supplies one. A binary or very large file has no patch.
+// ChangedFile is one file in a diff. A binary or very large file has no patch.
 type ChangedFile struct {
 	Filename  string `json:"filename"`
 	Status    string `json:"status"`
@@ -68,30 +64,29 @@ type ChangedFile struct {
 	Deletions int    `json:"deletions"`
 	Patch     string `json:"patch"`
 
-	// PatchTruncated reports that Patch was shortened to fit the configured cap.
+	// PatchTruncated reports that Patch was cut to Config.MaxPatchBytes.
 	PatchTruncated bool `json:"patch_truncated,omitempty"`
 }
 
-// ReviewComment is an existing inline comment on a pull request's diff.
+// ReviewComment is an inline comment on a pull request's diff.
 type ReviewComment struct {
 	ID   int64  `json:"id"`
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Body string `json:"body"`
 
-	// HTMLURL addresses the comment on the pull request, so a verdict can point at a
-	// finding instead of repeating it.
+	// HTMLURL lets a verdict link a finding instead of repeating it.
 	HTMLURL string `json:"html_url"`
 
-	// User is who wrote the comment. A marker in a body proves nothing about that: it
-	// is plain text anyone can copy.
+	// User is the author. A marker does not prove authorship, since anyone can
+	// copy one.
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`
 }
 
-// do issues an authenticated request and decodes a JSON response into out. A nil
-// out discards the body. It returns a statusError for any non-2xx response.
+// do decodes the JSON response into out; a nil out discards it. A non-2xx
+// response becomes a statusError.
 func (c *client) do(ctx context.Context, method, url string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -134,13 +129,11 @@ func (c *client) do(ctx context.Context, method, url string, in, out any) error 
 	return nil
 }
 
-// prURL builds a pull-request-scoped API URL from the bound repository.
 func (c *client) prURL(number int, suffix string) string {
 	return fmt.Sprintf("%s/repos/%s/%s/pulls/%d%s",
 		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, number, suffix)
 }
 
-// pullRequest fetches a pull request's metadata.
 func (c *client) pullRequest(ctx context.Context, number int) (PullRequest, error) {
 	var pr PullRequest
 	if err := c.do(ctx, http.MethodGet, c.prURL(number, ""), nil, &pr); err != nil {
@@ -150,8 +143,8 @@ func (c *client) pullRequest(ctx context.Context, number int) (PullRequest, erro
 	return pr, nil
 }
 
-// changedFiles fetches the pull request's diff, following pagination up to the
-// configured file cap. Each patch is truncated to the configured byte cap.
+// changedFiles follows pagination up to Config.MaxFiles and cuts each patch to
+// Config.MaxPatchBytes.
 func (c *client) changedFiles(ctx context.Context, number int) ([]ChangedFile, bool, error) {
 	var all []ChangedFile
 	url := fmt.Sprintf("%s?per_page=%d", c.prURL(number, "/files"), perPage)
@@ -170,7 +163,7 @@ func (c *client) changedFiles(ctx context.Context, number int) ([]ChangedFile, b
 	return truncatePatches(all, c.cfg.MaxPatchBytes), false, nil
 }
 
-// doPaged issues a GET and returns the URL of the next page, if any.
+// doPaged returns the next page's URL, or "" on the last page.
 func (c *client) doPaged(ctx context.Context, url string, out any) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
@@ -202,7 +195,6 @@ func (c *client) doPaged(ctx context.Context, url string, out any) (string, erro
 // delimiter, so a nested bracket cannot be swallowed into the captured address.
 var linkNext = regexp.MustCompile(`<([^<>]+)>;\s*rel="next"`)
 
-// nextLink extracts the rel="next" URL from a Link header, or "" when absent.
 func nextLink(header string) string {
 	if m := linkNext.FindStringSubmatch(header); m != nil {
 		return m[1]
@@ -210,14 +202,9 @@ func nextLink(header string) string {
 	return ""
 }
 
-// nextPage returns the next page's URL, having confirmed it stays on the API host.
-//
-// The Link header is part of the response, so the address a client follows is
-// chosen by whoever answered the request, while the credential it attaches is
-// ours. A next-page link pointing at another host would send the installation
-// token there. Following it only within the configured API origin closes that off;
-// the egress policy alone would not, because it refuses private addresses rather
-// than unexpected public ones.
+// nextPage refuses a next link off the API origin, because the responder picks
+// the link and the request carries our token. The egress policy would not
+// catch it, since it refuses private addresses and allows public ones.
 func (c *client) nextPage(header string) (string, error) {
 	raw := nextLink(header)
 	if raw == "" {
@@ -238,17 +225,11 @@ func (c *client) nextPage(header string) (string, error) {
 	return raw, nil
 }
 
-// truncatePatches shortens each patch to at most limit bytes and flags the ones it
-// shortened. A shortened patch ends on a line boundary, keeping the newline, so a
-// model never reads half a line of diff and mistakes it for the whole of one.
-//
-// The newline is kept rather than trimmed, and the cut is taken at the last one
-// rather than the last one past the start. Both matter: a patch whose only newline
-// is its first byte would otherwise be cut mid-line, which is the case this function
-// exists to prevent.
-//
-// A patch with no newline inside the limit has no boundary to cut on, so it is cut
-// where the limit falls. That is unavoidable, and PatchTruncated says it happened.
+// truncatePatches cuts each patch to at most limit bytes after the last newline
+// in range, keeping the newline, so the model never mistakes half a line for a
+// whole one. Keeping it also handles a patch whose only newline is byte 0. A
+// patch with no newline in range is cut at limit. Either way PatchTruncated is
+// set.
 func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 	for i := range files {
 		p := files[i].Patch
@@ -265,12 +246,8 @@ func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 	return files
 }
 
-// reviewComments lists the pull request's existing inline review comments.
-//
-// Running out of pages is an error, not an answer. The caller uses this list to know
-// which of its findings are already posted, and a short list is a finding the reviewer
-// cannot restate. It would then say nothing about a defect that is still there, and a
-// finding not restated is a finding retracted.
+// reviewComments fails when it runs out of pages, because a finding missing
+// from a short list is never restated and so gets retracted.
 func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewComment, error) {
 	var all []ReviewComment
 	url := fmt.Sprintf("%s?per_page=%d", c.prURL(number, "/comments"), perPage)
@@ -289,7 +266,6 @@ func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewCommen
 	return nil, fmt.Errorf("github: more than %d pages of review comments", maxPages)
 }
 
-// createReviewComment posts a new inline comment anchored to a line of the diff.
 func (c *client) createReviewComment(ctx context.Context, number int, headSHA string, f Finding) (ReviewComment, error) {
 	in := map[string]any{
 		"body":      f.render(),
@@ -302,14 +278,12 @@ func (c *client) createReviewComment(ctx context.Context, number int, headSHA st
 	if err := c.do(ctx, http.MethodPost, c.prURL(number, "/comments"), in, &out); err != nil {
 		return ReviewComment{}, err
 	}
-	// GitHub echoes the created comment, but a fake or a proxy may not. The finding's
-	// own coordinates are known here, so a caller can always name it even when the
-	// response carried no address to link.
+	// A fake or proxy may not echo the comment, so fill in the known
+	// coordinates.
 	out.Path, out.Line, out.Body = f.Path, f.Line, f.render()
 	return out, nil
 }
 
-// updateReviewComment rewrites an existing inline comment in place.
 func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) (ReviewComment, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls/comments/%d",
 		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, id)
@@ -321,8 +295,7 @@ func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) (
 	return out, nil
 }
 
-// submitReview posts a formal review carrying a verdict. The event is one of
-// COMMENT, REQUEST_CHANGES, or APPROVE; the caller has already authorized it.
+// submitReview does no authorization; the caller has checked the event.
 func (c *client) submitReview(ctx context.Context, number int, headSHA, event, body string) error {
 	in := map[string]any{"event": event, "commit_id": headSHA}
 	if body != "" {
@@ -331,8 +304,7 @@ func (c *client) submitReview(ctx context.Context, number int, headSHA, event, b
 	return c.do(ctx, http.MethodPost, c.prURL(number, "/reviews"), in, nil)
 }
 
-// statusError builds an error from a failed response, including a bounded prefix
-// of the body so a 422 explains itself.
+// statusError includes a bounded prefix of the body so a 422 explains itself.
 func statusError(resp *http.Response, what string) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	msg := strings.TrimSpace(string(b))
@@ -342,8 +314,7 @@ func statusError(resp *http.Response, what string) error {
 	return fmt.Errorf("github: %s: %s: %s", what, resp.Status, msg)
 }
 
-// redactURL strips any query string before a URL reaches an error message, so a
-// token that ever appears as a query parameter is not carried into a log.
+// redactURL strips the query string so a token in it never reaches a log.
 func redactURL(u string) string {
 	if i := strings.IndexByte(u, '?'); i >= 0 {
 		return u[:i]

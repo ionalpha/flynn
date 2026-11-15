@@ -8,14 +8,11 @@ import (
 	"syscall"
 )
 
-// Cause names why a host refused to set up the kernel confinement the Linux sandbox
-// needs. Each value maps to one fix an operator can apply, so a host reads the cause
-// and decides between repairing the host and moving to a stronger tier.
+// Cause names why a host refused Linux kernel confinement. Each value maps to
+// one operator fix.
 type Cause string
 
-// The causes [CheckConfinement] reports. Every refusal carries exactly one primary
-// cause; [CauseUnknown] is the answer for anything the classifier cannot name, and it
-// refuses like the rest.
+// Every refusal has exactly one primary cause; [CauseUnknown] refuses too.
 const (
 	// CauseNamespaceRestricted means the service unit (RestrictNamespaces=) forbids a
 	// namespace type the sandbox creates.
@@ -27,24 +24,20 @@ const (
 	// user namespace (kernel.apparmor_restrict_unprivileged_userns=1, Ubuntu 24.04 and
 	// later).
 	CauseAppArmorUserns Cause = "apparmor-userns-restricted"
-	// CauseSeccompConflict means a seccomp filter inherited from the service unit or a
-	// container runtime blocks a system call the launcher needs, or the sandbox's own
-	// filter could not be installed on top of it.
+	// CauseSeccompConflict means an inherited seccomp filter blocks a syscall the
+	// launcher needs or the sandbox's own filter.
 	CauseSeccompConflict Cause = "seccomp-conflict"
-	// CauseUnsupportedPlatform means the namespace sandbox does not exist on this
-	// operating system.
+	// CauseUnsupportedPlatform means the OS has no namespace sandbox.
 	CauseUnsupportedPlatform Cause = "unsupported-platform"
-	// CauseConfinementIneffective means the sandbox started a child but did not confine
-	// it: a command the confinement exists to stop ran to completion, or the check could
-	// not tell. The host is refused whatever the configuration says.
+	// CauseConfinementIneffective means a child started unconfined: a command the
+	// confinement should stop ran, or the check could not tell.
 	CauseConfinementIneffective Cause = "confinement-ineffective"
-	// CauseUnknown means confinement could not be established and the reason matched
-	// nothing the classifier knows. It is a refusal, never a pass.
+	// CauseUnknown means the refusal matched no known cause.
 	CauseUnknown Cause = "unknown"
 )
 
-// stage is one rung of the ladder [CheckConfinement] climbs. Each rung adds one thing
-// the sandbox does, so the first rung to fail names the thing the host refused.
+// stage is one rung. Each adds one thing, so the first to fail names what the
+// host refused.
 type stage string
 
 const (
@@ -55,42 +48,33 @@ const (
 	stageCanary   stage = "canary"
 )
 
-// The launcher prints these on its way out when the step they name fails. They are the
-// only evidence a launcher failure leaves (it exits 126 with a message, not a Go error),
-// so the launcher builds its messages from the same constants the classifier matches.
+// A failed launcher exits 126 with one of these messages, its only evidence, so
+// the launcher and the classifier share the constants.
 const (
 	msgNoNewPrivs    = "set no-new-privs"
 	msgInstallFilter = "install seccomp filter"
 	msgMakePrivate   = "make mounts private"
 )
 
-// The files the classifier reads to tell one refusal from another. A file the host hides
-// (ProcSubset=pid, a locked-down /proc) is evidence that is absent, never evidence of a
-// pass: the classifier falls through to a less specific cause and the result is still a
-// refusal.
+// A file the host hides (ProcSubset=pid) is absent evidence: the classifier falls
+// to a less specific cause and still refuses.
 const (
 	procMaxUserNS   = "/proc/sys/user/max_user_namespaces"
 	procCloneSysctl = "/proc/sys/kernel/unprivileged_userns_clone"
 	procAppArmor    = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 	procSelfStatus  = "/proc/self/status"
 
-	// The files Docker and Podman create at the root of every container they start. A
-	// container's refusal needs a different fix from a service unit's: the filter comes
-	// from the runtime, so the answer is a runtime profile, not unit settings. Kubernetes
-	// over containerd creates neither, so a pod still gets the unit-oriented text.
+	// Docker and Podman create these at the container root, so a container gets a
+	// runtime-profile fix. Kubernetes over containerd creates neither, so a pod
+	// gets the unit fix.
 	markerDocker = "/.dockerenv"
 	markerPodman = "/run/.containerenv"
 )
 
-// Readiness is the result of [CheckConfinement]: whether this host will run a command
-// under the Linux sandbox's kernel confinement, and if not, which refusal it is and what
-// to do about it. An embedding host reads it to gate its own readiness reporting.
-//
-// Ready is the only pass signal. The zero value is not ready, so a Readiness that was
-// never computed refuses.
+// Readiness is the result of [CheckConfinement]. Ready is the only pass signal,
+// and the zero value is not ready.
 type Readiness struct {
-	// Ready is true only when every stage of the check ran a confined no-op child to
-	// completion.
+	// Ready means every stage ran a confined no-op child to completion.
 	Ready bool `json:"ready"`
 	// Cause is the primary reason for a refusal; empty when Ready.
 	Cause Cause `json:"cause,omitempty"`
@@ -100,26 +84,21 @@ type Readiness struct {
 	// Stage is the rung that failed: "user-namespace", "network-namespace",
 	// "mount-namespace" or "launcher". Empty when Ready.
 	Stage string `json:"stage,omitempty"`
-	// Detail is the evidence: the stage's error and the sysctl values that decided the
-	// classification. It is for a log or an operator, not for matching.
+	// Detail is the stage error and deciding sysctls, for people; do not match it.
 	Detail string `json:"detail,omitempty"`
-	// Fix says how to repair the host so confinement works. Empty when Ready.
+	// Fix says how to repair the host. Empty when Ready.
 	Fix string `json:"fix,omitempty"`
-	// Alternative names the stronger tiers to use where the host cannot or should not
-	// be changed. Empty when Ready.
+	// Alternative names stronger tiers for a host that stays as it is. Empty when
+	// Ready.
 	Alternative string `json:"alternative,omitempty"`
-	// Arch is the architecture the check ran on (a GOARCH value). systemd enforces
-	// RestrictNamespaces= on only some architectures, so a unit's namespace list means
-	// nothing on the others; the result records where it was measured.
+	// Arch is the GOARCH measured on. systemd enforces RestrictNamespaces= only on
+	// some architectures.
 	Arch string `json:"arch,omitempty"`
-	// Tier is the confinement tier the probe measured, in the names
-	// [Local.ConfinementTier] reports: "namespace-seccomp" when every rung of the check ran
-	// a confined child, and "process-jail" when one did not. It records what the host
-	// delivered, so a record of a run cannot claim the tier the configuration asked for.
+	// Tier is the measured tier, named as [Local.ConfinementTier] names it:
+	// "namespace-seccomp" if every rung ran, else "process-jail".
 	Tier string `json:"tier,omitempty"`
-	// Warnings are facts about the host that do not refuse the launch but change what a
-	// pass proves, such as an architecture where the unit's namespace restriction is not
-	// enforced.
+	// Warnings weaken what a pass proves without refusing, such as an unenforced
+	// RestrictNamespaces=.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -127,15 +106,13 @@ type Readiness struct {
 // refusing kernel confinement. A launch that gets it must not retry unconfined.
 var ErrConfinementRefused = errors.New("sandbox: kernel confinement refused")
 
-// RefusedError is the error a launch returns when the host refuses confinement. It
-// carries the [Readiness] so a caller can read the cause and fix, and it matches
-// [ErrConfinementRefused].
+// RefusedError carries the [Readiness] and matches [ErrConfinementRefused].
 type RefusedError struct {
 	Readiness Readiness
 }
 
-// Error renders the cause, the evidence, the fix and the alternative on one line, so a
-// log that records only the error string still says why and what to do.
+// Error puts cause, evidence, fix and alternative on one line, so a log of the
+// string alone says what to do.
 func (e *RefusedError) Error() string {
 	r := e.Readiness
 	cause := string(r.Cause)
@@ -168,22 +145,17 @@ func (r Readiness) Err() error {
 	return &RefusedError{Readiness: r}
 }
 
-// RequiredNamespaces lists the namespace types the Linux sandbox creates, named as
-// systemd's RestrictNamespaces= names them. A service unit that restricts namespaces
-// must allow exactly these; a test holds the shipped runner unit to this list and holds
-// this list to the clone flags the sandbox sets.
+// RequiredNamespaces uses RestrictNamespaces= names. A test ties it to the clone
+// flags and to the shipped runner unit.
 func RequiredNamespaces() []string { return []string{"user", "net", "mnt", "pid"} }
 
-// RequiredSyscalls lists the system calls the sandbox makes that a hardened service
-// unit's usual syscall filter (@system-service without @privileged) removes, named as
-// systemd's SystemCallFilter= names them. The sandbox's launcher mounts inside its new
-// mount namespace; nothing else it does falls outside the ordinary service set.
+// RequiredSyscalls are the calls, in SystemCallFilter= names, that
+// @system-service without @privileged removes. Only the launcher's mounts fall
+// outside that set.
 func RequiredSyscalls() []string { return []string{"mount"} }
 
-// needs is the part of the sandbox a Local is configured to use, which decides how far
-// up the ladder a host has to get. The launcher stage runs when the command is
-// re-executed through the launcher, which is whenever the mount view or the syscall
-// filter is requested.
+// needs decides how far up the ladder a host must get. The mount view or the
+// syscall filter needs the launcher stage.
 type needs struct {
 	net     bool
 	mount   bool
@@ -193,7 +165,7 @@ type needs struct {
 // needsAll is every part of the sandbox the agent runner uses.
 var needsAll = needs{net: true, mount: true, seccomp: true}
 
-// stages returns the ladder for these needs, lowest rung first.
+// stages returns the lowest rung first.
 func (n needs) stages() []stage {
 	out := []stage{stageUser}
 	if n.net {
@@ -217,9 +189,8 @@ const (
 	tierFloor            = "process-jail"
 )
 
-// failure is what one rung reports when it did not run its confined no-op child to a
-// clean exit. A rung that fails always produces one, whatever went wrong; there is no
-// "failed but unremarkable" case, which is what makes an unrecognised error a refusal.
+// failure is produced by every failing rung, whatever went wrong, so an
+// unrecognised error is still a refusal.
 type failure struct {
 	stage   stage
 	errno   syscall.Errno // the start error's errno, zero when the child started
@@ -229,21 +200,17 @@ type failure struct {
 	raw     string        // the error text, for the detail
 }
 
-// procReader reads one of the fixed files the classifier names (/proc files and the
-// container marker files), reporting false when it cannot be read. Injecting it lets
-// the classification run against any kernel's sysctls on any OS.
+// procReader is injected so tests classify any kernel's sysctls on any OS.
 type procReader func(path string) (string, bool)
 
-// probe is everything the check needs from the host: a way to run one rung and a way to
-// read /proc. The real one runs children; a test supplies canned failures and files.
+// probe is the check's whole view of the host, so a test can fake it.
 type probe struct {
 	run  func(ctx context.Context, s stage, n needs) *failure
 	proc procReader
 	arch string // GOARCH of the host being checked
 }
 
-// check climbs the ladder and returns at the first rung that fails, classified. It
-// returns Ready only if every rung ran clean.
+// check stops at the first failing rung.
 func check(ctx context.Context, n needs, p probe) Readiness {
 	r := climb(ctx, n, p)
 	r.Arch = p.arch
@@ -266,9 +233,8 @@ func climb(ctx context.Context, n needs, p probe) Readiness {
 	return Readiness{Ready: true, Detail: "confined no-op child ran at: " + strings.Join(passed, ", ")}
 }
 
-// restrictNamespacesEnforced lists the architectures (GOARCH values) on which systemd
-// documents that it enforces RestrictNamespaces=. Elsewhere, and on MIPS where the
-// documentation says only "some", the directive is accepted and does nothing.
+// restrictNamespacesEnforced lists where systemd documents enforcing
+// RestrictNamespaces=. Elsewhere, including MIPS ("some"), it does nothing.
 var restrictNamespacesEnforced = map[string]bool{"386": true, "amd64": true, "ppc64": true, "ppc64le": true, "s390x": true}
 
 // archWarnings reports what a result on this architecture does not prove.
@@ -279,24 +245,18 @@ func archWarnings(arch string) []string {
 	return []string{"systemd enforces RestrictNamespaces= only on x86, x86-64, ppc64, ppc64le and s390x (and some MIPS); on " + arch + " the directive does not restrict namespaces, so a unit is not hardened by it and a pass here does not show the unit's namespace list is right"}
 }
 
-// CheckConfinement starts a real confined no-op child at each step of the Linux sandbox
-// (user, network and mount namespaces, then the re-exec launcher with its read-only host
-// view and syscall filter) and reports whether this host allows it. A refusal names the
-// cause and the fix: a namespace type blocked by the unit's RestrictNamespaces=, user
-// namespaces disabled by sysctl, the AppArmor restriction on Ubuntu 24.04 and later, or
-// a seccomp filter that conflicts with the launcher.
+// CheckConfinement starts a confined no-op child at each step: user, network and
+// mount namespaces, then the launcher with read-only host and syscall filter.
 //
-// The check fails closed. Anything but a clean run, including an error it cannot
-// classify, a timeout or an unreadable /proc file, is a refusal, and no environment
-// variable, option or file turns it into a pass. Off Linux it reports
-// [CauseUnsupportedPlatform].
+// Anything but a clean run is a refusal, including an unclassified error, a
+// timeout or an unreadable /proc file; nothing turns one into a pass. Off Linux
+// it reports [CauseUnsupportedPlatform].
 func CheckConfinement(ctx context.Context) Readiness {
 	return checkHost(ctx, needsAll)
 }
 
-// classify turns a failed rung and the readable sysctls into a refusal. The rules run
-// from the most specific evidence to the least, and a failure no rule recognises falls
-// through to [CauseUnknown]: the function has no path that returns Ready.
+// classify runs rules from most specific evidence to least, ending at
+// [CauseUnknown]. No path returns Ready.
 func classify(f failure, proc procReader) Readiness {
 	ev := readEvidence(proc)
 	r := Readiness{
@@ -326,9 +286,8 @@ func classify(f failure, proc procReader) Readiness {
 	return refuse(r, CauseUnknown, fixUnknown)
 }
 
-// appArmorDenied is the marker AppArmor puts in a denial record. A record that reaches
-// the child's output or the start error names the cause outright, with no need to infer it
-// from the sysctl.
+// appArmorDenied marks an AppArmor denial record, which names the cause without
+// the sysctl.
 const appArmorDenied = `apparmor="DENIED"`
 
 // sawAppArmorDenial reports whether the failure carries an AppArmor denial record.
@@ -336,9 +295,8 @@ func (f failure) sawAppArmorDenial() bool {
 	return strings.Contains(f.output, appArmorDenied) || strings.Contains(f.raw, appArmorDenied)
 }
 
-// launcherBlockedBySeccomp reports whether the launcher's own message says a syscall
-// filter stopped it: it could not install its filter or set no-new-privileges, or its
-// first mount call was refused while this process runs under a filter.
+// launcherBlockedBySeccomp is true if the launcher could not install its filter or
+// set no-new-privileges, or its first mount failed under an inherited filter.
 func launcherBlockedBySeccomp(f failure, ev evidence) bool {
 	if f.stage != stageLauncher {
 		return false
@@ -349,8 +307,7 @@ func launcherBlockedBySeccomp(f failure, ev evidence) bool {
 	return strings.Contains(f.output, msgMakePrivate) && f.permissionDenied() && ev.filter
 }
 
-// refuse completes a refusal. It is the only constructor of a classified result, and it
-// never sets Ready.
+// refuse is the only constructor of a classified result and never sets Ready.
 func refuse(r Readiness, c Cause, fix string, also ...Cause) Readiness {
 	r.Ready = false
 	r.Cause = c
@@ -368,8 +325,7 @@ func appArmorIf(ev evidence) []Cause {
 	return nil
 }
 
-// alsoFilter lists the inherited seccomp filter as a second candidate for an AppArmor
-// refusal, when a filter is active in this process.
+// alsoFilter adds an active inherited filter as a second AppArmor candidate.
 func alsoFilter(f failure, ev evidence) []Cause {
 	if !ev.filter {
 		return nil
@@ -380,8 +336,7 @@ func alsoFilter(f failure, ev evidence) []Cause {
 	return []Cause{CauseNamespaceRestricted}
 }
 
-// evidence is what the readable /proc files say. An empty string is a file that could
-// not be read.
+// evidence uses "" for an unreadable file.
 type evidence struct {
 	maxUserNS   string // user.max_user_namespaces
 	cloneSysctl string // kernel.unprivileged_userns_clone (Debian kernels)
@@ -419,8 +374,7 @@ func readEvidence(proc procReader) evidence {
 	return ev
 }
 
-// userNSFix names the sysctl that is actually off, so the operator is not sent to
-// change one the host already has right.
+// userNSFix names only the sysctl that is off.
 func (ev evidence) userNSFix() string {
 	switch {
 	case ev.cloneSysctl == "0":
@@ -431,9 +385,8 @@ func (ev evidence) userNSFix() string {
 	return "user namespaces are exhausted or unavailable: raise user.max_user_namespaces (sysctl -w user.max_user_namespaces=15000), and check that the kernel was built with CONFIG_USER_NS"
 }
 
-// namespacesFix, seccompFix and appArmorFix send a container to the runtime profiles,
-// because inside one the filter and the AppArmor profile come from the runtime, and
-// neither a unit setting nor a per-binary host profile reaches them.
+// namespacesFix, seccompFix and appArmorFix send a container to its runtime
+// profiles, which no unit setting or host profile reaches.
 func (ev evidence) namespacesFix() string {
 	if ev.container {
 		return fixContainer
@@ -455,7 +408,6 @@ func (ev evidence) seccompFix() string {
 	return fixSeccomp
 }
 
-// describe renders the failed rung and the sysctl values the decision rested on.
 func (f failure) describe(ev evidence) string {
 	var parts []string
 	what := f.raw
@@ -489,8 +441,7 @@ func (f failure) describe(ev evidence) string {
 	return strings.Join(parts, "; ")
 }
 
-// effectiveErrno is the failure's errno, recovered from the launcher's message when the
-// child started and printed the error rather than failing to start.
+// effectiveErrno falls back to the launcher's message when the child started.
 func (f failure) effectiveErrno() syscall.Errno {
 	if f.errno != 0 {
 		return f.errno
@@ -498,16 +449,14 @@ func (f failure) effectiveErrno() syscall.Errno {
 	return errnoFromText(f.output)
 }
 
-// permissionDenied reports EPERM or EACCES, the two errnos a refused namespace, a
-// refused mount and a refused filter all use.
+// permissionDenied matches EPERM or EACCES, which every refusal here uses.
 func (f failure) permissionDenied() bool {
 	e := f.effectiveErrno()
 	return e == syscall.EPERM || e == syscall.EACCES
 }
 
-// errnoFromText maps the strerror text of the errnos the classifier acts on back to
-// the errno. The strings are fixed here rather than taken from [syscall.Errno] so the
-// mapping is the same on every OS the tests run on.
+// errnoFromText uses fixed strerror text instead of [syscall.Errno] so tests map
+// the same on every OS.
 func errnoFromText(s string) syscall.Errno {
 	s = strings.ToLower(s)
 	for _, m := range []struct {
@@ -526,8 +475,7 @@ func errnoFromText(s string) syscall.Errno {
 	return 0
 }
 
-// The fixes and the alternative are fixed text, one per cause, so an operator reads the
-// same instruction for the same refusal everywhere.
+// One fixed text per cause, so a refusal reads the same everywhere.
 const (
 	fixNamespaces  = "the service unit restricts namespaces, or filters a system call that starting a child needs (both answer EPERM). Allow exactly the types the sandbox creates by setting RestrictNamespaces=user net mnt pid in the unit (the Flynn runner unit does), and keep the SystemCallFilter= groups of the runner unit, then run systemctl daemon-reload and restart the service. Do not set RestrictNamespaces=no, and do not turn confinement off"
 	fixAppArmor    = "AppArmor denies capabilities inside unprivileged user namespaces for programs without a profile that grants them. Install the per-binary AppArmor profile Flynn ships (deploy/apparmor/flynn, which grants userns to the flynn binary and nothing else) with the path in its header set to this binary, then run apparmor_parser -r on it. Do not set kernel.apparmor_restrict_unprivileged_userns=0: that lifts the restriction for every program on the host"

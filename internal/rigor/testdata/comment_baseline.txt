@@ -144,18 +144,6 @@ resource/merge.go matters 1
 resource/resource.go deliberately 1
 runtime/runtime.go dash 1
 runtime/runtime.go filler 2
-sandbox/appcontainer_windows.go deliberately 2
-sandbox/confined_open.go length 1
-sandbox/local.go deliberately 2
-sandbox/local.go matters 1
-sandbox/microvm.go length 2
-sandbox/microvm_windows.go deliberately 1
-sandbox/restricted_windows.go filler 3
-sandbox/restricted_windows.go length 2
-sandbox/restricted_windows.go matters 1
-sandbox/seatbelt.go deliberately 1
-sandbox/serve.go deliberately 1
-secret/secret.go deliberately 1
 skill/pack.go length 1
 skill/skillmd/load.go length 1
 skill/skillmd/load.go matters 1
@@ -167,7 +155,3 @@ state/usage.go deliberately 1
 state/usage.go filler 1
 storage/sqlite/compress.go matters 1
 storage/sqlite/warm.go length 1
-tools/github/app.go matters 1
-tools/github/github.go deliberately 2
-tools/github/resolve.go filler 1
-tools/github/tools.go deliberately 1
