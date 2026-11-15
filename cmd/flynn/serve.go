@@ -36,14 +36,12 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// runServe runs the agent as a long-lived service. It answers messages from chat
-// channels (each inbound message is recorded as an entry, triaged, driven as a goal
-// in the working directory, and answered on the same conversation) and/or exposes
-// the read-only control-plane API for remote monitoring. Telegram and Signal are
-// the available channels today; the triage boundary accepts more sources as
-// adapters are added. Only senders the operator allowed start a goal. Goals run with the
-// full sandboxed toolset under the same approval and allowance gates a terminal run takes
-// and a per-goal budget; the learning loop is not yet wired into the served path.
+// runServe runs the agent as a service. It answers chat channels (Telegram and Signal):
+// each message from an allowed sender is recorded as an entry, triaged, driven as a
+// goal in the working directory and answered on its conversation. It can also expose
+// the read-only control-plane API. Goals get the full sandboxed toolset, the approval
+// and allowance gates of a terminal run, and a per-goal budget; the served path does
+// not learn.
 //
 // It blocks until interrupted (Ctrl-C), then stops the control loops.
 func runServe(args []string, modelSpec, dataDir string, gov serveGovernance) error {
@@ -52,9 +50,8 @@ func runServe(args []string, modelSpec, dataDir string, gov serveGovernance) err
 	return runServeContext(ctx, args, modelSpec, dataDir, gov)
 }
 
-// runServeContext is runServe with the shutdown signal supplied rather than installed, so the
-// server's whole lifecycle (bring-up, bind, shutdown) is drivable without sending the
-// process a signal. Cancelling ctx stops it exactly as Ctrl-C does.
+// runServeContext is runServe with the shutdown signal supplied, so tests can drive the
+// whole lifecycle. Cancelling ctx stops it exactly as Ctrl-C does.
 func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string, gov serveGovernance) error {
 	cfg, err := parseServeConfig(args)
 	if err != nil {
@@ -64,9 +61,8 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		return err
 	}
 
-	// Load the instance signer so the served spine is durably chained and its resource
-	// snapshots are verified under the same key. Best effort: without an identity the
-	// server runs unsigned (no chain, unverified snapshots) rather than failing to start.
+	// Best effort: without an identity the server runs unsigned, with no chain and
+	// unverified snapshots.
 	signer, serr := runSigner(ctx, dataDir)
 	if serr != nil {
 		signer = nil
@@ -77,10 +73,9 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	}
 	defer func() { _ = store.Close() }()
 
-	// Durably record the served spine into a per-stream RFC 6962 Merkle log with periodic
-	// signed checkpoints, so a long-lived server's proof material stays bounded and every
-	// recorded stream can be verified after a restart. Recording is best effort and never
-	// fails an append; the tip of each stream is sealed on shutdown.
+	// Each served stream is recorded into an RFC 6962 Merkle log with periodic signed
+	// checkpoints, so proof material stays bounded and streams verify after a restart.
+	// Recording never fails an append; each stream's tip is sealed on shutdown.
 	servedLog := store.Log()
 	if signer != nil {
 		rec := chain.NewDurableRecorder(store.Log(),
@@ -103,12 +98,11 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	}
 	rstore := store.Resources(reg)
 
-	// The background loops below write to the store, so they must be stopped before it
-	// closes, on every return path and not only on shutdown. A refusal further down (an
-	// unsafe bind, nothing configured) would otherwise close the store under a running
-	// heartbeat and leave both loops running against it after serve has returned: an
-	// open database file Windows will not let anyone remove, and goroutines an embedding
-	// host never gets back. Deferred after the close, so it runs before it.
+	// The loops below write to the store, so they stop before it closes on every return
+	// path. Otherwise a later refusal (an unsafe bind, nothing configured) leaves them
+	// running against a closed store after serve returns: a database file Windows will not
+	// remove, and goroutines an embedding host never gets back. Deferred after the close,
+	// so it runs first.
 	loopCtx, stopLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
 	defer func() {
@@ -116,13 +110,10 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		loops.Wait()
 	}()
 
-	// Keep this process's Instance record live for the read surface. The heartbeat
-	// registers the process on start and rewrites its state and active runs on an
-	// interval, so flynn ps/status, the API, and the dashboard show a real,
-	// heartbeat-tracked process rather than a record that only updates when observed
-	// and always reads Idle. A stopped process records a terminal Done; a crashed one
-	// stops beating and the effective-state rule reports it Unknown. It runs for both
-	// the monitor-only and channel modes below, so it is started here once.
+	// The heartbeat registers this process and rewrites its state and active runs on an
+	// interval, so flynn ps/status, the API and the dashboard show a tracked process. A
+	// stopped process records Done; a crashed one stops beating and reads Unknown. Both
+	// modes below need it.
 	hostname, _ := os.Hostname()
 	hb := instance.NewHeartbeat(rstore, resource.Scope{}, store.InstanceID(),
 		instance.Spec{Host: hostname, Version: version.String()},
@@ -130,11 +121,10 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		instance.WithErrorHandler(func(err error) { fmt.Fprintln(os.Stderr, "serve: heartbeat:", err) }))
 	loops.Go(func() { _ = hb.Run(loopCtx) })
 
-	// Supervise deployed workloads. A Service registered by `flynn deploy` is held in
-	// its desired state by a level-triggered loop: a running service is re-observed
-	// through its provider and a service marked stopped is torn down and retired. This
-	// runs in every mode, channels or monitor-only, because a deployed app must be
-	// supervised regardless of whether this process also answers messages.
+	// `flynn deploy` services are held in their desired state by a level-triggered loop: a
+	// running service is re-observed through its provider, and a stopped one is torn down
+	// and retired. It runs in every mode, because a deployed app needs supervising whether
+	// or not this process answers messages.
 	opsLoader, err := governed.OpenIntegrations(rstore, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)))
 	if err != nil {
 		return err
@@ -144,7 +134,6 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	svcMgr.Register(service.Kind, supervisor)
 	loops.Go(func() { svcMgr.Start(loopCtx) })
 
-	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source
 	var sinks []inbox.Sink
 	allow := senderAllowList{}
@@ -177,7 +166,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		}
 	}
 
-	// With no channels this is a monitor-only daemon: just hold the API open.
+	// No channels: a monitor-only daemon that holds the API open.
 	if len(sources) == 0 {
 		fmt.Fprintln(os.Stderr, "flynn serve: monitor-only; press Ctrl-C to stop")
 		<-ctx.Done()
@@ -187,13 +176,12 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks, allow, gov)
 }
 
-// serveConfig is the parsed `flynn serve` configuration: the channel credentials and the
-// control-plane API's address, its auth (a static token or a delegation issuer key), and its
-// exposure. A flag wins over its environment fallback.
+// serveConfig is the parsed `flynn serve` configuration. A flag wins over its
+// environment fallback.
 //
-// Each channel carries the senders the operator allowed on it, and parseServeConfig refuses a
-// channel with none: the sender writes the goal's objective, so a channel open to everyone
-// hands the agent's tools to anyone who finds the bot.
+// parseServeConfig refuses a channel with no allowed senders: the sender writes the
+// goal's objective, so an open channel hands the agent's tools to anyone who finds the
+// bot.
 type serveConfig struct {
 	telegramToken string
 	telegramAllow []string
@@ -205,10 +193,9 @@ type serveConfig struct {
 	apiExpose     bool
 }
 
-// parseServeConfig parses the serve subcommand's flags and folds in the environment fallbacks
-// (TELEGRAM_BOT_TOKEN, FLYNN_API_TOKEN, FLYNN_API_ISSUER), so the rest of bring-up reads one
-// resolved config. A static token and an issuer key are two different trust models, so supplying
-// both is refused here rather than letting one silently win.
+// parseServeConfig folds in TELEGRAM_BOT_TOKEN, FLYNN_API_TOKEN and FLYNN_API_ISSUER. A
+// static token and an issuer key are different trust models, so both together are
+// refused.
 func parseServeConfig(args []string) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
@@ -225,8 +212,8 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return serveConfig{}, err
 	}
 
-	// A flag wins over its environment fallback; neither channel nor API auth is required here,
-	// the caller decides what "nothing to do" means once every source is assembled.
+	// Neither a channel nor API auth is required here; the caller decides what "nothing to
+	// do" means.
 	token := *tgToken
 	if token == "" {
 		token = os.Getenv("TELEGRAM_BOT_TOKEN")
@@ -260,11 +247,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	return cfg, nil
 }
 
-// channelAllow resolves one channel's allow-list: the flag's values, or the environment
-// fallback when the flag was not given. A configured channel with no allowed sender is
-// refused by name, which is the fail-closed half of the rule: there is no default that lets
-// everyone in. An allow-list on a channel that is not configured is ignored, since nothing
-// reads it.
+// channelAllow returns the flag's senders, or the environment's when the flag is
+// absent. A configured channel with none is refused by name: no default admits
+// everyone. An allow-list for an unconfigured channel is ignored.
 func channelAllow(channel string, configured bool, flagValues []string, env string, parse func([]string) ([]string, error)) ([]string, error) {
 	if !configured {
 		return nil, nil
@@ -283,28 +268,24 @@ func channelAllow(channel string, configured bool, flagValues []string, env stri
 	return ids, nil
 }
 
-// startControlPlaneAPI opens the read-only control-plane API on cfg.apiAddr and serves it until
-// ctx is cancelled. Auth is on by default: a supplied token authenticates the operator, and when
-// none is supplied one is generated and printed once rather than serving openly, so the API is
-// secured-by-default with zero config and there is never a reason to run it unauthenticated.
+// startControlPlaneAPI serves the read-only control-plane API on cfg.apiAddr until ctx
+// is cancelled. With no token supplied it generates one and prints it once, so the API
+// never runs unauthenticated.
 func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog spine.Log, cfg serveConfig) error {
 	var auth controlplane.Authenticator
 	if cfg.apiIssuer != "" {
-		// Delegation trust: the box holds no secret, only the operator's public key. The operator
-		// (which enrolled this instance) mints scope-attenuated capability tokens under its issuer
-		// key and presents them per request; each is verified offline against this key, fail-closed
-		// on any forged, widened, or expired chain. This is the path that permits operator-scoped
-		// remote drive (pause/resume/halt/run): a static --api-token is deliberately capped at read
-		// scope, a delegated token carries exactly the scope and actions the operator attenuated to.
+		// Delegation: the box holds only the operator's public key. The operator mints
+		// scope-attenuated capability tokens under its issuer key, each verified offline and
+		// refused on any forged, widened or expired chain. Only this path permits remote drive
+		// (pause/resume/halt/run); a static --api-token is capped at read scope.
 		issuer, err := controlplane.ParsePrincipalID(cfg.apiIssuer)
 		if err != nil {
 			return fmt.Errorf("serve: api: --api-issuer: %w", err)
 		}
 		auth = controlplane.NewDelegationAuthenticator(issuer, clock.System{})
 	} else if cfg.apiToken != "" {
-		// A local operator token is not grant-attenuated: it carries full action authority
-		// (AllowAll), bounded only by its scope, so the action gate reduces to the instance's own
-		// local grant. The zero Grant would instead deny-all.
+		// A local operator token carries AllowAll bounded by its scope, so the action gate
+		// reduces to the instance's own grant. The zero Grant would deny all.
 		auth = controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
 			cfg.apiToken: {ID: "operator", Scope: controlplane.ScopeRead, Grant: capability.AllowAll()},
 		})
@@ -319,11 +300,9 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 		fmt.Fprintln(os.Stderr, "  present it as: Authorization: Bearer "+tok)
 	}
 	api := controlplane.NewServer(rstore, servedLog, auth)
-	// Bind-safe by default: the listener is opened through the inbound gate, which refuses a
-	// wildcard bind outright and a non-loopback bind unless --api-expose was passed. The bind is
-	// checked before the socket opens, so an unsafe address fails closed. It is opened through the
-	// exposure registry so the listener is recorded and visible (nothing stays exposed silently);
-	// the API is long-lived, so it carries no TTL.
+	// The inbound gate refuses a wildcard bind and a non-loopback one without
+	// --api-expose, before the socket opens. The exposure registry records the listener so
+	// nothing stays exposed unseen. The API is long-lived, so it has no TTL.
 	reach := bindguard.Loopback()
 	if cfg.apiExpose {
 		reach = bindguard.Exposed()
@@ -334,9 +313,8 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 		return fmt.Errorf("serve: api: %w", err)
 	}
 	httpSrv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	// The drain deliberately does not inherit ctx: it starts once ctx is done, and a shutdown on
-	// an already-cancelled context would close every live connection instantly instead of letting
-	// the requests in flight finish.
+	// The drain starts once ctx is done, so it does not inherit ctx: a shutdown on a
+	// cancelled context would drop live connections instead of letting requests finish.
 	go func() { //nolint:gosec // G118: the shutdown deadline cannot descend from the context that triggered it
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -352,9 +330,8 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 	return nil
 }
 
-// serveChannels drives the message-answering path: it resolves the model, then records every
-// inbound message from an allowed sender on sources, triages each into a goal run in the
-// working directory, and replies with the answer on the channel it arrived from. It blocks
+// serveChannels resolves the model, records each allowed sender's message from
+// sources, triages it into a goal run and replies on the arriving channel. It blocks
 // until ctx is cancelled.
 func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink, allow senderAllowList, gov serveGovernance) error {
 	// Channels need a model and the goal runtime that executes a triaged entry.
@@ -372,15 +349,11 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	}.run(ctx)
 }
 
-// instanceReporter derives this process's live run-state from the goals it owns. A
-// goal still Pending or Running counts as active work, so any active goal makes the
-// instance Working and its names are the active runs; with none the instance is
-// Idle. Ownership is the goal's creator (OriginInstanceID), so on a multi-instance
-// store each process reports only its own runs; a blank origin (single-instance or
-// an older record) is treated as local so nothing is dropped on one box. A store
-// read error reports Unknown rather than guessing Idle, which would hide live work.
-// Blocked is reserved for a future waiting signal (a run halted on approval or
-// input); goals expose no such phase today, so the reporter never invents it.
+// instanceReporter derives this process's run state from the goals it owns. Any Pending
+// or Running goal makes it Working with those goals as active runs; otherwise Idle.
+// Ownership is OriginInstanceID, so on a shared store each process reports its own; a
+// blank origin counts as local. A read error reports Unknown, since guessing Idle would
+// hide live work. Blocked is never reported, because goals have no waiting phase.
 func instanceReporter(store resource.Store, instanceID string) instance.Reporter {
 	return func(ctx context.Context) (instance.State, []string) {
 		rs, err := store.ListAll(ctx, goal.Kind, nil)
@@ -400,7 +373,7 @@ func instanceReporter(store resource.Store, instanceID string) instance.Reporter
 			case goal.PhasePending, goal.PhasePlanning, goal.PhaseRunning:
 				active = append(active, r.Name)
 			case goal.PhaseConverged, goal.PhaseStalled:
-				// Terminal: the goal is finished, so it is not active work.
+				// Finished goals are not active work.
 			}
 		}
 		if len(active) > 0 {
@@ -410,23 +383,22 @@ func instanceReporter(store resource.Store, instanceID string) instance.Reporter
 	}
 }
 
-// goalWorker adapts the goal runtime to the inbox.Worker port: it submits an entry's
-// content as a goal and reports the goal's outcome by reading its status.
+// goalWorker adapts the goal runtime to inbox.Worker: an entry's content becomes a goal,
+// and its status is the outcome.
 type goalWorker struct {
 	rt    *runtime.Runtime
 	store resource.Store
-	// budgets and limits give each goal its own spend ceiling. A goal with no pool is
-	// unlimited, and a pool shared by every goal would let one message spend what the
-	// rest were owed.
+	// Each goal gets its own pool. A goal with no pool is unlimited, and a shared pool lets
+	// one message spend what the rest were owed.
 	budgets *budgetpkg.Ledger
 	limits  budgetpkg.Limits
-	// allowances are the irreversible actions the operator declared in advance with --allow.
+	// allowances are the irreversible actions the operator declared with --allow.
 	allowances []goal.Allowance
 }
 
-// Start submits the objective as a goal charged to a budget pool of its own, and returns the
-// goal's name as the handle. The pool is named after the entry, and opening one that exists
-// returns it, so a start retried after a failed write reuses the pool and its spend.
+// Start submits the objective as a goal and returns its name. The pool is named after
+// the entry, and opening an existing one returns it, so a retried start reuses the pool
+// and its spend.
 func (w *goalWorker) Start(ctx context.Context, entry, objective string) (string, error) {
 	pool := servedPoolPrefix + entry
 	if _, err := w.budgets.Open(ctx, pool, resource.Scope{}, w.limits); err != nil {
@@ -444,8 +416,7 @@ func (w *goalWorker) Start(ctx context.Context, entry, objective string) (string
 	return g.Name, nil
 }
 
-// Poll reports whether the goal has reached a terminal phase and its final message,
-// treating a stalled goal as failed.
+// Poll reports a terminal phase and the final message; a stalled goal is failed.
 func (w *goalWorker) Poll(ctx context.Context, handle string) (done bool, answer string, failed bool, err error) {
 	r, err := w.store.Get(ctx, goal.Kind, resource.Scope{}, handle)
 	if err != nil {

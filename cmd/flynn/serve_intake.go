@@ -152,7 +152,7 @@ func (g senderGate) refuse(ctx context.Context, spec inbox.Spec) {
 
 // serveGovernance is what the operator's run flags say about the goals a served process
 // drives, the same flags a terminal run takes. Without it `flynn --require-approval shell
-// serve` would start a process that quietly ignored the requirement.
+// serve` would start a process that ignored the requirement.
 type serveGovernance struct {
 	approve []string
 	outside []string

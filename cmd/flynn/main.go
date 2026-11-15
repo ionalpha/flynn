@@ -2,10 +2,9 @@
 //
 // Build:  go build -o flynn ./cmd/flynn
 // Run a goal:  flynn goal "audit the repo for TODOs and write a summary to NOTES.md"
-// The model is chosen with --model provider:model (default anthropic:claude-opus-5-5);
-// the provider's API key is read from its environment variable. State (skills and
-// memory the agent learns) persists under --data-dir, so each run starts ahead of
-// the last; --no-learn skips that capture step.
+// --model provider:model picks the model (default anthropic:claude-opus-5-5) and the
+// provider's API key comes from its environment variable. Learned skills and memory
+// persist under --data-dir; --no-learn skips capturing them.
 package main
 
 import (
@@ -40,7 +39,6 @@ import (
 )
 
 // dataDirCommands are the subcommands whose only state is the data directory.
-// They share one dispatch path in main, keyed by the first argument.
 var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"auth":         runAuth,
 	"integrations": runIntegrations,
@@ -67,30 +65,25 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"sandbox":      runSandbox,
 }
 
-// staleSandboxProfileAge is how old a sandbox's operating-system profile must be before
-// the startup sweep collects it. A profile belongs to a live sandbox until that sandbox
-// closes, so the cutoff is set far beyond any plausible confined command rather than close
-// to it: collecting one out from under a running command would break the command, and
-// waiting a day to reclaim a directory costs nothing.
+// staleSandboxProfileAge is how old a sandbox profile must be before the startup sweep
+// collects it. A profile belongs to a live sandbox until it closes, and collecting one
+// under a running command breaks the command, so the cutoff is far beyond any confined
+// command's run time. Waiting a day to reclaim a directory costs nothing.
 const staleSandboxProfileAge = 24 * time.Hour
 
-// sweepStaleSandboxProfiles collects the sandbox profiles that earlier runs left behind.
-// A sandbox unregisters its own profile when it closes, but a run that crashed or was
-// killed never got the chance, and on Windows each survivor keeps a registered container
-// identity whose access entries stay live. The sweep runs in the background because it is
-// housekeeping, not part of the command the user asked for: a short command may well exit
-// before it finishes, and the next run picks up where this one stopped. Failures are not
-// reported for the same reason, and no sandbox depends on the sweep having run.
+// sweepStaleSandboxProfiles collects sandbox profiles that crashed or killed runs left
+// behind. On Windows each survivor keeps a registered container identity whose access
+// entries stay live. The sweep runs in the background and reports nothing: a short
+// command may exit before it finishes, the next run continues it, and no sandbox
+// depends on it.
 func sweepStaleSandboxProfiles() {
 	cutoff := clock.System{}.Now().Add(-staleSandboxProfileAge)
 	go func() { _, _ = sandbox.CleanStaleProfiles(cutoff) }()
 }
 
-// sweepSupersededBinaries collects the binary an earlier `flynn upgrade` displaced.
-// Windows cannot delete a running executable, so an upgrade moves the outgoing one
-// aside and leaves it for the next start to remove; that next start is this one. It is
-// housekeeping, it cannot fail in a way that matters, and nothing depends on it having
-// run: the displaced file is inert.
+// sweepSupersededBinaries removes the binary an earlier `flynn upgrade` moved aside,
+// because Windows cannot delete a running executable. The displaced file is inert, so
+// a failure is ignored.
 func sweepSupersededBinaries() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -100,19 +93,17 @@ func sweepSupersededBinaries() {
 }
 
 // profileConfig assembles the diagnostics config from the flags and the environment,
-// returning a usage message (and no config) for a combination that cannot be honoured.
-// The flags win over the environment, except that neither can disable a watchdog the
-// other turned on.
+// or returns a usage message for a combination that cannot be honoured. Flags win over
+// the environment, but neither can disable a watchdog the other turned on.
 func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Config, string) {
 	cfg := diag.FromEnv(diag.Config{
 		Dir:        dir,
 		Contention: contention,
 		Args:       os.Args,
 		Clock:      clock.System{},
-		// The sandbox is the only thing in this binary that spawns a process, and it
-		// records every one it starts and reaps in the process registry. Reading that
-		// registry is an atomic load, so a bundle left on for days costs nothing per
-		// sample; diag has no other way to learn the count without walking the machine.
+		// The sandbox is the only spawner in this binary and records every child in the
+		// process registry. Reading it is an atomic load, so a bundle left on for days costs
+		// nothing per sample.
 		Children: procs.Live,
 	})
 	if leakWatch && cfg.Leak == nil {
@@ -122,9 +113,8 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 		return cfg, ""
 	}
 
-	// The watchdog samples the bundle's timeline and dumps into the bundle, so it has
-	// nowhere to look and nowhere to write without one. Refuse rather than run a long
-	// soak that was quietly watching nothing.
+	// The watchdog reads and dumps into the bundle, so without one it would watch
+	// nothing for the whole soak.
 	if cfg.Dir == "" {
 		return diag.Config{}, "usage: --leak-watch needs a bundle to watch; add --profile <dir> or set FLYNN_PROFILE"
 	}
@@ -137,19 +127,14 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 	return cfg, ""
 }
 
-// main exists only to turn run's exit code into a process exit. Every path out of the
-// command returns through run, so a --profile bundle's deferred Stop always executes:
-// os.Exit runs no defers, and a bundle that is never stopped is never written.
+// main only turns run's exit code into a process exit. os.Exit runs no defers, so
+// every path returns through run, where a --profile bundle's deferred Stop writes it.
 func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) }
 
-// run dispatches the command line and returns the process exit code: 0 on success, 1 on
-// a command error, 2 on a usage error, and exitChangesRequested for a review that asked
-// for changes.
-//
-// The flag set, the arguments, and the two output streams are passed in rather than
-// reached for, so the whole dispatch is exercisable in-process. main hands it the real
-// ones: flag.CommandLine (which exits on a bad flag, as it always has), the arguments
-// after the program name, and the process's own streams.
+// run dispatches the command line and returns the exit code: 0 on success, 1 on a
+// command error, 2 on a usage error, and exitChangesRequested for a review that asked
+// for changes. The flag set, arguments and streams are parameters so the dispatch is
+// testable in-process.
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
 		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model")
@@ -180,18 +165,16 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). This adds a check on top of the run's normal grant and sandbox and takes none away: an action the grant refuses stays refused, and one it permits is now also held until --allow declares it. A run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
 	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It only lifts the hold that --irreversible puts on that action, so it needs a matching --irreversible and grants nothing the run's normal grant and sandbox do not already permit. It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
 	if err := fs.Parse(args); err != nil {
-		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
-		// flag set that was asked to hand parse errors back: a bad flag is a usage error,
-		// and a request for help (which the flag package has already answered) is not.
+		// Only a flag set that returns parse errors reaches here; flag.CommandLine exits.
+		// A help request, already answered by the flag package, is not a usage error.
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	// Help is answered before anything else is done on the command's behalf. The flag
-	// package stops at the first word that is not a flag, so a help flag written after a
-	// subcommand is never seen by it, and would otherwise reach the model as an objective
-	// or run the command it was asked about.
+	// The flag package stops at the first non-flag word, so a help flag after a
+	// subcommand reaches here unseen. Answer it before it becomes an objective or runs
+	// the command it asked about.
 	if helpRequested(fs.Args()) {
 		printUsage(stdout)
 		return 0
@@ -207,12 +190,11 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	}
 	vrb := *verbose || *verboseLong
 
-	// Whether the binary's own skills apply is settled here, before anything opens a
-	// store, because opening one is what reconciles them.
+	// Set before any store opens, because opening one reconciles the bundled skills.
 	bundledSkillsDisabled = *noBundled
 
-	// A misspelt trust setting is refused up front: falling back to the default would
-	// run a session in a mode its operator did not choose.
+	// A misspelt trust setting is refused, because the default would run a session in a
+	// mode its operator did not choose.
 	projectFilesFlag = *projFiles
 	if _, err := projectFilesMode(); err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
@@ -224,9 +206,8 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	// A profile bundle spans the whole command, so it opens before any work and closes
-	// on the single exit path below. With no --profile and no FLYNN_PROFILE this costs
-	// nothing: Start returns a nil bundle and Stop on it is a no-op.
+	// The bundle spans the whole command and closes on the single exit path below. With
+	// no --profile and no FLYNN_PROFILE, Start returns a nil bundle whose Stop is a no-op.
 	profileCfg, usage := profileConfig(*profileDir, *profileCont, *leakWatch, *leakRepeat)
 	if usage != "" {
 		_, _ = fmt.Fprintln(stderr, usage)
@@ -239,8 +220,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() {
-		// A bundle that failed to seal is a warning, not a failed command: the work the
-		// user asked for already happened, and its exit code is theirs, not the profiler's.
+		// The command already ran, so a bundle that failed to seal is only a warning.
 		if err := bundle.Stop(); err != nil {
 			_, _ = fmt.Fprintln(stderr, "warning: profile bundle:", err)
 		}
@@ -249,25 +229,21 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	sweepStaleSandboxProfiles()
 	sweepSupersededBinaries()
 
-	// Say anything we owe the user (a security advisory about the version they are
-	// running, above all) before the command runs, and look for a newer feed in the
-	// background. Both are best-effort and neither can fail the command.
+	// Print owed notices (a security advisory for this version above all) before the
+	// command runs, and fetch a newer feed in the background. Neither can fail the command.
 	startupNotices(context.Background(), *dataDir)
 
-	// Point catalog reads at this data directory's user overlay, so a model added with
-	// `flynn models add` is selectable by --model like any catalog entry.
+	// Catalog reads include this data directory's overlay, so a `flynn models add` entry
+	// is selectable by --model.
 	prevCatalogDir := catalogDataDir
 	setCatalogDataDir(*dataDir)
 	defer setCatalogDataDir(prevCatalogDir)
 
-	// The model to drive: an explicit --model wins; otherwise a previously chosen default
-	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
-	// default the flag carries. So a user need not repeat --model once one is chosen.
+	// An explicit --model wins, then the recorded default, then the flag's default.
 	modelSpecExplicit = flagPassed(fs, "model")
 	modelSpec := effectiveModelSpec(*model, modelSpecExplicit, *dataDir)
 
-	// The subcommand, or "" when none was given. No subcommand is named "", so every
-	// branch below can compare against it directly.
+	// No subcommand is named "", so the branches below compare against cmd directly.
 	cmd := ""
 	if len(rest) >= 1 {
 		cmd = rest[0]
@@ -294,19 +270,15 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-// goalArgs reads the run flags written after `flynn goal`, the place the usage text
-// shows them, and returns the command line with only the objective left after "goal".
-// Any other command line is returned as it came.
+// goalArgs parses the run flags written after `flynn goal`, where the usage text puts
+// them, and returns the command line with only the objective after "goal". Other
+// command lines come back unchanged.
 //
-// The flag package stops at the first argument that is not a flag, so without this
-// `flynn goal --goal-spec terms.json` parses no flag at all: the spec is never loaded
-// and the objective becomes the text "--goal-spec terms.json". The same happens to
-// --require-approval, --irreversible and every other flag that governs a run, so the
-// run goes ahead without the controls the operator typed. A flag after the objective
-// cannot be read the same way, because an objective is free text; one that names a
-// flag is refused as a usage error instead, naming it, rather than becoming words of
-// the objective. A "--" ends the flags as it does everywhere else, so an objective
-// that has to start with a dash can still be written.
+// The flag package stops at the first non-flag, so without this `flynn goal
+// --goal-spec terms.json` loads no spec and runs with the flag text as its objective,
+// dropping --require-approval, --irreversible and every other control the operator
+// typed. A flag after the free-text objective is refused as a usage error that names
+// it. "--" ends the flags, so an objective can start with a dash.
 func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
 	if len(rest) == 0 || rest[0] != "goal" {
 		return rest, ""
@@ -329,11 +301,9 @@ func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
 	return append([]string{"goal"}, objective...), ""
 }
 
-// helpRequested reports whether the command line asks a known subcommand for help, by a
-// help flag as its first argument. Only that position counts, because everything after the
-// subcommand name is its own text, and an objective that mentions "-h" is still an
-// objective. The help command itself is not matched: it is an ordinary route, and the
-// flags written before it are still validated.
+// helpRequested reports whether a known subcommand's first argument is a help flag.
+// Later arguments are the subcommand's own text, so an objective mentioning "-h" is
+// still an objective. The help command is an ordinary route and is not matched.
 func helpRequested(rest []string) bool {
 	if len(rest) < 2 || !slices.Contains([]string{"-h", "--help", "-help"}, rest[1]) {
 		return false
@@ -348,7 +318,7 @@ func helpRequested(rest []string) bool {
 }
 
 // flagName returns the flag name an argument spells ("-v", "--goal-spec",
-// "--max-cost=2"), and false for anything that is not written as a flag.
+// "--max-cost=2"), and false for anything that is not a flag.
 func flagName(arg string) (string, bool) {
 	if len(arg) < 2 || arg[0] != '-' {
 		return "", false
@@ -360,9 +330,8 @@ func flagName(arg string) (string, bool) {
 	return name, name != ""
 }
 
-// invocation carries the resolved command-line state routeCommand needs to run a subcommand: the
-// output streams, the chosen model spec and data dir, verbosity, and the run-shaping flags a
-// `goal` consumes. run parses these once and hands them over so routeCommand stays a pure router.
+// invocation is the command-line state run parses once and hands to routeCommand, so
+// the router does no parsing.
 type invocation struct {
 	stdout, stderr io.Writer
 	modelSpec      string
@@ -373,23 +342,20 @@ type invocation struct {
 	verify         string
 	fanout         bool
 	requireProof   bool
-	// goalSpec is the path to the goal spec file, or "" when none was passed. It is the
-	// path rather than the loaded spec because loading it is a fallible step the router
-	// reports as a usage error.
+	// goalSpec is the spec file path, or "". Loading it can fail, and the router reports
+	// that as a usage error.
 	goalSpec    string
 	reqApproval []string
 	outside     []string
 	allowed     []string
 	maxCost     float64
 	maxTokens   int64
-	// shell is what the commands the run launches are limited to and kept away from. It
-	// is built from the flags once, here, so every entry point that drives a shell hands
-	// the same value on and none of them restates the defaults.
+	// shell is built from the flags once, so every entry point that drives a shell passes
+	// the same policy and none restates the defaults.
 	shell governed.ShellPolicy
 }
 
-// exit maps a subcommand's error to a process exit code: 1 with the message on stderr, or 0 on
-// success. It is the uniform tail shared by every command whose only outcome is ok-or-error.
+// exit maps an ok-or-error outcome to 0, or to 1 with the message on stderr.
 func (inv invocation) exit(err error) int {
 	if err != nil {
 		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
@@ -398,9 +364,9 @@ func (inv invocation) exit(err error) int {
 	return 0
 }
 
-// invocationCommands are the subcommands that need more of the invocation than the
-// data directory: the model spec, the output streams, or the run-shaping flags. Each
-// returns its own exit code, because several have an outcome other than ok-or-error.
+// invocationCommands are the subcommands that need the model spec, the streams or the
+// run flags. Each returns its own exit code, because several have outcomes other than
+// ok-or-error.
 var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"goal":    routeGoal,
 	"inspect": routeInspect,
@@ -424,22 +390,18 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"help":   func(inv invocation, _ []string) int { printUsage(inv.stdout); return 0 },
 }
 
-// commandAliases maps a second name to the subcommand it runs. The usage summary
-// names the subcommand, so an alias is not required to appear in it.
+// commandAliases maps a second name to the subcommand it runs. Usage lists only the
+// subcommand.
 var commandAliases = map[string]string{
 	"replay":   "inspect",
 	"sessions": "runs",
 }
 
-// routeCommand routes a parsed command line to its subcommand and returns the process exit code.
-// It is the command table split out of run so parsing/profiling setup and command routing each
-// stay small; the exit-code contract lives here: 0 on success, 1 on a command error, 2 on a usage
-// error, and exitChangesRequested for a review that asked for changes.
+// routeCommand routes a parsed command line and returns the exit code under the
+// contract documented on run.
 func routeCommand(cmd string, rest []string, inv invocation) int {
-	// A goal spec is the terms of one run, and only `flynn goal` submits one. Passing it
-	// to anything else is refused rather than ignored: silently dropping it would leave an
-	// operator believing their run is being held to terms that were never in force, which
-	// is worse than not having stated them.
+	// A goal spec on any other command is refused: ignoring it would let an operator
+	// believe terms were in force that never were.
 	if inv.goalSpec != "" && cmd != "goal" {
 		what := "flynn " + cmd
 		if cmd == "" {
@@ -456,13 +418,10 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		return fn(inv, rest)
 	}
 
-	// Subcommands that take only the data directory share one dispatch path, so adding one is a
-	// table entry rather than another case here.
 	if fn, ok := dataDirCommands[name]; ok {
 		if err := fn(rest[1:], inv.dataDir); err != nil {
-			// An error with no message is a command reporting an outcome through its exit code
-			// rather than a failure: `flynn version check` exits non-zero when an upgrade is
-			// waiting, and nothing has gone wrong that warrants a message.
+			// An empty error reports an outcome through the exit code alone: `flynn version
+			// check` exits non-zero when an upgrade is waiting.
 			if err.Error() != "" {
 				_, _ = fmt.Fprintln(inv.stderr, "error:", err)
 			}
@@ -471,9 +430,8 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		return 0
 	}
 
-	// No subcommand: start an interactive session when attached to a terminal, where each line
-	// is a turn of one continuing conversation. With stdin redirected (a pipe, a file, a CI
-	// step) there is no one to prompt, so print usage instead.
+	// With no subcommand a terminal gets an interactive session; redirected stdin has no
+	// one to prompt, so it gets usage.
 	if len(rest) == 0 && stdinIsTerminal() {
 		inv.noteShellPosture()
 		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval, inv.shell))
@@ -483,10 +441,9 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	return 2
 }
 
-// routeGoal runs `flynn goal`. The run's terms are read and validated here, before a
-// store is opened or a credential is resolved: a spec file that will not load is a
-// usage error, and the operator finds out while they are still looking at the file
-// rather than after the run has started without the terms they wrote.
+// routeGoal runs `flynn goal`. It loads and validates the spec before any store or
+// credential, so a bad spec is a usage error the operator sees before the run starts
+// without their terms.
 func routeGoal(inv invocation, rest []string) int {
 	var spec goalSpecFile
 	if inv.goalSpec != "" {
@@ -497,8 +454,8 @@ func routeGoal(inv invocation, rest []string) int {
 		}
 		spec = loaded
 	}
-	// Printed without the error prefix: an objective stated nowhere, or stated twice
-	// and differently, is the command line being wrong rather than the run failing.
+	// An objective stated nowhere, or twice differently, is a command-line error and is
+	// printed without the error prefix.
 	objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
 	if err != nil {
 		_, _ = fmt.Fprintln(inv.stderr, err)
@@ -525,9 +482,8 @@ func routeResume(inv invocation, rest []string) int {
 	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose, inv.shell))
 }
 
-// routeMemory runs `flynn memory`. It is not a dataDirCommands entry: consolidation
-// distils a series through a model, so it needs the run's model spec as well as the
-// data directory.
+// routeMemory runs `flynn memory`. Consolidation distils through a model, so it needs
+// the model spec and cannot be a dataDirCommands entry.
 func routeMemory(inv invocation, rest []string) int {
 	if err := dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
 		if errors.Is(err, errMemoryUsage) {
@@ -552,9 +508,8 @@ func routeSkill(inv invocation, rest []string) int {
 	return 0
 }
 
-// routeReview runs `flynn review`, the one command whose non-error outcome is not
-// simply success: a run that requested changes exits with its own code rather than
-// 0 or 1.
+// routeReview runs `flynn review`. A review that requests changes exits with
+// exitChangesRequested.
 func routeReview(inv invocation, rest []string) int {
 	switch err := runReview(rest[1:], inv.modelSpec, inv.dataDir, inv.verbose); {
 	case errors.Is(err, errChangesRequested):
@@ -566,10 +521,9 @@ func routeReview(inv invocation, rest []string) int {
 	return 0
 }
 
-// effectiveModelSpec resolves which model to drive: the explicit --model value when the
-// user passed one, else the recorded default under dataDir, else the flag's built-in
-// default. So once a model is chosen (onboarding, /model, or `flynn models use`), a later
-// launch reuses it without repeating --model.
+// effectiveModelSpec resolves the model: an explicit --model, else the default
+// recorded under dataDir (by onboarding, /model or `flynn models use`), else the
+// flag's built-in default.
 func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string {
 	if explicit {
 		return flagValue
@@ -580,20 +534,17 @@ func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string 
 	return flagValue
 }
 
-// modelSpecExplicit records whether --model was named on the command line. Every command
-// resolves the same spec, but only a spec the user named carries an instruction about
-// which provider may see the work, so the resolver refuses a missing credential instead
-// of falling back when this is set.
+// modelSpecExplicit records whether --model was named. Only a named spec says which
+// provider may see the work, so with it set the resolver refuses a missing credential
+// instead of falling back.
 var modelSpecExplicit bool
 
-// bundledSkillsDisabled records whether --no-bundled-skills was named. It is read
-// where the durable store is opened rather than passed through every command,
-// because reconciling the pack is part of opening the store and every command that
-// opens one has to agree about it.
+// bundledSkillsDisabled records --no-bundled-skills. It is a global because every
+// command that opens the store reconciles the pack there and has to agree.
 var bundledSkillsDisabled bool
 
-// flagPassed reports whether the named flag was set on the command line, so a default can
-// be told apart from a value the user passed explicitly.
+// flagPassed reports whether the named flag was set, telling a default from an
+// explicit value.
 func flagPassed(fs *flag.FlagSet, name string) bool {
 	found := false
 	fs.Visit(func(f *flag.Flag) {
@@ -604,7 +555,6 @@ func flagPassed(fs *flag.FlagSet, name string) bool {
 	return found
 }
 
-// printUsage writes the command summary to w.
 func printUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, `flynn: an autonomous software agent. Usage:
   flynn                      start an interactive session (chat turn by turn)
@@ -689,11 +639,8 @@ requirement --require-proof carries); where it cannot be run, the run stops sayi
 rather than carrying on unaudited.`)
 }
 
-// defaultDataDir is where durable state lives unless overridden: a per-user
-// directory so learning compounds across projects. It falls back to a local
-// directory when the user config dir is unavailable. A development build uses a
-// separate directory (dataDirName), so working on the schema on a branch never migrates,
-// or is blocked by, a real installation's database.
+// defaultDataDir is the per-user state directory, so learning carries across
+// projects, or a local directory when the user config dir is unavailable.
 func defaultDataDir() string {
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, dataDirName())
@@ -701,9 +648,8 @@ func defaultDataDir() string {
 	return "." + dataDirName()
 }
 
-// dataDirName is the per-user directory name for durable state: "flynn" for a release
-// build, "flynn-dev" for an unstamped development build, so the two never share a
-// database.
+// dataDirName is "flynn" for a release build and "flynn-dev" for an unstamped build,
+// so a branch's schema work never migrates or is blocked by a real database.
 func dataDirName() string {
 	if version.IsDev() {
 		return "flynn-dev"
@@ -711,10 +657,9 @@ func dataDirName() string {
 	return "flynn"
 }
 
-// runGoal resolves the model, opens the durable store, and drives one objective to
-// completion in the current directory, recalling past learning into the prompt and
-// (unless disabled) distilling the result back out. Progress and the final result
-// are printed; Ctrl-C cancels the run.
+// runGoal drives one objective to completion in the current directory, recalling
+// past learning into the prompt and, unless disabled, distilling the result back.
+// Ctrl-C cancels the run.
 func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, shell governed.ShellPolicy) error {
 	if err := checkAllowedAreMarked(outside, allowed); err != nil {
 		return err
@@ -727,17 +672,15 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		return err
 	}
 
-	// Resolve the run's backend: a native model conversation, or an external agent CLI
-	// whose own harness drives the loop. A `--model codex:<model>` spec selects the
-	// latter; anything else resolves a hosted or local model as before.
+	// A `--model codex:<model>` spec selects an external agent CLI whose harness drives
+	// the loop; anything else resolves a hosted or local model.
 	var (
 		model    llm.Model
 		plan     harness.Plan
 		extAgent *externAgent
 	)
 	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
-		// Fan-out delegates to concurrent native child loops; an external harness owns its
-		// own loop, so the combination is refused rather than silently ignored.
+		// An external harness owns its loop, so fan-out with one is refused.
 		if fanout {
 			return fmt.Errorf("--fanout is not supported with the %s external agent backend: it drives its own loop", name)
 		}
@@ -745,8 +688,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		if err != nil {
 			return err
 		}
-		// The harness's home outlives its episodes (it holds the CLI's own conversation) and
-		// dies with the run.
+		// The harness home holds the CLI's own conversation, so it lives as long as the run.
 		defer extAgent.close()
 	} else {
 		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
@@ -755,11 +697,9 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		}
 	}
 
-	// Load the instance signer so the run is sealed into a verifiable record. This is
-	// best effort: if the identity cannot be loaded, the run proceeds unsigned rather
-	// than failing. Loaded before the store so the store's snapshots are sealed under
-	// the same key: with a signer, resource snapshots are verified (checkpoint-bound,
-	// COSE-signed) and written automatically as the stream grows.
+	// The signer is best effort: without an identity the run proceeds unsigned. It loads
+	// before the store so resource snapshots are sealed under the same key, verified and
+	// written as the stream grows.
 	signer, serr := runSigner(ctx, dataDir)
 	if serr != nil {
 		signer = nil
@@ -770,19 +710,16 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	}
 	defer func() { _ = store.Close() }()
 
-	// Learning distills a converged run through a model. An external agent exposes no
-	// model of its own (its inner loop is unobserved), so a run it drives does not
-	// distill: the run is still sealed and verifiable, only the learn-back step is
-	// skipped.
+	// An external agent exposes no model to distill through, so its run is sealed but
+	// skips learning.
 	var distiller learn.Distiller
 	if learnEnabled && extAgent == nil {
 		distiller = governed.Distiller(model)
 	}
 
-	// With fan-out enabled the run drives the full goals engine: the model may
-	// delegate sub-goals to concurrent child agents, each routed to the model its
-	// bound archetype pins, all folded into this run's one sealed record. A child that
-	// names a model resolves it through the same credential chain as the root.
+	// Fan-out lets the model delegate sub-goals to concurrent children, each on the model
+	// its archetype pins and resolved through the root's credential chain, all folded
+	// into this run's sealed record.
 	var fc *fanoutConfig
 	if fanout {
 		fc = &fanoutConfig{resolveModel: childModelResolver(ctx, dataDir)}
@@ -791,63 +728,47 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	opts := []driveOption{
 		withBudget(budgetpkg.Limits{Tokens: maxTokens, Cost: maxCost}),
 		withShellPolicy(shell),
-		// A one-shot run has no operator at a prompt, so it carries the gate without a
-		// prompter: a listed action is refused rather than taken. That is the fail-closed
-		// half of the same mechanism the interactive session resolves by asking.
+		// No operator is at a prompt, so the gate has no prompter and refuses a listed action.
 		withApproval(reqApproval, nil),
-		// The actions that reach outside the workspace, and the ones this run was declared
-		// to be allowed among them. Both belong to the person who started the run: the run
-		// itself can neither mark an action safe nor declare itself authorized, which is
-		// what makes a declaration something other than the run's own reading of the
-		// objective.
+		// The actions that reach outside the workspace and those this run may take. Only the
+		// person who started the run sets them; the run cannot mark an action safe or
+		// authorize itself.
 		withAllowance(outside, mergeAllowances(spec, allowed)),
-		// The terms the operator stated, and their stop condition where they wrote one.
+		// The operator's terms, with their stop condition if they wrote one.
 		withGoalSpec(spec),
-		// What recall ranks by. Nil unless this install names an embedding model, which
-		// leaves the lexical order every run has had until now.
+		// Nil unless this install names an embedding model, which keeps lexical recall order.
 		withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(os.Stdout))),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
 	} else {
-		// A native goal plans before it builds: it expands its objective into a visible
-		// ledger first. An external agent CLI drives its own loop and its own planning, so
-		// the phase is only added to the native path.
+		// A native goal writes a visible plan ledger before it builds. An external agent CLI
+		// plans in its own loop.
 		opts = append(opts, withPlanning())
-		// The repository's instruction files, if the operator lets them in. An external
-		// agent CLI reads its own project files, so the decision is made for a native
-		// run only.
+		// The repository's instruction files, if the operator allows them. An external agent
+		// CLI reads its own.
 		opts = append(opts, withProjectFiles(projectDecision(cwd, dataDir)))
-		// Hold the run to that plan when asked. Planning alone runs each item's check
-		// and records the verdict, so a run always says how much of its plan it actually
-		// proved; this is what makes an unproven item stop the run rather than only show
-		// up in the record.
+		// Planning records each item's verdict; this makes an unproven item stop the run.
 		if requireProof {
 			opts = append(opts, withLedgerProof())
 		}
 	}
 
-	// The objective and the final answer are rendered from the run's own events
-	// (session.started and session.converged), so the live transcript and a later
-	// `flynn inspect` of the same run read identically.
+	// The objective and answer render from the run's own events, so the live transcript
+	// and a later `flynn inspect` read identically.
 	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose, fc, opts...); err != nil {
 		return err
 	}
 	return nil
 }
 
-// resolveModel resolves the model's credential through the vault first (the OS
-// keychain, then the passphrase-sealed file), falling back to the environment, so a
-// key stored once with `flynn auth set` is used automatically and nothing need be
-// exported. The key is then dropped from the process environment: it lives inside
-// the model as a secret.Text, and the sandbox already withholds the parent
-// environment from commands, so unsetting keeps the raw key out of os.Environ(), a
-// crash dump, or any child that reads the parent env.
+// resolveModel resolves the credential through [credentialSource], so a key stored
+// with `flynn auth set` needs no export. The key is then unset from the process
+// environment: the model holds it as a secret.Text, and unsetting keeps it out of
+// os.Environ(), crash dumps and any child that reads the parent env.
 func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
-	// A local catalog model resolves by provisioning and serving it on demand, then
-	// talking to its loopback endpoint, so selecting it is zero-touch: nothing has to be
-	// installed, downloaded, or started by hand. A hosted provider spec falls through to
-	// the credential-backed resolver below.
+	// A local catalog model is provisioned and served on demand, so selecting it needs
+	// no manual install, download or start.
 	if isLocalModelID(modelSpec) {
 		return resolveLocalModel(ctx, modelSpec, dataDir)
 	}
@@ -862,24 +783,22 @@ func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, ha
 	for _, k := range provider.CredentialEnvVars() {
 		_ = os.Unsetenv(k)
 	}
-	// A hosted frontier model is driven leanly: the zero plan applies no scaffolding,
-	// preserving its full schemas and single-pass convergence.
+	// The zero plan adds no scaffolding, keeping a frontier model's full schemas and
+	// single-pass convergence.
 	return model, harness.Plan{}, nil
 }
 
-// credentialSource is the credential lookup order: the vault first (the OS
-// keychain, then the passphrase-sealed file), then the environment. One place
-// builds it so model resolution and provider auto-detection read the same chain.
+// credentialSource is the credential lookup order: the OS keychain, the
+// passphrase-sealed file, then the environment. Model resolution and provider
+// auto-detection share it.
 func credentialSource(dataDir string) secret.Source {
 	return secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
 }
 
-// resumeRun continues an existing run by its id: it re-drives the run's goal from
-// where it was left, streaming the rest of the conversation onto the same durable
-// stream. The prior conversation replays first, then the run is driven to its
-// terminal phase. Ctrl-C detaches without losing the run, which can be resumed
-// again. Learning capture is skipped: a resume continues a run, it does not start a
-// fresh one to distill.
+// resumeRun re-drives run runID's goal from where it stopped, onto the same durable
+// stream: the prior conversation replays, then the run continues to a terminal phase.
+// Ctrl-C detaches and the run can be resumed again. A resume skips learning, since it
+// starts no fresh run to distill.
 func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.ShellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -892,7 +811,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	if err != nil {
 		return err
 	}
-	// The same best-effort signer a goal seals under, so a resumed run ends verifiable too.
+	// The same best-effort signer as a goal, so a resumed run ends verifiable.
 	signer, serr := runSigner(ctx, dataDir)
 	if serr != nil {
 		signer = nil
@@ -928,9 +847,9 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	return err
 }
 
-// resuming completes a request that continues run r.resumeID: the guards its first
-// assembly recorded (see [resumeGuards]), its fan-out if it was one, and the operator's
-// shell policy for this invocation.
+// resuming completes a request that continues r.resumeID with the guards its first
+// assembly recorded (see [resumeGuards]), its fan-out, and this invocation's shell
+// policy.
 func (r driveRequest) resuming(ctx context.Context, dataDir string, shell governed.ShellPolicy) (driveRequest, error) {
 	posture, _, err := governed.ReadPosture(ctx, r.log, r.resumeID)
 	if err != nil {
@@ -946,25 +865,23 @@ func (r driveRequest) resuming(ctx context.Context, dataDir string, shell govern
 	return r.withOptions(append(guards, withShellPolicy(shell))...), nil
 }
 
-// resumeGuards turns the posture a run was first assembled with into the options that
-// assemble it the same way again, and reports whether it was a fan-out. A resume reads
-// only the shell flags from its own command line, so without these a resumed goal had
-// no item verifier (its first verify step failed the run), no spend cap, no approval
-// gate and no outside-action gate. A zero posture, from a run recorded before postures
-// were, yields none of them, as before. An external agent's run is refused: resume
-// drives a native model, and continuing that run on one would change who is driving it.
+// resumeGuards turns a run's recorded posture into the options that rebuild it and
+// reports whether it was a fan-out. A resume reads only shell flags, so without these
+// it would lose the item verifier, spend cap, approval gate and outside-action gate.
+// A zero posture, recorded before postures existed, yields none. An external agent's
+// run is refused, because resume would continue it on a native model.
 func resumeGuards(p governed.Posture) (opts []driveOption, fanout bool, err error) {
 	if p.Mode == governed.ModeExternal {
 		return nil, false, errors.New("resume: this run was driven by an external agent CLI, and resume can only continue a native run")
 	}
 	opts = []driveOption{
 		withBudget(p.BudgetLimits),
-		// With nobody at a prompt the gate refuses a listed action, as on a one-shot goal.
+		// Nobody is at a prompt, so the gate refuses a listed action.
 		withApproval(p.ApprovalActions, nil),
 		// The run's declared allowances are on its goal, which a resume keeps.
 		withAllowance(p.AllowanceActions, nil),
 	}
-	// A fan-out always wires the verifier, so only the planned single run needs telling.
+	// Fan-out always wires the verifier, so only a planned single run needs it set.
 	if p.Verifier && p.Mode != governed.ModeFanout {
 		opts = append(opts, withPlanning())
 	}
