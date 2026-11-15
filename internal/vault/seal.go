@@ -10,11 +10,10 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// sealFormat is the on-disk shape of a passphrase-sealed blob. It is self
-// describing: the KDF parameters travel with the ciphertext so a vault written by
-// one version still opens after the defaults are tuned, and the version guards a
-// future format change. The salt and nonce are random per seal, so re-sealing the
-// same value never produces the same bytes.
+// sealFormat is the on-disk shape of a sealed blob. The KDF parameters travel with the
+// ciphertext, so a vault still opens after the defaults are tuned, and the version
+// guards a future format change. Salt and nonce are random per seal, so re-sealing a
+// value never repeats bytes.
 type sealFormat struct {
 	Version    int    `json:"v"`
 	Time       uint32 `json:"t"`    // argon2id passes
@@ -25,9 +24,9 @@ type sealFormat struct {
 	Ciphertext []byte `json:"c"`    // sealed payload (AEAD includes the auth tag)
 }
 
-// Argon2id parameters. The memory and time cost target a few hundred milliseconds
-// on a desktop, the OWASP-style balance for an interactive unlock, high enough to
-// make a stolen-vault dictionary attack expensive without a noticeable pause.
+// Argon2id parameters, targeting a few hundred milliseconds on a desktop: an
+// interactive unlock without a noticeable pause, and an expensive dictionary attack on
+// a stolen vault.
 const (
 	sealVersion    = 1
 	argonTime      = 3
@@ -37,14 +36,11 @@ const (
 	saltLen        = 16
 )
 
-// Bounds on the KDF parameters read back from a sealed blob. The parameters are
-// self-describing so a vault still opens after the defaults are tuned, but open
-// reads them before the AEAD can authenticate anything, so an attacker who edits
-// the blob controls them. Without bounds a crafted blob could request a multi
-// gigabyte Argon2id allocation (a memory-exhaustion denial of service) or a zero
-// time/parallelism that makes the KDF panic, both before the authentication step
-// would reject it. These ceilings are generous around the defaults yet refuse a
-// hostile blob; the default memory cost (64 MiB) sits well under the 1 GiB cap.
+// Bounds on the KDF parameters read from a sealed blob. open reads them before the
+// AEAD authenticates anything, so whoever edits the blob controls them. Unbounded, a
+// crafted blob could demand a multi-gigabyte Argon2id allocation or a zero time or
+// parallelism that panics the KDF. The default memory cost (64 MiB) sits well under
+// the 1 GiB cap.
 const (
 	maxArgonTime      = 16
 	maxArgonMemoryKiB = 1 << 20 // 1 GiB
@@ -52,9 +48,9 @@ const (
 	maxSaltLen        = 1 << 10 // 1 KiB; the default salt is 16 bytes
 )
 
-// seal encrypts plaintext under a key derived from passphrase with Argon2id, using
-// XChaCha20-Poly1305 for authenticated encryption. The result is a JSON envelope
-// carrying everything open needs except the passphrase.
+// seal encrypts plaintext with XChaCha20-Poly1305 under a key derived from passphrase
+// with Argon2id. The JSON envelope carries everything open needs except the
+// passphrase.
 func seal(plaintext, passphrase []byte) ([]byte, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -81,9 +77,8 @@ func seal(plaintext, passphrase []byte) ([]byte, error) {
 	})
 }
 
-// open reverses seal. A wrong passphrase or any tampering with the blob fails the
-// AEAD authentication and returns ErrBadPassphrase rather than partial plaintext,
-// so a corrupted or brute-forced vault is rejected, never half-decrypted.
+// open reverses seal. A wrong passphrase or any tampering fails AEAD authentication
+// and returns ErrBadPassphrase, never partial plaintext.
 func open(blob, passphrase []byte) ([]byte, error) {
 	var f sealFormat
 	if err := json.Unmarshal(blob, &f); err != nil {
@@ -92,10 +87,9 @@ func open(blob, passphrase []byte) ([]byte, error) {
 	if f.Version != sealVersion {
 		return nil, fmt.Errorf("vault: unsupported seal version %d", f.Version)
 	}
-	// Reject out-of-bounds KDF parameters before deriving the key. A tampered blob
-	// is indistinguishable from a wrong passphrase to the caller, and this check
-	// runs before any allocation, so a hostile blob cannot exhaust memory or panic
-	// the KDF on its way to the authentication failure it would hit anyway.
+	// The bounds are checked before any allocation, so a hostile blob cannot exhaust
+	// memory or panic the KDF on its way to the authentication failure. To the caller a
+	// tampered blob looks like a wrong passphrase.
 	if !f.validKDFParams() {
 		return nil, ErrBadPassphrase
 	}
@@ -114,11 +108,10 @@ func open(blob, passphrase []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// validKDFParams reports whether the Argon2id parameters from a sealed blob are
-// within the accepted bounds. Argon2id requires a time cost and parallelism of at
-// least one and at least eight memory blocks per lane; the upper bounds cap
-// resource use so a crafted blob cannot exhaust memory or stall before the AEAD
-// rejects it. The salt must be present and bounded for the same reason.
+// validKDFParams reports whether a blob's Argon2id parameters are in bounds. Argon2id
+// requires a time cost and parallelism of at least one and eight memory blocks per
+// lane; the upper bounds and the salt bound cap resource use before the AEAD rejects a
+// crafted blob.
 func (f sealFormat) validKDFParams() bool {
 	if f.Time < 1 || f.Time > maxArgonTime {
 		return false

@@ -6,18 +6,16 @@ import (
 	"encoding/json"
 )
 
-// Hash returns the stable content hash of r: a hex SHA-256 over its canonical content
-// (identity, scope, labels and annotations, spec, status, valid-time, and the tombstone
-// flag), excluding the volatile envelope fields (versions, clocks, timestamps, and the hash
-// itself). Equal content yields an equal hash on any machine, so resource history forms a
-// Merkle DAG: dedup, provenance, tamper-evidence, and diff-based sync.
+// Hash returns the hex SHA-256 of r's canonical content (identity, scope, labels,
+// annotations, spec, status, valid-time, tombstone flag), excluding volatile envelope
+// fields. Equal content hashes equal on any machine, so resource history is a Merkle
+// DAG usable for dedup, provenance, tamper evidence and diff-based sync.
 //
-// Spec is canonicalized (re-encoded with sorted keys) so specs that differ only in key
-// order or whitespace hash the same. Status is folded in as a fixed-size digest of its
-// bytes instead: one owning controller writes it through a stable Go encoder, so byte
-// identity already equals semantic identity, and Merge carries the origin's hash verbatim
-// and never re-hashes a remote status. Digesting keeps a write allocation-flat however
-// large the status grows (a goal embeds its whole transcript in it).
+// Spec is re-encoded with sorted keys, so key order and whitespace do not count.
+// Status is folded in as a digest of its bytes: one controller writes it through a
+// stable encoder and Merge never re-hashes a remote status, so bytes already equal
+// meaning, and a digest keeps a write's allocation flat however large the status
+// grows (a goal embeds its transcript).
 func Hash(r Resource) (string, error) {
 	return contentHash(r, canonicalJSON(r.Spec))
 }
@@ -44,23 +42,17 @@ func contentHash(r Resource, canonicalSpec any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// statusDigest returns a hex SHA-256 over the status bytes verbatim. It is a
-// constant-size, constant-allocation stand-in for the status inside the content
-// hash: equal status bytes yield an equal digest on any machine, and the work does
-// not grow with an embedded transcript the way decoding status into a generic tree
-// would. Empty status hashes to the digest of no bytes, distinct from any non-empty
-// status.
+// statusDigest returns a hex SHA-256 over the status bytes, a constant-cost stand-in
+// that does not grow with an embedded transcript. Empty status hashes to the digest
+// of no bytes, distinct from any non-empty status.
 func statusDigest(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
-// SpecHash returns a stable hash of a resource's desired state alone (its kind and
-// canonical spec), excluding status and all envelope metadata. It is the agent's
-// equivalent of Kubernetes' metadata.generation: a controller records the SpecHash
-// it last acted on in status, and a reconcile is a no-op while the stored spec hash
-// still matches, so writing status (which changes the full content hash) never
-// re-triggers work. Equal spec yields an equal hash on any machine.
+// SpecHash returns a stable hash of kind and canonical spec alone, the agent's
+// metadata.generation. A controller records the SpecHash it acted on in status, and
+// reconcile is a no-op while it matches, so a status write never re-triggers work.
 func SpecHash(r Resource) (string, error) {
 	return specHash(r, canonicalJSON(r.Spec))
 }
@@ -79,9 +71,8 @@ func specHash(r Resource, canonicalSpec any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// Hashes returns Hash and SpecHash together, canonicalizing the spec once. The
-// Stamper stamps both onto every write, so readers (the reconciler's no-op check
-// above all) compare stored fields instead of re-canonicalizing per tick.
+// Hashes returns Hash and SpecHash, canonicalizing the spec once. The Stamper
+// stamps both on every write, so the reconciler's no-op check compares fields.
 func Hashes(r Resource) (content, spec string, err error) {
 	cs := canonicalJSON(r.Spec)
 	content, err = contentHash(r, cs)
@@ -95,9 +86,8 @@ func Hashes(r Resource) (content, spec string, err error) {
 	return content, spec, nil
 }
 
-// canonicalJSON decodes raw JSON to a generic value so the outer Marshal re-encodes
-// it with sorted object keys (Go marshals map[string]any deterministically). Empty
-// input is null; input that is not valid JSON is hashed as an opaque string.
+// canonicalJSON decodes raw JSON to a generic value so Marshal re-encodes it with
+// sorted keys. Empty input is null; invalid JSON is hashed as an opaque string.
 func canonicalJSON(b []byte) any {
 	if len(b) == 0 {
 		return nil

@@ -11,55 +11,51 @@ import (
 	"time"
 )
 
-// Manifest describes a bundle: what produced it, over what window, and what it
-// contains. It is the first member a reader opens, and the only one that can
-// establish that the others arrived intact.
+// Manifest describes a bundle: its producer, its window and its members. It is the
+// only member that can show the others arrived intact.
 type Manifest struct {
 	// BundleID uniquely names this capture.
 	BundleID string `json:"bundle_id"`
-	// FlynnVersion is the binary's version string, revision included when it has one.
+	// FlynnVersion is the binary's version string, with revision when known.
 	FlynnVersion string `json:"flynn_version"`
 	// Revision is the VCS revision the binary was built from, when it is known.
 	Revision string `json:"revision,omitempty"`
-	// GoVersion is the Go toolchain the binary was built with. A profile is read
-	// against the runtime that produced it, so this is not decoration.
+	// GoVersion is the toolchain that built the binary; a profile is read against the
+	// runtime that produced it.
 	GoVersion string `json:"go_version"`
 	// OS and Arch are the platform the capture ran on.
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
-	// NumCPU is the parallelism the scheduler had, needed to read a CPU profile's
-	// sample counts as a fraction of available time.
+	// NumCPU is the scheduler's parallelism, needed to read CPU sample counts as a
+	// fraction of available time.
 	NumCPU int `json:"num_cpu"`
-	// Args is the command line, redacted: an objective and an API key both reach it.
+	// Args is the redacted command line: an objective and an API key both reach it.
 	Args []string `json:"args,omitempty"`
 	// Contention reports whether the block and mutex profiles were captured.
 	Contention bool `json:"contention"`
-	// SampleIntervalMs is the timeline sampler's period in milliseconds.
+	// SampleIntervalMs is the timeline period in milliseconds.
 	SampleIntervalMs int64 `json:"sample_interval_ms"`
 	// StartedAt and EndedAt bound the capture window.
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
-	// Annotations correlate the bundle with whatever the caller knew about the run,
-	// such as its id, once that identity existed.
+	// Annotations correlate the bundle with what the caller knew about the run.
 	Annotations map[string]string `json:"annotations,omitempty"`
-	// Members names and hashes every other file in the bundle.
+	// Members names and hashes every other file.
 	Members []Member `json:"members"`
 }
 
-// Member is one file in a bundle, with the size and digest it had when the
-// manifest was written.
+// Member is one bundle file with its size and digest when the manifest was written.
 type Member struct {
-	// Name is the member's file name, relative to the bundle directory.
+	// Name is relative to the bundle directory.
 	Name string `json:"name"`
 	// Bytes is the member's size on disk.
 	Bytes int64 `json:"bytes"`
-	// SHA256 is the member's content digest, lowercase hex.
+	// SHA256 is the content digest, lowercase hex.
 	SHA256 string `json:"sha256"`
 }
 
-// hashMembers digests every regular file directly in dir except exclude, which is
-// the manifest itself. Members come back sorted by name so a manifest written
-// twice over the same bundle is byte-identical.
+// hashMembers digests every regular file directly in dir except exclude (the
+// manifest), sorted by name so a rewritten manifest is byte-identical.
 func hashMembers(dir, exclude string) ([]Member, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -81,10 +77,8 @@ func hashMembers(dir, exclude string) ([]Member, error) {
 	return members, nil
 }
 
-// hashMember digests one member, streaming it rather than reading it whole: a CPU
-// profile from a long run is not a size this process should have to hold twice. The
-// name comes from reading the bundle directory this process just wrote, not from
-// any caller's input.
+// hashMember digests one member by streaming, because a long run's CPU profile is too
+// big to hold twice. name comes from this process's own directory read.
 func hashMember(dir, name string) (Member, error) {
 	f, err := os.Open(filepath.Join(dir, name)) //nolint:gosec // G304: a dirent of the bundle directory this process created
 	if err != nil {

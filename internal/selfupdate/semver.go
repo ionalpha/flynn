@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
-// Version is a parsed release version. Only the shape flynn actually tags is
-// accepted: "v" followed by major.minor.patch, optionally a prerelease. A version
-// this package cannot parse is never compared, because a comparison that quietly
-// treats an unparseable version as zero is a downgrade attack with extra steps.
+// Version is a parsed release version of the one form flynn tags: "v", then
+// major.minor.patch, then an optional prerelease. An unparseable version is never
+// compared, because reading one as zero would make a downgrade attack easy.
 type Version struct {
 	major, minor, patch int
 	pre                 []string // the dot-separated prerelease identifiers, empty for a release
@@ -21,13 +20,13 @@ func (v Version) String() string { return v.raw }
 // IsPrerelease reports whether this version carries a prerelease suffix.
 func (v Version) IsPrerelease() bool { return len(v.pre) > 0 }
 
-// ParseVersion reads a version tag. It is strict on purpose.
+// ParseVersion reads a version tag strictly.
 func ParseVersion(s string) (Version, bool) {
 	raw := s
 	s = strings.TrimPrefix(s, "v")
 
-	// Build metadata does not participate in precedence, and flynn does not tag with
-	// it. Accepting it would mean two distinct tags that compare equal.
+	// Build metadata takes no part in precedence and flynn does not tag with it, so
+	// accepting it would let two distinct tags compare equal.
 	if strings.Contains(s, "+") {
 		return Version{}, false
 	}
@@ -68,9 +67,8 @@ func ParseVersion(s string) (Version, bool) {
 }
 
 // Compare orders two versions by semantic-versioning precedence: -1 if v sorts before
-// w, 0 if they are the same version, +1 if v sorts after w. A prerelease sorts before
-// the release it leads to, so v0.2.0-rc.1 is older than v0.2.0, which is what makes
-// "do not install something older than what I am running" mean the right thing.
+// w, 0 if equal, +1 if after. A prerelease sorts before its release, so v0.2.0-rc.1
+// is older than v0.2.0 and "never install older than running" means the right thing.
 func (v Version) Compare(w Version) int {
 	for _, pair := range [][2]int{{v.major, w.major}, {v.minor, w.minor}, {v.patch, w.patch}} {
 		if c := cmpInt(pair[0], pair[1]); c != 0 {
@@ -96,7 +94,7 @@ func (v Version) Compare(w Version) int {
 
 // cmpPreIdent compares two prerelease identifiers. Numeric identifiers compare
 // numerically and sort below alphanumeric ones, per the specification, so rc.9 comes
-// before rc.10 rather than after it.
+// before rc.10.
 func cmpPreIdent(a, b string) int {
 	an, aNum := numericIdent(a)
 	bn, bNum := numericIdent(b)

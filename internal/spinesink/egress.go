@@ -7,33 +7,28 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// egressEventType is the event type an egress decision is recorded under on a run's
-// stream. It is the wire contract the session package projects into KindEgressDecision;
-// the two constants are pinned equal by a session round-trip test so they cannot drift.
+// egressEventType is the wire contract the session package projects into
+// KindEgressDecision; a session round-trip test pins the two constants equal.
 const egressEventType = "net.egress"
 
 // EgressSink records netguard's egress decisions onto a run's spine stream as
-// net.egress events, so a run's outbound network verdicts are part of the same recorded
-// history as its governed actions. Construct one per run with that run's stream id and
-// install it on the run's context with netguard.WithObserver, so every dial netguard
-// makes under that context reports here. A run that makes no netguard-gated egress (a
-// local, loopback model, say) records nothing, so the egress row stays silent.
+// net.egress events. Construct one per run and install it with netguard.WithObserver,
+// so every dial netguard makes under that context reports here.
 type EgressSink struct {
 	log    spine.Log
 	stream string
 }
 
-// NewEgress returns an EgressSink that writes egress decisions to log on the given
-// stream, attributed to the agent.
+// NewEgress returns an EgressSink that writes to log on stream, attributed to the
+// agent.
 func NewEgress(log spine.Log, stream string) *EgressSink {
 	return &EgressSink{log: log, stream: stream}
 }
 
-// Observe is a netguard.Observer: it appends one net.egress event per decision, naming
-// the destination host, the verdict (allowed or blocked), and the reason. It runs on a
-// dial goroutine, so it uses a background context (a cancelled dial still records its
-// verdict) and drops a failed append rather than surfacing it: the record is
-// observability, and the dial's own allow/deny already enforced the policy.
+// Observe is a netguard.Observer that appends one net.egress event per decision (host,
+// verdict, reason). It runs on a dial goroutine, so it uses a background context, so a
+// cancelled dial still records its verdict, and drops a failed append, because the
+// dial's own allow or deny already enforced the policy.
 func (s *EgressSink) Observe(d netguard.Decision) {
 	verdict := "blocked"
 	if d.Allowed {

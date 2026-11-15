@@ -1,44 +1,37 @@
-// Package portregister keeps docs/HOST_BOUNDARY.md and the tree from drifting
-// apart. Every exported interface in the public band has to be accounted for in the
-// register, and the register may not name a package that no longer exists.
+// Package portregister keeps docs/HOST_BOUNDARY.md and the tree in agreement. Every
+// exported interface in the public band must be accounted for in the register, and the
+// register may not name a package that no longer exists.
 //
-// A register written once decays. Six months of ports land, each individually
-// reasonable, and the doc describes a tree that is no longer there. That failure is
-// quiet in exactly the way the register was written to prevent: the document that
-// says which capabilities Flynn can perform on its own stops being evidence of
-// anything, and nobody finds out until somebody tries to run the binary without a
-// host. Where a rule is mechanical, the code enforces it.
+// A register written once decays: ports land, each reasonable, until the document
+// describes a tree that is gone and its record of what Flynn can do without a host is
+// evidence of nothing. Nobody finds out until someone runs the binary without a host,
+// so the mechanical rules are enforced in code.
 //
-// # What is checked, and what is left to a person
+// # What is checked
 //
-// Membership and code references, never judgment. Whether a seam is shipped,
-// justified or staged is a decision somebody has to make and defend in prose, and a
-// checker that guessed at it would be wrong in the cases that matter. So this asks
-// only: is every interface in the public band written down somewhere, and does every
-// package the register names still exist.
+// Membership and code references only. Whether a seam is shipped, justified or staged
+// is a decision a person makes and defends in prose, and a checker that guessed would
+// be wrong. So this asks whether every public-band interface is written down somewhere,
+// and whether every package the register names still exists.
 //
-// # The three places an interface can be accounted for
+// # Where an interface is accounted for
 //
-// A verdict row is the main one: the interface is a seam Flynn defers through, and
-// the row carries its shipped producer, its wiring site and its verdict.
+// A verdict row: the interface is a seam Flynn defers through, and the row carries its
+// shipped producer, wiring site and verdict.
 //
-// An optional capability is the second. It is an interface a producer may also
-// implement, found by type assertion rather than injected, where not implementing it
-// is a supported answer with a defined fallback: resource.KeyLister lets a backend
-// list keys without copying records, and a backend that cannot simply does not
-// implement it. These are not host deferrals, because nothing is deferred; the
-// register lists each with the fallback, since "what happens when it is absent" is
-// the same question a verdict answers.
+// An optional capability: an interface a producer may also implement, found by type
+// assertion, where not implementing it has a defined fallback (resource.KeyLister lets
+// a backend list keys without copying records). Nothing is deferred, but the register
+// lists the fallback, because what happens when it is absent is the question a verdict
+// answers.
 //
-// Not a deferral is the third, and it is the honest name for the rest: a handle a
-// port hands back (clock.Timer, observe.Span), or an interface Flynn implements and
-// something else consumes (reconcile.Reconciler). Each carries a one-line reason,
-// because an unexplained exclusion is how the register loses coverage without anyone
-// deciding it should.
+// Not a deferral: a handle a port returns (clock.Timer, observe.Span) or an interface
+// Flynn implements for another consumer (reconcile.Reconciler). Each carries a one-line
+// reason, because an unexplained exclusion loses coverage with nobody deciding it.
 //
-// Only the public band is scanned, matching internal/hostneutral: every package
-// outside internal/, ignoring _test.go files. That is the surface a host depends on,
-// and an interface under internal/ is nobody's to implement but ours.
+// Only the public band is scanned, as in internal/hostneutral: every package outside
+// internal/, without _test.go files. That is what a host depends on; an interface under
+// internal/ has no outside implementer.
 package portregister
 
 import (
@@ -54,10 +47,9 @@ import (
 	"strings"
 )
 
-// Seam is one exported interface in the public band, named the way the register
-// names it: the package's own name, a dot, the type. Path and Line locate the
-// declaration so a failure points at the thing that needs a row rather than at the
-// document.
+// Seam is one exported interface in the public band, named as the register names it:
+// package name, dot, type. Path and Line point a failure at the declaration that needs
+// a row.
 type Seam struct {
 	Name string
 	Path string
@@ -70,17 +62,15 @@ type Finding struct {
 	Subject string
 	// Where locates it: a source position for a seam, the register for an entry.
 	Where string
-	// Detail says what is wrong and what to do about it. It is written for whoever
-	// tripped the check, who is usually somebody who has just added an interface and
-	// has never read this package.
+	// Detail says what is wrong and what to do, for someone who has just added an
+	// interface and never read this package.
 	Detail string
 }
 
 func (f Finding) String() string { return f.Where + ": " + f.Subject + ": " + f.Detail }
 
-// skipDirs are pruned anywhere in the walk. It matches hostneutral's list, for the
-// same reason: the two checks are one boundary read from each end, and a directory
-// that is out of scope for one is out of scope for the other.
+// skipDirs are pruned anywhere in the walk. They match hostneutral's list, because the
+// two checks read one boundary from each end.
 var skipDirs = map[string]bool{
 	".git": true, ".worktrees": true, "testdata": true,
 	"vendor": true, "node_modules": true, "internal": true,
@@ -104,15 +94,13 @@ func Seams(root string) ([]Seam, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		// WalkDir only ever hands back paths under root, so the relative form is a
-		// prefix trim. filepath.Rel would be the general answer and would carry an error
-		// branch that cannot be reached from here, which is worse than the trim: dead
-		// code in a gate is code nobody has ever seen run.
+		// WalkDir returns only paths under root, so a prefix trim gives the relative
+		// form. filepath.Rel would add an error branch no test can reach, and dead code
+		// in a gate has never run.
 		rel := filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(path, root), string(filepath.Separator)))
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
-			// A file that does not parse is the compiler's problem; the build fails on it
-			// either way, and reporting it here would only say so twice.
+			// A file that does not parse fails the build, which reports it.
 			return nil //nolint:nilerr // parse errors are reported by the build
 		}
 		out = append(out, interfacesIn(fset, file, rel)...)
@@ -150,34 +138,28 @@ type Register struct {
 	// Rows are the code spans in the first column of a verdict table, keyed by the
 	// span's text, with the row's verdict.
 	Rows map[string]string
-	// Accounted is every code span anywhere in the document. Membership is checked
-	// against this rather than against Rows alone, because a seam can legitimately be
-	// named in the prose under a row (the four halves of the approval stack are one
-	// deferral and one row) and requiring a row per interface would push the register
-	// towards a shape that hides the seam it is about.
+	// Accounted is every code span in the document. Membership is checked against it,
+	// because a seam may be named in the prose under a row (the four halves of the
+	// approval stack are one deferral and one row), and a row per interface would hide
+	// the deferral.
 	Accounted map[string]bool
-	// Verdicts counts each verdict word seen, so a test can assert the vocabulary has
-	// not grown a fourth member nobody defined.
+	// Verdicts counts each verdict word, so a test can assert no undefined word
+	// appeared.
 	Verdicts map[string]int
 	// Gaps are the subjects of rows whose verdict is gap, with the row's own text, so
 	// a gap that says nothing about what to build can be refused.
 	Gaps map[string]string
 }
 
-// accounts reports whether the register says anything about this seam, in any of the
-// three spellings the document legitimately uses.
+// accounts reports whether the register mentions seam in any spelling the document
+// uses: canonical, by import path where that disambiguates (`memory/digest.Pusher`), or
+// bare for siblings grouped on one row (`state.SessionStore` / `SkillStore` /
+// `MemoryStore`).
 //
-// The register names a seam by its import path where that is what disambiguates
-// (`memory/digest.Pusher`), and it groups siblings that are one deferral onto one
-// row, where the second and third are written bare (`state.SessionStore` /
-// `SkillStore` / `MemoryStore`). Both are better prose than the canonical form would
-// be, and a checker that insisted on the canonical form would be arguing with the
-// document about spelling instead of about coverage. So a bare type name counts.
-//
-// The cost is that a bare name could be accounted for by coincidence: some other
-// row's `Validator` covering a `Validator` in a package nobody wrote about. That is
-// the right trade. The check exists to catch the interface nobody thought about, and
-// nobody writes the name of an interface they have not thought about.
+// A bare name can match by coincidence: another row's `Validator` covering a
+// `Validator` in a package nobody wrote about. The check exists to catch the interface
+// nobody thought about, and nobody writes the name of an interface they have not
+// thought about, so the trade is accepted.
 func (r Register) accounts(seam string) bool {
 	if r.Accounted[seam] {
 		return true
@@ -200,9 +182,8 @@ var codeSpan = regexp.MustCompile("`([^`]+)`")
 // tableRow matches a markdown table row: leading pipe, cells, trailing pipe.
 var tableRow = regexp.MustCompile(`^\|(.+)\|\s*$`)
 
-// knownVerdicts is the closed vocabulary. A fourth word is a finding, not a new
-// category: the whole value of three verdicts is that a reader knows what each one
-// obliges, and a row carrying "partial" obliges nothing.
+// knownVerdicts is the closed vocabulary; any other word is a finding. A reader knows
+// what each verdict obliges, and a row carrying "partial" obliges nothing.
 var knownVerdicts = map[string]bool{"shipped": true, "justified": true, "staged": true, "gap": true}
 
 // ParseRegister reads the register at path.
@@ -225,9 +206,8 @@ func ParseRegister(path string) (Register, error) {
 		if m == nil {
 			continue
 		}
-		// Split never returns an empty slice, so the last cell is always there to read.
-		// A one-celled line reads its only cell as the verdict, finds it is not one, and
-		// falls through with the rest of the prose.
+		// Split never returns an empty slice. A one-celled line reads its only cell as
+		// the verdict, fails the check, and falls through as prose.
 		cells := strings.Split(m[1], "|")
 		verdict := strings.TrimSpace(cells[len(cells)-1])
 		if !knownVerdicts[verdict] {
@@ -244,13 +224,10 @@ func ParseRegister(path string) (Register, error) {
 	return reg, nil
 }
 
-// Check reports every way the register and the tree under root disagree.
-//
-// The two directions are separate findings on purpose. A seam with nothing written
-// about it is a contributor who has not been told the rule yet, and the message says
-// what to write. A register entry naming a package that is gone is a rename that
-// took the row's meaning with it, and nobody notices because the document still
-// reads fine.
+// Check reports every way the register and the tree under root disagree. The two
+// directions are separate findings: a seam with nothing written about it needs a
+// message saying what to write, and an entry naming a gone package is a rename that
+// took the row's meaning, which nobody notices because the prose still reads fine.
 func Check(root, registerPath string) ([]Finding, error) {
 	seams, err := Seams(root)
 	if err != nil {
@@ -290,12 +267,10 @@ func Check(root, registerPath string) ([]Finding, error) {
 	return out, nil
 }
 
-// missingPackages reports register entries whose package is gone from the tree. Only
-// the package half is resolved, not the identifier: a row legitimately names things
-// that are not declarations (a flag, a struct field, a directory), and a check that
-// insisted every span be a Go symbol would refuse the register's own vocabulary.
-// A package directory that has disappeared is unambiguous, and it is the drift that
-// actually happens, because a package rename leaves the prose reading perfectly well.
+// missingPackages reports register entries whose package is gone. Only the package
+// half is resolved, because a row names things that are not declarations (a flag, a
+// struct field, a directory). A vanished package directory is unambiguous, and a
+// rename is the drift that happens, since it leaves the prose reading fine.
 func missingPackages(reg Register, root, registerPath string) []Finding {
 	seen := map[string]bool{}
 	var out []Finding
@@ -318,16 +293,15 @@ func missingPackages(reg Register, root, registerPath string) []Finding {
 	return out
 }
 
-// packageExists reports whether a directory anywhere in the public band declares a
-// package by this name. Directory name and package name diverge often enough
-// (memory/distil, skill/skilltool) that the clause has to read the declaration.
+// packageExists reports whether a public-band directory declares package pkg. It reads
+// the declaration, because directory and package names diverge (memory/distil,
+// skill/skilltool).
 func packageExists(root, pkg string) bool {
 	found := false
 	fset := token.NewFileSet()
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		// A directory this walk cannot read holds no answer about the package, and the
-		// question is only whether one exists: stopping the walk on it would report a
-		// live package as gone, which is a worse answer than looking in the rest.
+		// An unreadable directory cannot show the package is absent; stopping on it
+		// would report a live package as gone.
 		if err != nil || found {
 			return nil //nolint:nilerr // an unreadable directory cannot say the package is absent
 		}
@@ -343,8 +317,7 @@ func packageExists(root, pkg string) bool {
 		if f, perr := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly); perr == nil && f.Name.Name == pkg {
 			found = true
 		}
-		// A file that does not parse cannot answer which package it is in, and the build
-		// reports it anyway; skipping it is the whole handling this deserves.
+		// A file that does not parse cannot name its package, and the build reports it.
 		return nil
 	})
 	return found

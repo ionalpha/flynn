@@ -1,16 +1,12 @@
-// Package flow is the declarative action interpreter: it lets an extension express
-// multi-step behaviour as data instead of compiled code. A Flow is an ordered list
-// of steps (http, transform, condition, loop, call, return) the interpreter runs
-// against a scope, where steps reference prior outputs and configuration by path.
-// Values flow as ordinary decoded JSON (nil, bool, float64, string, []any,
-// map[string]any), so a spec the resource store admits is also exactly what runs.
+// Package flow interprets declarative actions, so an extension expresses multi-step
+// behaviour as data. A Flow is an ordered list of steps (http, transform, condition,
+// loop, call, return) run against a scope, where steps read prior outputs and
+// configuration by path. Values are decoded JSON, so the spec the resource store
+// admits is what runs.
 //
-// The expression sub-language is deliberately small and side-effect-free: it reads
-// the scope and calls a fixed whitelist of pure functions, and nothing else. It
-// cannot reach the filesystem, spawn a process, or open a connection. The only
-// effects a flow has are its declared http and call steps, both of which go through
-// injected ports the host governs at the dispatch boundary. This file is the
-// expression lexer and parser; eval.go evaluates the resulting tree.
+// The expression language reads the scope and calls a fixed set of pure functions.
+// It cannot reach the filesystem, a process or a connection. A flow's only effects
+// are its http and call steps, through injected ports the host governs at dispatch.
 package flow
 
 import (
@@ -20,7 +16,7 @@ import (
 	"unicode"
 )
 
-// node is one expression AST node. Evaluation lives in eval.go.
+// node is one expression AST node.
 type node interface {
 	eval(s *scope) (any, error)
 }
@@ -48,13 +44,12 @@ type token struct {
 	pos  int
 }
 
-// punctuation maps the single-character structural tokens to their kinds.
 var punctuation = map[byte]tokenKind{
 	'.': tDot, '[': tLBracket, ']': tRBracket, '(': tLParen, ')': tRParen, ',': tComma,
 }
 
-// lex turns source into tokens. It never panics: an unterminated string or a stray
-// rune is a returned error, so fuzzing the parser cannot crash the process.
+// lex turns source into tokens. An unterminated string or stray rune is an error,
+// never a panic, so fuzzing cannot crash the process.
 func lex(src string) ([]token, error) {
 	var toks []token
 	for i := 0; i < len(src); {
@@ -70,8 +65,8 @@ func lex(src string) ([]token, error) {
 	return append(toks, token{tEOF, "", len(src)}), nil
 }
 
-// lexToken reads the token starting at i and returns it with the index after
-// it. Whitespace returns a tEOF token, which lex skips.
+// lexToken reads the token at i and returns it with the next index. Whitespace
+// yields tEOF, which lex skips.
 func lexToken(src string, i int) (token, int, error) {
 	c := src[i]
 	switch {
@@ -97,10 +92,8 @@ func lexToken(src string, i int) (token, int, error) {
 	return token{tOp, op, i}, n, nil
 }
 
-// lexNumberEnd returns the index just past the number starting at i. A number is
-// digits with at most one decimal point, so a second '.' ends the token and
-// starts a field access (e.g. so "1.2" is a number but "a.1.2" parses as field
-// steps rather than one malformed number).
+// lexNumberEnd returns the index past the number at i. A number has at most one
+// decimal point, so "1.2" is a number and "a.1.2" parses as field steps.
 func lexNumberEnd(src string, i int) int {
 	seenDot := false
 	for i < len(src) {
@@ -146,8 +139,8 @@ func lexString(src string, start int) (string, int, error) {
 	return "", 0, fmt.Errorf("flow: unterminated string at %d", start)
 }
 
-// lexOperator matches the longest operator at i, returning the operator text and
-// the new index, or n==0 if none matches.
+// lexOperator matches the longest operator at i, returning its text and the new
+// index, or n == 0 for none.
 func lexOperator(src string, i int) (string, int) {
 	two := ""
 	if i+1 < len(src) {
@@ -164,7 +157,6 @@ func lexOperator(src string, i int) (string, int) {
 	return "", 0
 }
 
-// lexIdentEnd returns the index just past the identifier starting at i.
 func lexIdentEnd(src string, i int) int {
 	for i < len(src) && (src[i] == '_' || isLetter(src[i]) || isDigit(src[i])) {
 		i++
@@ -176,14 +168,13 @@ func isSpace(c byte) bool  { return c == ' ' || c == '\t' || c == '\n' || c == '
 func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
 func isLetter(c byte) bool { return unicode.IsLetter(rune(c)) }
 
-// parser is a precedence-climbing (Pratt) parser over the token stream.
+// parser is a precedence-climbing (Pratt) parser.
 type parser struct {
 	toks []token
 	pos  int
 }
 
-// parseExpr parses a complete expression from source, erroring on trailing tokens
-// so a malformed tail is rejected rather than silently ignored.
+// parseExpr parses a whole expression; trailing tokens are an error.
 func parseExpr(src string) (node, error) {
 	toks, err := lex(src)
 	if err != nil {
@@ -203,7 +194,7 @@ func parseExpr(src string) (node, error) {
 func (p *parser) cur() token     { return p.toks[p.pos] }
 func (p *parser) advance() token { t := p.toks[p.pos]; p.pos++; return t }
 
-// binding powers for binary operators, lowest binds loosest.
+// bindingPower ranks binary operators; the lowest binds loosest.
 func bindingPower(op string) int {
 	switch op {
 	case "||":
@@ -260,7 +251,7 @@ func (p *parser) parseUnary() (node, error) {
 	return p.parsePostfix()
 }
 
-// parsePostfix parses a primary then any chain of .field, [index], or a call.
+// parsePostfix parses a primary then any chain of .field, [index] or call.
 func (p *parser) parsePostfix() (node, error) {
 	n, err := p.parsePrimary()
 	if err != nil {

@@ -7,27 +7,25 @@ import (
 	"strings"
 )
 
-// floorBits is the agentic-reliability floor in bits per weight. Four-bit quantization (the
-// Q4_K_M family) is the production floor: harsher than that degrades tool-call reliability and
-// schema adherence noticeably, and the degradation compounds over a long loop. This is a coarse
-// proxy, the bit width, not a measurement; the probe battery is the real signal, and this is the
-// cheap a-priori warning the catalog can show before anything is run.
+// floorBits is the agentic-reliability floor in bits per weight. Below four-bit
+// quantization (the Q4_K_M family), tool-call reliability and schema adherence degrade
+// noticeably, and more so over a long loop. The bit width is a coarse a-priori warning
+// the catalog shows before anything runs; the probe battery measures.
 const floorBits = 4
 
-// smallModelB is the parameter count (in billions) below which a model is considered small for
-// this purpose. A small model has the least headroom to absorb quantization, so even at the
-// four-bit floor it warrants a caution rather than a clean pass.
+// smallModelB is the parameter count in billions below which a model is small. A small
+// model has the least headroom to absorb quantization, so even at the floor it gets a
+// caution.
 const smallModelB = 7
 
-// quantBitsRE pulls the leading bit width out of a quant label: the digits after an optional I or
-// Q prefix (Q4_K_M, IQ3_XS, Q8_0), or after an f/fp prefix for float formats (fp16, f16).
+// quantBitsRE takes the leading bit width from a quant label: the digits after an
+// optional I or Q prefix (Q4_K_M, IQ3_XS, Q8_0), or after f or fp (fp16, f16).
 var quantBitsRE = regexp.MustCompile(`(?i)^(?:i?q|fp?)?(\d+)`)
 
-// QuantFloor judges a model+quant against the agentic-reliability floor and returns whether it is
-// below the floor together with a human-readable reason. paramsB is the parameter count in
-// billions (0 when unknown). The result is advisory: a quant at or above the floor still gets a
-// caution when the model is small, and an unrecognized quant label is reported as unknown rather
-// than silently passed, so the catalog never implies a reliability it has not checked.
+// QuantFloor judges a model and quant against the agentic-reliability floor. paramsB is
+// the parameter count in billions, 0 when unknown. The result is advisory: a quant at
+// or above the floor still gets a caution for a small model, and an unrecognized label
+// is reported unknown, so the catalog never implies a reliability it has not checked.
 func QuantFloor(quant string, paramsB float64) (below bool, reason string) {
 	bits, ok := quantBits(quant)
 	switch {
@@ -42,8 +40,7 @@ func QuantFloor(quant string, paramsB float64) (below bool, reason string) {
 	}
 }
 
-// quantBits extracts the bit width from a quant label, reporting ok=false when the label carries
-// no recognizable width.
+// quantBits extracts the bit width from a quant label; ok is false when there is none.
 func quantBits(quant string) (int, bool) {
 	m := quantBitsRE.FindStringSubmatch(strings.TrimSpace(quant))
 	if m == nil {

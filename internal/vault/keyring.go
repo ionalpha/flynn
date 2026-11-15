@@ -8,12 +8,11 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// Keyring is the OS-backed secret store the vault prefers: the platform keychain
-// that encrypts at rest under the user's login (Windows Credential Manager / DPAPI,
-// macOS Keychain, Linux Secret Service). It is abstracted as an interface so the
-// vault can run against a fake in tests and so a host with no keychain falls back
-// to the passphrase-sealed file. A value stored here never touches the agent's
-// disk in plaintext; the OS holds and guards it.
+// Keyring is the OS secret store the vault prefers (Windows Credential Manager and
+// DPAPI, macOS Keychain, Linux Secret Service), which encrypts at rest under the user's
+// login so a value never reaches the agent's disk in plaintext. It is an interface so
+// tests use a fake and a host with no keychain falls back to the passphrase-sealed
+// file.
 type Keyring interface {
 	// Get returns the secret stored under key, or ErrKeyNotFound if none is.
 	Get(service, key string) (string, error)
@@ -23,39 +22,33 @@ type Keyring interface {
 	Delete(service, key string) error
 }
 
-// ErrKeyNotFound reports that a key is absent from the keyring (distinct from the
-// keyring being unavailable, which surfaces as a different error from the backend).
+// ErrKeyNotFound reports that a key is absent from the keyring. An unavailable keyring
+// surfaces as a different backend error.
 var ErrKeyNotFound = errors.New("vault: key not found in keyring")
 
-// osKeyring is the real Keyring backed by the host platform keychain.
 type osKeyring struct{}
 
-// keychainOpTimeout bounds a single OS keychain operation. On a locked or headless
-// macOS login keychain (an SSH session, a CI runner, a Mac with no GUI login),
-// go-keyring's call into /usr/bin/security can block indefinitely waiting for an
-// unlock the environment can never provide, which would hang the whole process
-// before it prints anything. Bounding the call turns that hang into an error the
-// Store treats as "keychain unavailable", so it falls back to the sealed file. The
-// bound is far above a healthy keychain's millisecond response, so an unlocked
-// desktop keychain is never cut off; only a genuinely stuck one hits it.
+// keychainOpTimeout bounds one OS keychain operation. On a locked or headless macOS
+// login keychain (SSH, CI, no GUI login), go-keyring's call into /usr/bin/security can
+// block forever waiting for an unlock, hanging the process before it prints anything.
+// A timeout is an error the Store treats as keychain unavailable, so it falls back to
+// the sealed file. A healthy keychain answers in milliseconds, far below the bound.
 const keychainOpTimeout = 10 * time.Second
 
-// errKeychainTimeout reports that an OS keychain operation did not return within
-// keychainOpTimeout. Like errKeychainDisabled it is distinct from ErrKeyNotFound, so
-// the Store treats it as "keychain unavailable" and falls through to the sealed file.
+// errKeychainTimeout is distinct from ErrKeyNotFound, so the Store treats a timeout as
+// keychain unavailable and falls through to the sealed file.
 var errKeychainTimeout = errors.New("vault: OS keychain timed out (locked or headless; set FLYNN_VAULT_FILE=1 to skip it)")
 
-// OSKeyring returns the platform keychain as a Keyring, with each operation bounded by
-// keychainOpTimeout so a stuck keychain never hangs the process. On a host with no
-// keychain service its operations fail, and the vault falls back to the sealed file.
+// OSKeyring returns the platform keychain with each operation bounded by
+// keychainOpTimeout. On a host with no keychain service its operations fail, and the
+// vault falls back to the sealed file.
 func OSKeyring() Keyring { return timeoutKeyring{inner: osKeyring{}, timeout: keychainOpTimeout} }
 
-// timeoutKeyring bounds each operation of an inner Keyring, returning errKeychainTimeout
-// if the inner call does not complete in time. The inner call runs in its own goroutine
-// with a buffered result channel, so when the stuck operation finally returns it sends
-// and the goroutine exits rather than leaking; only the caller stops waiting. The bound
-// comes from a context deadline, not a bare timer, so it never touches an external clock
-// that has to replay deterministically.
+// timeoutKeyring bounds each operation of an inner Keyring, returning
+// errKeychainTimeout when it overruns. The inner call runs in its own goroutine with a
+// buffered result channel, so a stuck call that finally returns can send and exit
+// instead of leaking. The bound is a context deadline, so it touches no clock that has
+// to replay deterministically.
 type timeoutKeyring struct {
 	inner   Keyring
 	timeout time.Duration
@@ -127,16 +120,13 @@ func (osKeyring) Delete(service, key string) error {
 	return err
 }
 
-// errKeychainDisabled reports that the OS keychain has been turned off (see
-// disabledKeyring). It is distinct from ErrKeyNotFound, so the Store treats it as
-// "keychain unavailable" and falls through to the passphrase-sealed file, exactly as a
-// host with no keychain service does.
+// errKeychainDisabled is distinct from ErrKeyNotFound, so the Store falls through to the
+// sealed file as on a host with no keychain service.
 var errKeychainDisabled = errors.New("vault: OS keychain disabled")
 
-// disabledKeyring is a Keyring whose every operation reports the keychain as unavailable,
-// so the Store uses only the sealed file. It backs the FLYNN_VAULT_FILE switch: a run
-// that opts into a file-only vault (a container, a CI job, a host whose keychain the user
-// does not want touched) never reads or writes the OS keychain.
+// disabledKeyring reports the keychain unavailable on every operation. It backs
+// FLYNN_VAULT_FILE, so a file-only run (a container, a CI job, a user who wants the
+// keychain untouched) never reads or writes the OS keychain.
 type disabledKeyring struct{}
 
 func (disabledKeyring) Get(_, _ string) (string, error) { return "", errKeychainDisabled }

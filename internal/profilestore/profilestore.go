@@ -1,9 +1,8 @@
-// Package profilestore persists a model's measured capability profile as a typed resource
-// and reads it back as a harness.ProfileSource, so a reliability measurement made once drives how
-// hard the harness scaffolds that model on every later run. The profile is the integration point
-// between the reliability evaluation that writes it and the dispatch waist that reads it: writing
-// is an ordinary resource Put, so a profile is versioned, audited, and synced like any other
-// record, and reading loads a snapshot the assembly consults with no per-call store access.
+// Package profilestore persists a model's measured capability profile as a typed
+// resource and reads it back as a harness.ProfileSource, so one reliability measurement
+// sets how hard the harness scaffolds that model on later runs. Writing is a resource
+// Put, so a profile is versioned, audited and synced like any record; reading loads a
+// snapshot, so a lookup does not touch the store.
 package profilestore
 
 import (
@@ -40,10 +39,9 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// Spec is a measured profile for one model and, where they apply, the quantization and runtime it
-// was measured on: a different quant is a different function, so it is recorded. The reliability
-// fields mirror harness.ModelProfile; BatteryVersion records which probe set produced them, so a
-// score is only compared to another taken the same way.
+// Spec is a measured profile for one model and, where they apply, the quantization and
+// runtime it was measured on, since a different quant behaves differently.
+// BatteryVersion records the probe set, so scores are compared only within one.
 type Spec struct {
 	ModelID              string  `json:"modelID"`
 	Quant                string  `json:"quant,omitempty"`
@@ -55,7 +53,6 @@ type Spec struct {
 	EffectiveContext     int     `json:"effectiveContext,omitempty"`
 }
 
-// profile is the capability fingerprint the harness reads, mapped from the persisted spec.
 func (s Spec) profile() harness.ModelProfile {
 	return harness.ModelProfile{
 		ToolCallReliability:  s.ToolCallReliability,
@@ -77,9 +74,9 @@ func RegisterKind(reg *resource.Registry) error {
 	})
 }
 
-// Write persists a measured profile. The resource name is the (model, quant, runtime) key, so a
-// re-measurement of the same target overwrites the prior record rather than accumulating
-// duplicates. The store validates the spec against the schema on the way in.
+// Write persists a measured profile. The resource name is the (model, quant, runtime)
+// key, so a re-measurement overwrites the prior record. The store validates the spec
+// against the schema.
 func Write(ctx context.Context, rs resource.Store, spec Spec) error {
 	body, err := json.Marshal(spec)
 	if err != nil {
@@ -98,9 +95,9 @@ func Write(ctx context.Context, rs resource.Store, spec Spec) error {
 	return nil
 }
 
-// resourceName builds a stable, unique resource name from the measurement target. The model id is
-// used verbatim where it is name-safe; the optional quant and runtime refine it, so distinct
-// measurements of the same model do not collide.
+// resourceName builds a stable name from the measurement target: the model id verbatim
+// where name-safe, refined by the optional quant and runtime so distinct measurements
+// of one model do not collide.
 func resourceName(modelID, quant, runtime string) string {
 	name := modelID
 	if quant != "" {

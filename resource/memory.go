@@ -16,8 +16,8 @@ import (
 // Option configures the in-memory Store.
 type Option func(*memStore)
 
-// WithInstanceID sets the origin/last-writer instance stamped onto records this
-// store creates (default "local").
+// WithInstanceID sets the instance stamped as origin and last writer (default
+// "local").
 func WithInstanceID(id string) Option {
 	return func(s *memStore) {
 		if id != "" {
@@ -26,8 +26,7 @@ func WithInstanceID(id string) Option {
 	}
 }
 
-// WithClock sets the time source (default clock.System), so tests and replay can
-// supply a clock.Manual.
+// WithClock sets the time source (default clock.System).
 func WithClock(c clock.Clock) Option {
 	return func(s *memStore) {
 		if c != nil {
@@ -36,8 +35,7 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// WithEventLog backs the store with a specific spine.Log instead of a private
-// in-memory one (inject a shared log to observe, audit, or Replay the stream).
+// WithEventLog backs the store with l, a shared log to observe, audit or Replay.
 func WithEventLog(l spine.Log) Option {
 	return func(s *memStore) {
 		if l != nil {
@@ -46,9 +44,8 @@ func WithEventLog(l spine.Log) Option {
 	}
 }
 
-// WithIDGenerator sets the source of resource IDs (default: a generator on the
-// store's clock with crypto/rand entropy). Supply a seeded generator for
-// deterministic replay.
+// WithIDGenerator sets the ID source (default: the store's clock with crypto/rand).
+// A seeded generator makes replay deterministic.
 func WithIDGenerator(g *ids.Generator) Option {
 	return func(s *memStore) {
 		if g != nil {
@@ -57,23 +54,19 @@ func WithIDGenerator(g *ids.Generator) Option {
 	}
 }
 
-// WithSnapshotCodec makes the store's snapshots verified: Snapshot seals the
-// projection payload through the codec before saving it, and Replay opens
-// (verifies) a stored snapshot through it before restoring - one that fails to
-// open is skipped and the stream is folded from the start instead. With a codec
-// set, an unsigned or tampered snapshot is never restored.
+// WithSnapshotCodec verifies snapshots: Snapshot seals the payload through c and
+// Replay opens it before restoring. A snapshot that fails to open is skipped and the
+// stream folds from the start, so a tampered or unsigned snapshot is never restored.
 func WithSnapshotCodec(c spine.SnapshotCodec) Option {
 	return func(s *memStore) {
 		s.snapCodec = c
 	}
 }
 
-// WithSnapshotEvery makes the store checkpoint itself automatically: after every
-// k successful mutations it writes a snapshot, so a later Replay folds at most k
-// events past the last checkpoint instead of the whole stream. The snapshot is
-// written after the mutation completes, outside any lock, and best effort: a
-// snapshot failure never fails the write (a missing snapshot is only slower,
-// never wrong). Zero or negative disables automatic snapshots (the default).
+// WithSnapshotEvery writes a snapshot after every k successful mutations, so Replay
+// folds at most k events past it. It runs after the mutation, outside any lock, and
+// a failure never fails the write, since a missing snapshot is only slower. k <= 0
+// disables it (the default).
 func WithSnapshotEvery(k int) Option {
 	return func(s *memStore) {
 		s.snapEvery = k
@@ -81,8 +74,8 @@ func WithSnapshotEvery(k int) Option {
 }
 
 // NewMemory returns an in-memory Store admitting against reg. Every mutation is
-// recorded on a spine.Log and projected, so the store's state is always a fold of
-// its log (see Replay). Safe for concurrent use; the zero-setup default backend.
+// recorded on a spine.Log and projected, so the state is a fold of its log (see
+// Replay). It is safe for concurrent use.
 func NewMemory(reg *Registry, opts ...Option) Store {
 	s := &memStore{instanceID: "local", reg: reg}
 	for _, o := range opts {
@@ -121,9 +114,7 @@ type memStore struct {
 	snapPending atomic.Int64
 }
 
-// Log returns the spine this store records mutations on, so the stream can be
-// observed, audited, or folded with Replay. It is the event-sourced capability the
-// conformance suite holds the store to.
+// Log returns the spine the store records on, for observing, auditing or Replay.
 func (s *memStore) Log() spine.Log { return s.log }
 
 func (s *memStore) Close() error { return nil }
@@ -167,9 +158,8 @@ func (s *memStore) merge(ctx context.Context, remote Resource) (MergeResult, err
 	if err := ValidateForMerge(remote); err != nil {
 		return MergeResult{}, err
 	}
-	// Admit the replicated record so a merge can never project a resource of an
-	// unregistered kind or an invalid spec; kind definitions (themselves resources)
-	// replicate before instances of that kind.
+	// Admit the replicated record, so a merge never projects an unregistered kind
+	// or invalid spec; kind definitions replicate before their instances.
 	if err := s.reg.Validate(remote.APIVersion, remote.Kind, remote.Spec); err != nil {
 		return MergeResult{}, err
 	}
@@ -225,9 +215,8 @@ func (s *memStore) GetByID(_ context.Context, id string) (Resource, error) {
 
 func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selector) ([]Resource, error) {
 	c := s.core
-	// Collect matches under the read lock via the live index (only candidates of
-	// this kind and scope are visited, never tombstones), then sort outside it so
-	// the lock is held for the copy alone.
+	// Collect through the live index under the read lock and sort outside it, so the
+	// lock covers only the copy.
 	c.mu.RLock()
 	ids := c.live[kind][scope]
 	out := make([]Resource, 0, len(ids))
@@ -266,9 +255,8 @@ func (s *memStore) ListAll(_ context.Context, kind string, sel Selector) ([]Reso
 	return out, nil
 }
 
-// ListKeys is the KeyLister capability: the keys of every live resource of a
-// kind, straight from the live index, so a resync sweep copies addresses rather
-// than records.
+// ListKeys returns the keys of every live resource of a kind from the live index, so
+// a resync sweep copies addresses rather than records.
 func (s *memStore) ListKeys(_ context.Context, kind string) ([]Key, error) {
 	c := s.core
 	c.mu.RLock()
@@ -313,8 +301,7 @@ func (s *memStore) deleteRecord(ctx context.Context, kind string, scope Scope, n
 	return c.record(ctx, ev, rec)
 }
 
-// lessKey is the total order ListKeys returns: by scope (instance, project,
-// workspace), then name, mirroring lessByScopeName without a record in hand.
+// lessKey orders ListKeys by scope then name, as lessByScopeName does for records.
 func lessKey(a, b Key) bool {
 	if a.Scope.Instance != b.Scope.Instance {
 		return a.Scope.Instance < b.Scope.Instance
@@ -328,9 +315,8 @@ func lessKey(a, b Key) bool {
 	return a.Name < b.Name
 }
 
-// lessByScopeName is the total order ListAll returns: by scope (instance, project,
-// workspace), then name, with an ID tiebreak, so a cross-scope listing is
-// deterministic even when a name repeats across scopes.
+// lessByScopeName orders ListAll by scope, then name, then ID, so a cross-scope
+// listing is deterministic when a name repeats across scopes.
 func lessByScopeName(a, b Resource) bool {
 	if a.Scope.Instance != b.Scope.Instance {
 		return a.Scope.Instance < b.Scope.Instance
@@ -347,10 +333,9 @@ func lessByScopeName(a, b Resource) bool {
 	return a.ID < b.ID
 }
 
-// core is the in-memory read model behind the command path. Every mutation
-// appends an event and projects it under mu, so the log and projection never
-// diverge. apply is the only mutator and is reached only from record (live writes)
-// and Replay (reconstruction), so no write bypasses the log.
+// core is the in-memory read model. Every mutation appends an event and projects it
+// under mu, so log and projection never diverge. Only record (live writes) and
+// Replay reach the mutators, so no write bypasses the log.
 type core struct {
 	st  *Stamper
 	log spine.Log
@@ -359,12 +344,10 @@ type core struct {
 	lastSeq   int64
 	byID      map[string]Resource
 	nameIndex map[Key]string // (kind, scope, name) -> id, tombstones included
-	// live indexes the ids of live (non-tombstoned) resources by kind and scope, so
-	// List and ListAll visit only candidates instead of scanning every record ever
-	// written. A tombstone leaves this index the moment it projects but stays in
-	// byID: Merge still resolves a late remote write against the deletion by HLC,
-	// and a snapshot still carries the tombstone, so eviction here changes only the
-	// scan cost, never a read's result.
+	// live indexes live resource ids by kind and scope, so List and ListAll visit only
+	// candidates. A tombstone leaves it on projection but stays in byID, where Merge
+	// resolves late writes against it and snapshots carry it, so the index changes
+	// scan cost only.
 	live map[string]map[Scope]map[string]struct{}
 }
 
@@ -378,8 +361,8 @@ func newCore(st *Stamper, log spine.Log) *core {
 }
 
 // recordMerge appends a merge event carrying r verbatim and projects it, so a
-// replicated record lands on the log (and thus into Replay) exactly like a local
-// write, with its remote envelope preserved. Callers hold mu.
+// replicated record reaches the log and Replay with its remote envelope. Callers
+// hold mu.
 func (c *core) recordMerge(ctx context.Context, r Resource) error {
 	in, err := MergeEvent(r)
 	if err != nil {
@@ -388,13 +371,10 @@ func (c *core) recordMerge(ctx context.Context, r Resource) error {
 	return c.record(ctx, in, r)
 }
 
-// record appends the event and projects its post-image onto the read model. post is
-// the canonical record the caller already holds (the stamper's output for a write,
-// the merge winner for a merge), so record projects it directly instead of decoding
-// the raw payload again under the store lock. The stamper serialized post into
-// in.RawPayload, so this is the same post-image a replay would decode from the event,
-// keeping a live projection identical to a rebuilt-from-log one (TestReplayEquivalence
-// holds the two to byte equality). Callers hold mu.
+// record appends the event and projects post, the canonical record the caller holds,
+// instead of decoding the payload again under the lock. The stamper serialized post
+// into in.RawPayload, so a live projection equals a replayed one;
+// TestReplayEquivalence holds them to byte equality. Callers hold mu.
 func (c *core) record(ctx context.Context, in spine.AppendInput, post Resource) error {
 	e, err := c.log.Append(ctx, in)
 	if err != nil {
@@ -405,9 +385,7 @@ func (c *core) record(ctx context.Context, in spine.AppendInput, post Resource) 
 	return nil
 }
 
-// apply projects one event onto the read model during Replay; the live write
-// path (record) projects the same post-image from the raw payload instead, so a
-// rebuilt-from-log store is identical to a live one. Callers hold mu.
+// apply projects one event during Replay. Callers hold mu.
 func (c *core) apply(e spine.Event) error {
 	switch e.Type {
 	case EvPut, EvDeleted, EvMerged:
@@ -422,8 +400,8 @@ func (c *core) apply(e spine.Event) error {
 	}
 }
 
-// project indexes one post-image record. The single mutator behind apply
-// (Replay) and record (live writes). Callers hold mu.
+// project indexes one post-image, the single mutator behind apply and record.
+// Callers hold mu.
 func (c *core) project(r Resource) {
 	c.byID[r.ID] = r
 	c.nameIndex[r.Key()] = r.ID
@@ -434,7 +412,7 @@ func (c *core) project(r Resource) {
 	c.indexLive(r.Kind, r.Scope, r.ID)
 }
 
-// indexLive adds an id to the live index under (kind, scope). Callers hold mu.
+// indexLive adds id to the live index. Callers hold mu.
 func (c *core) indexLive(kind string, scope Scope, id string) {
 	scopes, ok := c.live[kind]
 	if !ok {
@@ -449,8 +427,8 @@ func (c *core) indexLive(kind string, scope Scope, id string) {
 	ids[id] = struct{}{}
 }
 
-// unindexLive drops an id from the live index, pruning emptied inner maps so a
-// churn of short-lived scopes cannot grow the index forever. Callers hold mu.
+// unindexLive drops id from the live index, pruning empty inner maps so churning
+// short-lived scopes cannot grow it forever. Callers hold mu.
 func (c *core) unindexLive(kind string, scope Scope, id string) {
 	scopes, ok := c.live[kind]
 	if !ok {
@@ -469,12 +447,9 @@ func (c *core) unindexLive(kind string, scope Scope, id string) {
 	}
 }
 
-// Replay reconstructs an in-memory Store by folding a log's resource stream: the
-// running proof that the resource layer is a projection of the spine. It resumes from
-// the log's latest resource snapshot when one exists and folds only the events
-// after it, so a long-lived stream rebuilds in bounded work instead of from the
-// start. The result is identical either way: a snapshot is a cache, not a source
-// of truth.
+// Replay rebuilds an in-memory Store by folding a log's resource stream. It resumes
+// from the latest resource snapshot and folds only later events, so rebuild work is
+// bounded; the result is the same either way, because a snapshot is only a cache.
 func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (Store, error) {
 	s := NewMemory(reg, append(opts, WithEventLog(log))...).(*memStore)
 	s.core.mu.Lock()
@@ -485,10 +460,8 @@ func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (
 		return nil, err
 	}
 	if found && s.snapCodec != nil {
-		// A codec makes restore fail closed: only a snapshot the codec verifies is
-		// restored. One that fails to open (tampered, unsigned, signed by an unknown
-		// key) is skipped and the stream folds from the start - only slower, never
-		// wrong.
+		// With a codec, only a verified snapshot is restored; one that fails to open
+		// is skipped and the stream folds from the start.
 		opened, oerr := s.snapCodec.Open(ctx, snap)
 		if oerr != nil {
 			found = false
@@ -498,7 +471,7 @@ func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (
 	}
 	if found {
 		if err := s.core.restore(snap.Payload); err != nil {
-			// A snapshot is a derived cache; an unreadable one falls back to the log.
+			// An unreadable snapshot falls back to the log.
 			s.core.reset()
 		}
 	}
@@ -516,17 +489,15 @@ func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (
 	return s, nil
 }
 
-// snapshotPayload is the serialized resource projection at a Seq: every record
-// (live and tombstoned) keyed by id, enough to restore the read model without
-// folding from the start.
+// snapshotPayload is the projection at a Seq: every record, live and tombstoned,
+// keyed by id.
 type snapshotPayload struct {
 	Resources []Resource `json:"resources"`
 	LastSeq   int64      `json:"lastSeq"`
 }
 
-// Snapshot checkpoints the store's current projection onto its event log as a
-// spine.Snapshot on the resource stream, anchored at the last applied Seq, so a
-// later Replay resumes from it. It keeps rebuild cost flat as the stream grows.
+// Snapshot checkpoints the projection onto the log as a spine.Snapshot anchored at
+// the last applied Seq, so Replay cost stays flat as the stream grows.
 func (s *memStore) Snapshot(ctx context.Context) error {
 	s.core.mu.RLock()
 	resources := make([]Resource, 0, len(s.core.byID))
@@ -549,10 +520,8 @@ func (s *memStore) Snapshot(ctx context.Context) error {
 	return s.log.SaveSnapshot(ctx, snap)
 }
 
-// maybeSnapshot counts one successful mutation toward the automatic snapshot
-// cadence and checkpoints the store when the cadence is reached. It runs after
-// the mutation, outside the store lock, and best effort: a snapshot failure never
-// fails the write it followed.
+// maybeSnapshot counts a mutation toward WithSnapshotEvery's cadence and snapshots
+// when it is reached. It runs outside the lock, and a failure never fails the write.
 func (s *memStore) maybeSnapshot(ctx context.Context) {
 	if s.snapEvery <= 0 {
 		return
@@ -564,19 +533,15 @@ func (s *memStore) maybeSnapshot(ctx context.Context) {
 	_ = s.Snapshot(ctx)
 }
 
-// MarshalSnapshot serializes a projection (all its records, live and tombstoned,
-// and the Seq it is current as of) into the snapshot payload Replay restores from.
-// A backend builds the record set from its own storage and calls this, so every
-// backend snapshots in one identical format. Records are sorted by id so the
-// payload is deterministic.
+// MarshalSnapshot serializes a projection's records, live and tombstoned, and its
+// Seq into the payload Replay restores. Every backend calls it, so all snapshot in
+// one format; records are sorted by id so the payload is deterministic.
 func MarshalSnapshot(resources []Resource, lastSeq int64) ([]byte, error) {
 	sort.Slice(resources, func(i, j int) bool { return resources[i].ID < resources[j].ID })
 	return json.Marshal(snapshotPayload{Resources: resources, LastSeq: lastSeq})
 }
 
-// UnmarshalSnapshot decodes a snapshot payload back into the records and the Seq
-// it is current as of - the inverse of MarshalSnapshot, so any backend restores
-// from the one shared format.
+// UnmarshalSnapshot is the inverse of MarshalSnapshot.
 func UnmarshalSnapshot(payload []byte) ([]Resource, int64, error) {
 	var pay snapshotPayload
 	if err := json.Unmarshal(payload, &pay); err != nil {
@@ -585,8 +550,8 @@ func UnmarshalSnapshot(payload []byte) ([]Resource, int64, error) {
 	return pay.Resources, pay.LastSeq, nil
 }
 
-// restore rebuilds the read model from a snapshot payload, reconstructing the
-// name index from the records. Callers hold mu.
+// restore rebuilds the read model and name index from a snapshot payload. Callers
+// hold mu.
 func (c *core) restore(payload []byte) error {
 	resources, lastSeq, err := UnmarshalSnapshot(payload)
 	if err != nil {
@@ -602,8 +567,8 @@ func (c *core) restore(payload []byte) error {
 	return nil
 }
 
-// reset returns the projection to its empty state, so a failed restore leaves a
-// store that folds from the start of the stream. Callers hold mu.
+// reset empties the projection, so a failed restore folds from the start. Callers
+// hold mu.
 func (c *core) reset() {
 	c.byID = map[string]Resource{}
 	c.nameIndex = map[Key]string{}

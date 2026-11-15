@@ -1,22 +1,19 @@
 package gguf
 
-// ChatTemplateDecision is the outcome of choosing the chat template to run a model
-// with: the template to actually use, and whether the model tried to supply its own.
+// ChatTemplateDecision is the chat template to run a model with, and whether the
+// model tried to supply its own.
 type ChatTemplateDecision struct {
-	// Template is the template to run with. It is always the caller's trusted
-	// template, never the model's, so the prompt contract cannot be set by the model.
+	// Template is always the caller's trusted template, so the model cannot set the
+	// prompt contract.
 	Template string
-	// ModelSupplied reports that the model embedded its own chat template. That
-	// template is ignored for the contract; the field lets a caller log or refuse a
-	// model that ships an unexpected template.
+	// ModelSupplied reports that the model embedded a chat template, which is
+	// ignored, so a caller can log or refuse a model shipping one unexpectedly.
 	ModelSupplied bool
 }
 
 // ChooseChatTemplate decides the chat template to run a model with. It never returns
-// the model's embedded template for use: a hostile GGUF can embed a template that
-// rewrites the prompt contract to inject instructions at inference, so the contract is
-// always the caller's trusted template. The decision reports whether the model tried
-// to supply one, so a caller can record or refuse that.
+// the embedded template for use, because a hostile GGUF can embed one that injects
+// instructions at inference; the caller's trusted template always wins.
 func ChooseChatTemplate(meta *Metadata, trusted string) ChatTemplateDecision {
 	_, modelSupplied := meta.ChatTemplate()
 	return ChatTemplateDecision{

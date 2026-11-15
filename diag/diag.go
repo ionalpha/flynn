@@ -1,31 +1,18 @@
-// Package diag captures a runtime profile bundle from a running flynn process.
+// Package diag captures a runtime profile bundle from a running flynn process: where
+// CPU went, what the heap held, which goroutines were alive, and how file
+// descriptors and child processes grew over time. Package observe records what a
+// run did; diag records what the process did, and works on a binary that is already
+// built and already misbehaving.
 //
-// Where observe carries agent semantics (what a run did, how much it cost), diag
-// carries process runtime facts: where CPU went, what the heap held, which
-// goroutines were alive, how many file descriptors and child processes the
-// process owned over time. The two are deliberately separate: an operator reading
-// a stuck run needs the second kind of evidence, and it must be capturable from a
-// binary that is already built and already misbehaving.
+// A bundle is a directory of pprof profiles, a JSONL timeline and a manifest that
+// hashes every member, so it can leave the machine and still be shown intact. With
+// Config.Leak set, the sampler fits a growth slope to every counter and dumps
+// labelled goroutine and heap profiles when growth starts.
 //
-// A bundle is a directory of pprof profiles, a JSONL timeline, and a manifest that
-// names and hashes every member, so a bundle can be moved off the machine and
-// still be shown intact.
-//
-// A bundle can also watch itself. With Config.Leak set, the timeline sampler fits
-// a growth slope across every counter it records and writes a labelled goroutine
-// profile, a heap profile, and the offending window into the bundle at the moment
-// growth starts, unattended. See leak.go.
-//
-// Nothing here runs unless a bundle is explicitly started: there is no init, no
-// background goroutine, and no allocation on the disabled path. Start with an
-// empty Config returns a nil *Bundle, and every method on a nil *Bundle is a
-// no-op, so the caller never branches on whether profiling is on.
-//
-// The package depends only on the standard library, the clock port (so the
-// timeline sampler is driven by an injected clock and stays testable), the secret
-// port (so an argv recorded in the manifest is redacted by the same redactor the
-// rest of the agent uses), and the observe port (so a leak the watchdog finds is
-// reported through the same logger as everything else).
+// Nothing runs until a bundle is started: no init, no goroutine, no allocation on
+// the disabled path. Start with an empty Config returns a nil *Bundle, and every
+// method on a nil *Bundle is a no-op, so callers never branch on whether profiling
+// is on.
 package diag
 
 import (
@@ -46,24 +33,23 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 )
 
-// Environment variables that turn a bundle on without changing the command line,
-// so a hosted or containerized instance can be profiled in place.
+// Environment variables that turn a bundle on without changing the command line, so
+// a hosted or containerized instance can be profiled in place.
 const (
 	// EnvDir names the bundle directory, equivalent to --profile.
 	EnvDir = "FLYNN_PROFILE"
 	// EnvContention enables the block and mutex profiles, equivalent to
-	// --profile-contention. Any value Go's strconv.ParseBool accepts as true enables it.
+	// --profile-contention. Any value strconv.ParseBool reads as true enables it.
 	EnvContention = "FLYNN_PROFILE_CONTENTION"
 )
 
-// DefaultInterval is how often the timeline sampler records a line when Config
-// leaves Interval unset. One second is fine enough to fit a growth slope over a
-// run of any interesting length and coarse enough that the sampler's own cost
-// stays in the noise.
+// DefaultInterval is the timeline period when Config leaves Interval unset: fine
+// enough to fit a growth slope over any run worth watching, coarse enough that the
+// sampler's own cost stays in the noise.
 const DefaultInterval = time.Second
 
-// Bundle member file names. A reader (see the `flynn diagnose` command) resolves
-// members by these names, so they are part of the bundle's contract.
+// Bundle member file names. `flynn diagnose` resolves members by these names, so they
+// are part of the bundle's contract.
 const (
 	MemberCPU          = "cpu.pprof"
 	MemberHeap         = "heap.pprof"
@@ -78,66 +64,54 @@ const (
 	MemberManifest     = "manifest.json"
 )
 
-// Config describes a bundle to capture. The zero Config is disabled: Start
-// returns a nil Bundle and touches nothing.
+// Config describes a bundle to capture. The zero Config is disabled.
 type Config struct {
 	// Dir is the bundle directory, created if absent. An empty Dir disables capture.
 	Dir string
 
-	// Contention enables the block and mutex profiles. Both make the runtime record
-	// every blocking event and every contended lock handoff, which costs real time in
-	// a hot process, so they are off unless asked for.
+	// Contention enables the block and mutex profiles. Both record every blocking event
+	// and contended lock handoff, which costs time in a hot process, so they are opt-in.
 	Contention bool
 
-	// Interval is the timeline sampler's period. Zero means DefaultInterval. A
-	// negative Interval disables the sampler, leaving the rest of the bundle intact.
+	// Interval is the timeline period; zero means DefaultInterval. A negative Interval
+	// disables the sampler and keeps the rest of the bundle.
 	Interval time.Duration
 
-	// Args is the command line to record in the manifest, redacted. Callers pass
-	// os.Args. An empty Args records no command line.
+	// Args is the command line to record, redacted, in the manifest; normally os.Args.
 	Args []string
 
-	// Clock is the time source for the timeline and the manifest's start and end
-	// stamps. Nil means clock.System. A test supplies a clock.Manual to drive the
-	// sampler deterministically.
+	// Clock times the timeline and the manifest's start and end stamps; nil means
+	// clock.System. A clock.Manual drives the sampler deterministically in tests.
 	Clock clock.Timing
 
-	// Leak turns the leak watchdog on. Nil is the disabled watchdog. The watchdog
-	// rides the timeline sampler, so it needs one: a Config with a Leak and a
-	// negative Interval is an error rather than a silently inert watchdog.
+	// Leak turns the leak watchdog on; nil disables it. The watchdog rides the timeline
+	// sampler, so a Leak with a negative Interval is an error.
 	Leak *LeakConfig
 
-	// Counters are application-supplied gauges sampled into every timeline line
-	// alongside the built-in ones, and watched by the watchdog when Leak's thresholds
-	// name them. This is where a counter this package cannot know about (unremoved
-	// temporary directories, the event log's size on disk) is registered.
+	// Counters are application gauges sampled into every timeline line beside the
+	// built-in ones and watched when Leak's thresholds name them, for facts this package
+	// cannot see (unremoved temp directories, the event log's size on disk).
 	Counters []Counter
 
-	// Children reports how many child processes the application has started and not yet
-	// reaped, and fills the timeline's child_procs. It is read on the sampler goroutine
+	// Children reports how many child processes the application has started and not
+	// reaped, filling the timeline's child_procs. It is read on the sampler goroutine
 	// once per interval and must not block.
 	//
-	// This package cannot answer the question itself. It could walk /proc or take a
-	// Windows process snapshot, but that costs an open and a read per process on the
-	// machine on every sample of a bundle meant to be safe to leave on for days, and it
-	// answers a different question: which processes currently name this pid as their
-	// parent, a set that pid reuse can populate with strangers. Only the spawners know
-	// what they spawned, so they are asked. See the procs package.
-	//
-	// Nil records Unknown rather than zero. An application that never said what it
-	// spawned has not thereby proved it spawned nothing, and Unknown restarts the
-	// watchdog's window instead of feeding it a flat line of false zeroes.
+	// This package does not count children itself: walking /proc or a Windows process
+	// snapshot costs a read per process on every sample, and pid reuse can make a
+	// stranger name this pid as its parent. Only the spawners know what they spawned;
+	// see package procs. Nil records Unknown rather than zero, which restarts the
+	// watchdog's window instead of feeding it false zeroes.
 	Children func() int
 
-	// sampled, when non-nil, receives once after every timeline sample. It is
-	// unexported because only this package's tests set it: it lets a test step a
+	// sampled, when non-nil, receives after every timeline sample, so a test can step a
 	// Manual clock one tick at a time without racing the sampler's timer re-arm.
 	sampled chan struct{}
 }
 
-// FromEnv fills the parts of cfg the caller left unset from the environment, so
-// FLYNN_PROFILE turns capture on for a process whose command line cannot be
-// changed. An explicit Dir or Contention already set on cfg wins.
+// FromEnv fills what cfg left unset from the environment, so FLYNN_PROFILE turns
+// capture on for a process whose command line cannot change. A Dir or Contention
+// already set on cfg wins.
 func FromEnv(cfg Config) Config {
 	if cfg.Dir == "" {
 		cfg.Dir = strings.TrimSpace(os.Getenv(EnvDir))
@@ -156,10 +130,8 @@ func FromEnv(cfg Config) Config {
 }
 
 // Bundle is an open profile capture. A nil *Bundle is the disabled bundle: every
-// method on it is a no-op returning nil, so a caller holds one unconditionally.
-//
-// A Bundle is written by Stop, which is not safe to call concurrently with itself;
-// call it once, from the same goroutine that owns the command's exit path.
+// method is a no-op returning nil. Stop is not safe to call concurrently with
+// itself; call it once, from the goroutine that owns the exit path.
 type Bundle struct {
 	cfg     Config
 	clk     clock.Timing
@@ -175,13 +147,10 @@ type Bundle struct {
 	stopped     bool
 }
 
-// Start opens the bundle directory and begins capture. It returns a nil Bundle
-// and a nil error when cfg.Dir is empty, which is the disabled path: no directory
-// is touched, no goroutine starts, and nothing is allocated.
-//
-// The caller stops the bundle exactly once, normally from a defer on the process's
-// single exit path. A bundle whose process calls os.Exit is never written, because
-// os.Exit runs no defers; that is a property of os.Exit, not of this package.
+// Start opens the bundle directory and begins capture. With cfg.Dir empty it returns
+// a nil Bundle and nil error, touching nothing. Stop it once, normally from a defer on
+// the process's single exit path; a process that calls os.Exit runs no defers, so its
+// bundle is never written.
 func Start(cfg Config) (*Bundle, error) {
 	if cfg.Dir == "" {
 		return nil, nil
@@ -220,31 +189,26 @@ func Start(cfg Config) (*Bundle, error) {
 		return nil, err
 	}
 
-	// Labelling is live only while a bundle is open, so the waist and the long-lived
-	// goroutine loops pay nothing for it in an unprofiled process. Set it last: every
-	// failure above returns without a bundle, and a process with no bundle must not
-	// be paying for labels.
+	// Enable labelling last: every failure above returns without a bundle, and a
+	// process with no bundle must not pay for labels.
 	profiling.Store(true)
 
 	return b, nil
 }
 
-// validateStart rejects a Config that cannot work before anything is created, so a
-// bad one costs no bundle directory, no CPU profile, and nothing for a reader to
-// half-trust. It returns the watchdog when cfg.Leak asks for one; its dump target is
-// wired by Start once there is a bundle to dump into.
+// validateStart rejects an unworkable Config before anything is created, so a bad
+// one leaves no directory and no half-written bundle. It returns the watchdog when
+// cfg.Leak asks for one; Start wires its dump target.
 func validateStart(cfg Config) (*watchdog, error) {
-	// A watchdog with no sampler would never see a sample. Say so here rather than
-	// let an operator run a week-long soak that was never watching anything.
+	// A watchdog with no sampler would never see a sample; fail now rather than after a
+	// week-long soak that watched nothing.
 	if cfg.Leak != nil && cfg.Interval < 0 {
 		return nil, errors.New("diag: leak watch needs the timeline sampler, but Interval disables it")
 	}
 
-	// Two ways a counter breaks the sampler, both caught here rather than at the first
-	// sample or the first leak dump: a nil Read panics the moment the baseline sample
-	// calls it, and a name that is not a plain filename component becomes part of a
-	// leak dump path (leak.<name>.<seq>.<member>), so a name with a slash writes into a
-	// directory that does not exist and a name with ".." escapes the bundle.
+	// A nil Read panics at the baseline sample, and the name becomes part of a leak dump
+	// path (leak.<name>.<seq>.<member>): a slash writes into a missing directory and
+	// ".." escapes the bundle.
 	for _, c := range cfg.Counters {
 		if c.Read == nil {
 			return nil, fmt.Errorf("diag: counter %q has no Read function", c.Name)
@@ -260,9 +224,9 @@ func validateStart(cfg Config) (*watchdog, error) {
 	return newWatchdog(*cfg.Leak, nil)
 }
 
-// startCapture starts the CPU profile, the opt-in contention profiling, and the
-// timeline sampler, in that order. A failure stops whatever it had started, so the
-// process is left with no profile running behind an error.
+// startCapture starts the CPU profile, opt-in contention profiling and the timeline
+// sampler, in that order. On failure it stops what it started, so no profile runs
+// behind an error.
 func (b *Bundle) startCapture(observer func(Sample)) error {
 	cpu, err := b.create(MemberCPU)
 	if err != nil {
@@ -274,8 +238,6 @@ func (b *Bundle) startCapture(observer func(Sample)) error {
 	}
 	b.cpuFile = cpu
 
-	// Contention profiling is opt-in because both rates cost time in every blocking
-	// operation and every contended lock handoff for the life of the process.
 	if b.cfg.Contention {
 		runtime.SetBlockProfileRate(1)
 		runtime.SetMutexProfileFraction(1)
@@ -293,9 +255,9 @@ func (b *Bundle) startCapture(observer func(Sample)) error {
 	return nil
 }
 
-// Annotate records a key/value pair in the manifest, so a caller can correlate a
-// bundle with the run it captured once the run's identity is known. It is safe on
-// a nil Bundle and safe for concurrent use.
+// Annotate records a key/value pair in the manifest, so a bundle can be matched to
+// its run once the run's identity is known. It is safe on a nil Bundle and for
+// concurrent use.
 func (b *Bundle) Annotate(key, value string) {
 	if b == nil || key == "" {
 		return
@@ -324,11 +286,9 @@ func (b *Bundle) ID() string {
 	return b.id
 }
 
-// Stop ends capture, writes the exit-time profiles and the manifest, and closes
-// every member. It is a no-op on a nil Bundle, and a second call is a no-op.
-//
-// Stop reports the first error it hit but always attempts every remaining member,
-// so a bundle is as complete as the failure allows rather than truncated at it.
+// Stop ends capture, writes the exit-time profiles and the manifest, and closes every
+// member; a nil Bundle or a second call is a no-op. It returns the first error but
+// still writes every remaining member, so a failure costs only what it touched.
 func (b *Bundle) Stop() error {
 	if b == nil {
 		return nil
@@ -341,14 +301,14 @@ func (b *Bundle) Stop() error {
 	b.stopped = true
 	b.mu.Unlock()
 
-	// Nothing after this point can be labelled into a profile that is already being
-	// written, and the process may keep running after its bundle is sealed.
+	// Nothing may be labelled into a profile being written, and the process may keep
+	// running after its bundle is sealed.
 	profiling.Store(false)
 
 	var errs []error
 
-	// Stop the sampler before the exit-time profiles so the timeline's last line
-	// describes the process as the profiles below see it, not a state it left behind.
+	// Stop the sampler first so the timeline's last line matches the state the exit
+	// profiles see.
 	if b.timeline != nil {
 		errs = append(errs, b.timeline.stop())
 	}
@@ -358,8 +318,7 @@ func (b *Bundle) Stop() error {
 		errs = append(errs, fmt.Errorf("diag: close %s: %w", MemberCPU, err))
 	}
 
-	// A GC before the heap profile makes the in-use graph describe what is actually
-	// reachable, rather than what has not been collected yet.
+	// GC first so the heap profile shows what is reachable, not what is uncollected.
 	runtime.GC()
 
 	errs = append(
@@ -367,12 +326,10 @@ func (b *Bundle) Stop() error {
 		b.writeProfile(MemberHeap, "heap", 0),
 		b.writeProfile(MemberAllocs, "allocs", 0),
 		b.writeProfile(MemberGoroutine, "goroutine", 0),
-		// debug=2 renders every goroutine's full stack as text. It is the member a
-		// human reads first on a hang, and no pprof tooling is needed to read it.
+		// debug=2: every goroutine's full stack as text, the member read first on a hang.
 		b.writeProfile(MemberGoroutineTxt, "goroutine", 2),
-		// debug=1 folds identical stacks into counts and prints the pprof labels
-		// each carries, which debug=2 omits. It is the member that answers "which
-		// action left 1,900 goroutines parked", again with no pprof tooling.
+		// debug=1: identical stacks folded into counts with their pprof labels, which
+		// debug=2 omits. It answers "which action left 1,900 goroutines parked".
 		b.writeProfile(MemberGoroutineLbl, "goroutine", 1),
 		b.writeProfile(MemberThreadcreate, "threadcreate", 0),
 	)
@@ -392,10 +349,9 @@ func (b *Bundle) Stop() error {
 	return errors.Join(errs...)
 }
 
-// create opens a bundle member for writing, owner-readable only: a bundle holds a
-// process's stacks and a redacted command line, not a world-readable artifact. The
-// name is always a member constant, joined onto the directory the operator named on
-// their own command line, so no untrusted input reaches the path.
+// create opens a bundle member for writing, owner-readable only, since it holds the
+// process's stacks and command line. name is always a member constant under the
+// operator's chosen directory, so no untrusted input reaches the path.
 func (b *Bundle) create(name string) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(b.cfg.Dir, name), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304: a constant member name under an operator-chosen directory
 	if err != nil {
@@ -404,9 +360,8 @@ func (b *Bundle) create(name string) (*os.File, error) {
 	return f, nil
 }
 
-// writeProfile writes the named runtime profile to a bundle member at the given
-// debug level. A profile the runtime does not know is an internal error, not a
-// missing member, so it is reported rather than skipped silently.
+// writeProfile writes the named runtime profile at the given debug level. An
+// unknown profile is an internal error, so it is reported rather than skipped.
 func (b *Bundle) writeProfile(member, profile string, debug int) error {
 	p := pprof.Lookup(profile)
 	if p == nil {
@@ -426,10 +381,9 @@ func (b *Bundle) writeProfile(member, profile string, debug int) error {
 	return nil
 }
 
-// writeManifest describes the bundle and hashes every other member, so a bundle
-// that has been copied, archived, or partially truncated can be shown to be intact
-// before anyone reasons from its contents. The manifest is written last and is the
-// only member it does not hash.
+// writeManifest describes the bundle and hashes every other member, so a copied,
+// archived or truncated bundle can be checked before anyone trusts it. It is written
+// last and is the only unhashed member.
 func (b *Bundle) writeManifest() error {
 	b.mu.Lock()
 	annotations := make(map[string]string, len(b.annotations))

@@ -11,13 +11,11 @@ import (
 // a run's stream.
 const BudgetExtendedEventType = "budget.extended"
 
-// BudgetSink records a budget extension onto a run's spine stream, attributed to the
-// person who asked. It implements [budget.Recorder].
-//
-// The actor is [spine.ActorHuman] and the principal is the person's, because the event
-// exists to answer who let this run spend more. [budget.Ledger.Extend] appends it after
-// the ceiling is raised and before the goal is reopened, so a run that is working on a
-// raised ceiling always has this event behind it.
+// BudgetSink records a budget extension onto a run's spine stream as [spine.ActorHuman]
+// with the person's principal, because the event answers who let this run spend more.
+// It implements [budget.Recorder]. [budget.Ledger.Extend] appends it after raising the
+// ceiling and before reopening the goal, so every run on a raised ceiling has this
+// event behind it.
 type BudgetSink struct {
 	log    spine.Log
 	stream string
@@ -28,8 +26,8 @@ func NewBudget(log spine.Log, stream string) *BudgetSink {
 	return &BudgetSink{log: log, stream: stream}
 }
 
-// RecordExtended appends one budget.extended event carrying the ceiling before and
-// after, what this extension added, the total added so far and the cap on that total.
+// RecordExtended appends one budget.extended event with the ceiling before and after,
+// the amount added, the total added so far and the cap on that total.
 func (s *BudgetSink) RecordExtended(ctx context.Context, e budget.Extended) error {
 	_, err := s.log.Append(ctx, spine.AppendInput{
 		Stream:    s.stream,

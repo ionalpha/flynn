@@ -10,43 +10,38 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// DefaultPoll is how often a running service is re-observed when the supervisor
-// settles a reconcile without an error. It is a backstop on top of the manager's
-// resync: a healthy workload is re-checked on this cadence so a drift the store
-// never hears about is still caught.
+// DefaultPoll is how often a running service is re-observed after an error-free
+// reconcile. It backs up the manager's resync, so drift the store never hears about is
+// still caught.
 const DefaultPoll = 60 * time.Second
 
 // Observation is what a Driver reports about a live workload. Phase is the provider's
-// own health word ("running", "failed"), or empty when the provider cannot say (it
-// declares no status operation, or returned nothing recognizable). URL is the live
-// address the workload currently serves at, empty when unchanged or unknown. The
-// supervisor records these onto the service's status; it never interprets them beyond
-// "did anything change".
+// health word ("running", "failed"), empty when the provider cannot say. URL is the
+// live address, empty when unchanged or unknown. The supervisor records both on the
+// service's status and reads them only to see whether anything changed.
 type Observation struct {
 	Phase string
 	URL   string
 }
 
-// Driver is the provider-agnostic boundary the supervisor drives a workload through.
-// The supervisor decides WHEN to act and toward WHICH desired state; the driver runs
-// the one remote call for the workload's provider. A driver resolves the credential
-// the service recorded from the vault itself, so no secret ever reaches the supervisor
-// or the service record.
+// Driver is the provider-agnostic interface the supervisor drives a workload through.
+// The supervisor decides when to act and toward which state; the driver makes the one
+// remote call. A driver resolves the service's credential from the vault itself, so no
+// secret reaches the supervisor or the record.
 //
-// Observe reads a workload's current health without changing it. Teardown removes the
-// remote workload; it must be idempotent, because the supervisor may call it again if
-// the record outlives a first attempt (a crash between teardown and record deletion).
+// Observe reads a workload's health without changing it. Teardown removes the remote
+// workload and must be idempotent, because the supervisor calls it again when the
+// record outlives a first attempt (a crash between teardown and record deletion).
 type Driver interface {
 	Observe(ctx context.Context, svc Service) (Observation, error)
 	Teardown(ctx context.Context, svc Service) error
 }
 
 // Supervisor is the reconciler that holds a deployed Service in its desired state. It
-// is level-triggered: handed only a key, it re-reads the live service every time and
-// drives it toward Spec.DesiredState, so it is self-healing and crash-resumable. A
-// service wanting to run is re-observed and its status refreshed; a service wanting to
-// stop is torn down through its provider and its record retired. The supervisor owns
-// no provider knowledge: every remote effect goes through the Driver.
+// is level-triggered: given only a key, it re-reads the service each time and drives it
+// toward Spec.DesiredState, so it heals itself and resumes after a crash. A running
+// service is re-observed; a stopped one is torn down and its record retired. Every
+// remote effect goes through the Driver.
 type Supervisor struct {
 	store *Store
 	drv   Driver
@@ -67,8 +62,7 @@ func WithClock(c clock.Timing) SupervisorOption {
 }
 
 // WithPoll sets the re-observe interval for a running service (default DefaultPoll). A
-// value <= 0 disables the periodic re-observe, leaving only the manager's resync to
-// re-drive the service.
+// value of zero or less leaves only the manager's resync to re-drive the service.
 func WithPoll(d time.Duration) SupervisorOption {
 	return func(s *Supervisor) { s.poll = d }
 }
@@ -82,9 +76,8 @@ func NewSupervisor(store *Store, drv Driver, opts ...SupervisorOption) *Supervis
 	return s
 }
 
-// Reconcile drives one service toward its desired state. It is the Reconciler the
-// reconcile manager runs for the Service kind. A vanished service settles silently; a
-// store read error retries; the desired state selects the action.
+// Reconcile drives one service toward its desired state for the reconcile manager. A
+// vanished service settles; a store read error retries.
 func (s *Supervisor) Reconcile(ctx context.Context, key reconcile.Ref) (reconcile.Result, error) {
 	svc, err := s.store.Get(ctx, key.Name)
 	if errors.Is(err, ErrNotFound) {
@@ -97,15 +90,14 @@ func (s *Supervisor) Reconcile(ctx context.Context, key reconcile.Ref) (reconcil
 	case StateStopped:
 		return s.reconcileStopped(ctx, svc)
 	default:
-		// Running or unset both mean "keep it up": an unset desired state defaults to
-		// supervised rather than abandoned.
+		// An unset desired state means running, so a service is supervised by default.
 		return s.reconcileRunning(ctx, svc)
 	}
 }
 
-// reconcileRunning observes the workload and records what changed, then asks to be
-// re-observed after the poll interval. The status write is skipped when nothing
-// changed, so a healthy service does not churn a new resource version every poll.
+// reconcileRunning observes the workload, records what changed, and asks to be
+// re-observed after the poll interval. Nothing is written when nothing changed, so a
+// healthy service does not mint a resource version every poll.
 func (s *Supervisor) reconcileRunning(ctx context.Context, svc Service) (reconcile.Result, error) {
 	obs, err := s.drv.Observe(ctx, svc)
 	if err != nil {
@@ -126,10 +118,9 @@ func (s *Supervisor) reconcileRunning(ctx context.Context, svc Service) (reconci
 	return reconcile.Result{RequeueAfter: s.poll}, nil
 }
 
-// reconcileStopped tears the workload down through its provider, then retires the
-// record. Teardown runs first so the record is only deleted once the remote workload is
-// confirmed gone; a teardown error keeps the record so the next reconcile retries,
-// which is why a driver's Teardown must be idempotent.
+// reconcileStopped tears the workload down, then retires the record, so the record goes
+// only once the remote workload is gone. A teardown error keeps the record for the next
+// reconcile to retry, which is why Teardown must be idempotent.
 func (s *Supervisor) reconcileStopped(ctx context.Context, svc Service) (reconcile.Result, error) {
 	if err := s.drv.Teardown(ctx, svc); err != nil {
 		return reconcile.Result{}, err
@@ -140,5 +131,5 @@ func (s *Supervisor) reconcileStopped(ctx context.Context, svc Service) (reconci
 	return reconcile.Result{}, nil
 }
 
-// guard: a Supervisor is the Service kind's reconciler.
+// Supervisor is the Service kind's reconciler.
 var _ reconcile.Reconciler[resource.Key] = (*Supervisor)(nil)

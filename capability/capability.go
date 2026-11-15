@@ -1,15 +1,11 @@
-// Package capability is the agent's least-privilege model: a Grant names exactly
-// what a run is permitted to do, and an Admitter enforces it at the dispatch waist
-// so an action outside the grant is denied before any side effect. It is the data
-// half of governance, the policy the waist's Admitter consults; the sandbox is
-// where an admitted action then runs under real OS-level confinement.
+// Package capability is the agent's least-privilege model: a [Grant] names what a
+// run may do, and an [Admitter] at the dispatch waist denies anything else before
+// it has a side effect. The sandbox confines what is admitted.
 //
-// The grant is carried on the context, like the observability bundle, so a run
-// binds its policy once and every action it dispatches is checked against the same
-// grant without threading it through call signatures. A context with no grant
-// bound is permissive, which keeps the standalone agent zero-config; a host opts
-// into least privilege by binding a grant, and from then on the posture is
-// default-deny: only the listed actions are admitted.
+// The grant travels on the context, so a run binds it once and every action it
+// dispatches is checked against it. A context with no grant is permissive, which
+// keeps the standalone agent zero-config; binding a grant makes the run
+// default-deny.
 package capability
 
 import (
@@ -17,22 +13,19 @@ import (
 	"sort"
 )
 
-// Grant is the set of actions a run may perform, addressed by action name (the
-// dispatch action a tool resolves to). The zero Grant denies everything; a Grant
-// from NewGrant denies everything except the names it lists; AllowAll admits any
-// action, the explicit "trusted run" policy distinct from no policy at all. A
-// Grant is immutable once built and safe to share across goroutines.
+// Grant is the set of action names a run may dispatch. The zero Grant denies
+// everything, [NewGrant] admits only the names it lists, and [AllowAll] admits any
+// action. A Grant is immutable and safe to share across goroutines.
 //
-// Nothing is admitted implicitly: calling the model is an action like any other
-// (mission.ActionModelGenerate), so a least-privilege grant lists it explicitly
-// and the grant stays the complete, auditable record of what a run may do. A run
-// that should not call the model simply does not grant the action.
+// Calling the model is an action too (mission.ActionModelGenerate), so a
+// least-privilege grant lists it and stays the complete record of what a run may
+// do.
 type Grant struct {
 	actions  map[string]struct{}
 	allowAll bool
 }
 
-// NewGrant builds a default-deny grant that admits exactly the named actions.
+// NewGrant builds a default-deny grant admitting exactly the named actions.
 // Duplicates and empty names are ignored.
 func NewGrant(actions ...string) Grant {
 	set := make(map[string]struct{}, len(actions))
@@ -44,9 +37,8 @@ func NewGrant(actions ...string) Grant {
 	return Grant{actions: set}
 }
 
-// AllowAll returns a grant that admits every action. It is the explicit
-// trusted-run policy: bind it when a run is fully privileged, as distinct from
-// binding no grant at all (which is also permissive but signals "no policy set").
+// AllowAll returns a grant admitting every action: an explicit trusted-run policy,
+// as opposed to binding no grant, which is also permissive but means no policy set.
 func AllowAll() Grant { return Grant{allowAll: true} }
 
 // Allows reports whether the grant permits the named action.
@@ -58,8 +50,7 @@ func (g Grant) Allows(action string) bool {
 	return ok
 }
 
-// Actions returns the granted action names in sorted order (empty when the grant
-// is AllowAll or deny-all), for audit and introspection.
+// Actions returns the granted names, sorted; empty for AllowAll and deny-all.
 func (g Grant) Actions() []string {
 	out := make([]string, 0, len(g.actions))
 	for a := range g.actions {
@@ -69,16 +60,13 @@ func (g Grant) Actions() []string {
 	return out
 }
 
-// Unrestricted reports whether the grant admits every action (AllowAll).
+// Unrestricted reports whether the grant is AllowAll.
 func (g Grant) Unrestricted() bool { return g.allowAll }
 
-// Narrow returns the grant admitting only the actions that both this grant and the
-// requested set allow: the intersection. It is how authority is delegated without
-// escalation. A child run is given parent.Narrow(requested...), so its grant can
-// never exceed the parent's, only equal or shrink it. Narrowing AllowAll yields
-// exactly the requested actions (a trusted parent still hands a child a
-// least-privilege grant, not blanket trust); narrowing with no actions, or with
-// only actions the parent denies, yields deny-all.
+// Narrow returns the intersection of g and the requested actions, so a child given
+// parent.Narrow(requested...) can never exceed its parent. Narrowing AllowAll
+// yields exactly the requested actions, so a trusted parent still hands a child a
+// least-privilege grant. No actions, or only denied ones, yield deny-all.
 func (g Grant) Narrow(actions ...string) Grant {
 	set := make(map[string]struct{}, len(actions))
 	for _, a := range actions {
@@ -89,15 +77,11 @@ func (g Grant) Narrow(actions ...string) Grant {
 	return Grant{actions: set}
 }
 
-// Intersect returns the grant admitting only the actions that BOTH grants allow.
-// It is the no-escalation operator for delegated authority across a boundary: a
-// caller's grant intersected with the target's own local grant yields exactly the
-// authority the target is willing to act on for that caller, never more than either
-// side admits. AllowAll is the identity for the operator (AllowAll intersect g is g),
-// so a fully trusted caller is bounded by the target's local grant and a fully
-// trusted target is bounded by the caller's grant; two AllowAll grants intersect to
-// AllowAll. Unlike Narrow, this preserves an AllowAll operand rather than collapsing
-// it to its (empty) action list.
+// Intersect returns the grant admitting only what both grants allow, so a caller's
+// grant against a target's local grant never exceeds either side. AllowAll is the
+// identity: AllowAll intersect g is g, and two AllowAll grants yield AllowAll.
+// Unlike [Grant.Narrow], an AllowAll operand is kept rather than collapsed to its
+// empty action list.
 func (g Grant) Intersect(other Grant) Grant {
 	switch {
 	case g.allowAll && other.allowAll:
@@ -118,16 +102,14 @@ func (g Grant) Intersect(other Grant) Grant {
 
 type ctxKey struct{}
 
-// Into returns a context carrying g, so the dispatch waist's Admitter reads the
-// run's policy from the context rather than from a parameter. Binding it once at
-// the top of a run applies it to every action that run dispatches.
+// Into returns a context carrying g, which the dispatch waist's Admitter reads for
+// every action the run dispatches.
 func Into(ctx context.Context, g Grant) context.Context {
 	return context.WithValue(ctx, ctxKey{}, g)
 }
 
-// FromContext returns the grant bound to ctx and whether one was present. Absent a
-// grant the caller should treat the run as unconstrained (no policy set), which is
-// what the Admitter does.
+// FromContext returns the grant bound to ctx and whether one was present. With none,
+// treat the run as unconstrained, as the Admitter does.
 func FromContext(ctx context.Context) (Grant, bool) {
 	g, ok := ctx.Value(ctxKey{}).(Grant)
 	return g, ok
@@ -135,12 +117,10 @@ func FromContext(ctx context.Context) (Grant, bool) {
 
 type principalKey struct{}
 
-// WithPrincipal binds the principal a run acts as: the specific identity on whose
-// authority it runs, which agent in a fan-out or which human in a multi-user host.
-// It is distinct from the coarse actor kind (agent/human/system): the actor says
-// what sort of thing acted, the principal says exactly who. Bind it once at the top
-// of a run, alongside the grant, and events the run records carry it for audit.
-// The empty principal is the standalone agent itself, the zero-config default.
+// WithPrincipal binds the identity a run acts for: which agent in a fan-out, or
+// which human in a multi-user host. The actor kind says what sort of thing acted;
+// the principal says who. Events the run records carry it for audit. The empty
+// principal is the standalone agent.
 func WithPrincipal(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, principalKey{}, id)
 }

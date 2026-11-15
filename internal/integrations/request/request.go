@@ -1,16 +1,12 @@
-// Package request is the shared HTTP transport every integration surface runs on:
-// the API surface, the scraper, and the search providers all make their outbound
-// calls through one Transport rather than each holding its own *http.Client. That
-// keeps a single home for the cross-cutting concerns a remote, unattended agent
-// must get right: bounded timeouts, retry with backoff on the right failure
-// classes only, per-host rate limiting, and typed error classification through the
-// fault model.
+// Package request is the shared HTTP transport for every integration surface (the
+// API surface, the scraper, the search providers), so an unattended agent has one
+// place for bounded timeouts, retry with backoff on the right failure classes,
+// per-host rate limiting and fault classification.
 //
-// Two design choices make the transport testable and deterministic. It runs every
-// call against a Doer interface (*http.Client satisfies it), so a test or a chaos
-// adapter substitutes the network without touching call sites. And every delay is
-// taken through a clock.Timing rather than time.Sleep, so a clock.Manual drives
-// backoff and rate-limit waits with no real sleeping and a run reproduces exactly.
+// Every call runs against a Doer, so a test or chaos adapter substitutes the
+// network without touching call sites. Every delay goes through a clock.Timing, so
+// a clock.Manual drives backoff and rate-limit waits without sleeping and a run
+// reproduces exactly.
 package request
 
 import (
@@ -25,8 +21,7 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// Doer performs a single HTTP round trip. *http.Client satisfies it. The transport
-// is defined against this interface, not a concrete client, so a test or a
+// Doer performs one HTTP round trip; *http.Client satisfies it, so a test or a
 // fault-injecting adapter can stand in for the network.
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)
@@ -47,10 +42,9 @@ type Transport struct {
 // Option configures a Transport.
 type Option func(*Transport)
 
-// WithDoer sets the underlying HTTP doer. The default dials through netguard
-// (anti-SSRF: public addresses only, private/loopback/metadata denied). Tests and
-// chaos adapters use this to substitute the network, and a caller that must reach a
-// specific private host injects its own netguard.Client with a matching policy.
+// WithDoer sets the HTTP doer. The default dials through netguard, public addresses
+// only. Tests and chaos adapters substitute the network with it, and a caller that
+// must reach a private host injects a netguard.Client with a matching policy.
 func WithDoer(d Doer) Option {
 	return func(t *Transport) {
 		if d != nil {
@@ -59,8 +53,7 @@ func WithDoer(d Doer) Option {
 	}
 }
 
-// WithClock sets the clock backing backoff and rate-limit waits. The default is
-// clock.System; tests pass a clock.Manual for deterministic, sleepless delays.
+// WithClock sets the clock for backoff and rate-limit waits (default clock.System).
 func WithClock(c clock.Timing) Option {
 	return func(t *Transport) {
 		if c != nil {
@@ -69,8 +62,7 @@ func WithClock(c clock.Timing) Option {
 	}
 }
 
-// WithMaxAttempts caps the total number of tries, including the first. A value
-// below 1 is clamped to 1 (no retry).
+// WithMaxAttempts caps the total tries, the first included. Below 1 is clamped to 1.
 func WithMaxAttempts(n int) Option {
 	return func(t *Transport) {
 		if n < 1 {
@@ -80,9 +72,8 @@ func WithMaxAttempts(n int) Option {
 	}
 }
 
-// WithBackoff sets the base and ceiling for exponential backoff between retries.
-// A base of 0 disables waiting entirely (retries fire immediately), which keeps
-// deterministic tests simple. Negative values are treated as 0.
+// WithBackoff sets the base and ceiling for exponential backoff. A base of 0 retries
+// without waiting. Negative values count as 0.
 func WithBackoff(base, ceiling time.Duration) Option {
 	return func(t *Transport) {
 		if base < 0 {
@@ -95,12 +86,11 @@ func WithBackoff(base, ceiling time.Duration) Option {
 	}
 }
 
-// WithJitterEntropy enables full jitter on each backoff wait, drawing from src so
-// retries from many goroutines do not align into a thundering herd. Entropy is
-// injected (the project reserves direct rand sources to package ids): pass
-// crypto/rand from the composition root in production, or a deterministic reader for
-// reproducible replay. Without this option backoff stays the exact deterministic
-// schedule, so a run replays bit-for-bit by default.
+// WithJitterEntropy enables full jitter on each backoff wait, drawn from src, so
+// retries from many goroutines do not align. Entropy is injected because only
+// package ids owns a rand source: pass crypto/rand in production or a deterministic
+// reader for replay. Without it backoff follows the exact schedule, so a run replays
+// bit for bit.
 func WithJitterEntropy(src io.Reader) Option {
 	return func(t *Transport) {
 		if src != nil {
@@ -109,8 +99,8 @@ func WithJitterEntropy(src io.Reader) Option {
 	}
 }
 
-// WithRateLimit enforces a minimum interval between requests to the same host,
-// expressed as a maximum requests-per-second. A value <= 0 disables rate limiting.
+// WithRateLimit spaces requests to one host to at most perSecond. A value <= 0
+// disables rate limiting.
 func WithRateLimit(perSecond float64) Option {
 	return func(t *Transport) {
 		var interval time.Duration
@@ -121,11 +111,10 @@ func WithRateLimit(perSecond float64) Option {
 	}
 }
 
-// New builds a Transport. Defaults: a netguard client (public addresses only,
-// anti-SSRF) so a freshly-built transport cannot be steered into dialing a private,
-// loopback, or cloud-metadata address; clock.System; three attempts; 200ms base
-// backoff capped at 10s; no jitter (deterministic schedule); no rate limit. Enable
-// jitter with WithJitterEntropy.
+// New builds a Transport. Defaults: a public-only netguard client, so a new
+// transport cannot dial a private, loopback or cloud-metadata address;
+// clock.System; three attempts; 200ms base backoff capped at 10s; no jitter; no rate
+// limit.
 func New(opts ...Option) *Transport {
 	t := &Transport{
 		doer:        netguard.Client(netguard.PublicOnly()),
@@ -144,19 +133,18 @@ func New(opts ...Option) *Transport {
 	return t
 }
 
-// Do executes req with rate limiting, retries, and backoff, and returns the final
-// response. The returned error is always a classified *fault.Error or nil:
+// Do executes req with rate limiting, retries and backoff. The error is nil or a
+// classified *fault.Error:
 //
-//   - A 2xx/3xx response returns the response and a nil error.
+//   - A 2xx or 3xx returns the response and nil.
 //   - A non-retryable status (most 4xx) returns the response and a Terminal fault,
-//     so the caller may still read the body to surface the API's error detail.
+//     so the caller can read the API's error detail.
 //   - A retryable failure (network error, 408, 429, 5xx) is retried up to the
-//     attempt ceiling; if it never succeeds the last response (if any) and a
-//     Transient fault are returned.
-//   - A cancelled or expired context returns a Cancelled fault and is never retried.
+//     attempt cap, then returns the last response, if any, and a Transient fault.
+//   - A cancelled or expired context returns a Cancelled fault, never retried.
 //
-// Retries re-send the body via req.GetBody; a retryable request without GetBody is
-// sent once and its failure returned, since the transport cannot safely replay it.
+// Retries re-send the body through req.GetBody. A request with a body and no GetBody
+// is sent once, because the transport cannot replay it.
 func (t *Transport) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	host := req.URL.Host
 	var lastResp *http.Response
@@ -173,7 +161,7 @@ func (t *Transport) Do(ctx context.Context, req *http.Request) (*http.Response, 
 		if attempt > 1 {
 			body, ok := rewind(req)
 			if !ok {
-				// Cannot replay a consumed body safely; stop with the prior failure.
+				// A consumed body cannot be replayed; stop with the prior failure.
 				return lastResp, lastErr
 			}
 			req.Body = body
@@ -199,8 +187,8 @@ func (t *Transport) Do(ctx context.Context, req *http.Request) (*http.Response, 
 		if !retryable || attempt == t.maxAttempts {
 			return resp, statusErr
 		}
-		// Retryable status: honour Retry-After when present, else back off. Drain and
-		// close the body so the connection can be reused on the next attempt.
+		// Honour Retry-After when present, else back off. The body is drained so the
+		// connection is reused on the next attempt.
 		wait := t.backoffWithJitter(attempt + 1)
 		if ra, ok := parseRetryAfter(resp.Header.Get("Retry-After"), t.clk.Now()); ok {
 			wait = ra
@@ -214,10 +202,9 @@ func (t *Transport) Do(ctx context.Context, req *http.Request) (*http.Response, 
 	return lastResp, lastErr
 }
 
-// Backoff returns the deterministic, un-jittered wait before the given 1-based
-// attempt: base * 2^(attempt-2) for attempt >= 2, capped at the ceiling, and zero
-// for the first attempt (which has no preceding wait). It is exported so the schedule
-// can be asserted directly in tests.
+// Backoff returns the un-jittered wait before the 1-based attempt: base *
+// 2^(attempt-2) from attempt 2, capped at the ceiling, and zero for attempt 1. It is
+// exported so tests assert the schedule.
 func (t *Transport) Backoff(attempt int) time.Duration {
 	if attempt <= 1 || t.baseBackoff <= 0 {
 		return 0
@@ -235,10 +222,9 @@ func (t *Transport) Backoff(attempt int) time.Duration {
 	return d
 }
 
-// backoffWithJitter returns the wait before the given attempt. Without an entropy
-// source it is the exact deterministic schedule; with one it applies full jitter, a
-// value in [d/2, d], so concurrent retries spread out without ever waiting less than
-// half the schedule.
+// backoffWithJitter returns the wait before attempt. With an entropy source it
+// applies full jitter in [d/2, d], so concurrent retries spread out and never wait
+// under half the schedule.
 func (t *Transport) backoffWithJitter(attempt int) time.Duration {
 	d := t.Backoff(attempt)
 	if d <= 0 || t.jitter == nil {
@@ -247,8 +233,8 @@ func (t *Transport) backoffWithJitter(attempt int) time.Duration {
 	return d/2 + t.jitter.upTo(d/2+1)
 }
 
-// sleep waits for d through the clock, returning a Cancelled fault if the context
-// ends first. A non-positive d returns immediately.
+// sleep waits d on the clock, returning a Cancelled fault if the context ends first.
+// A non-positive d returns at once.
 func (t *Transport) sleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
@@ -263,11 +249,10 @@ func (t *Transport) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// transportFault classifies a doer error. An error already carrying an explicit
-// *fault.Error is respected as-is, so a caller (or a chaos adapter) can mark a
-// failure Terminal and have it not be retried. A cancelled/expired context maps to
-// Cancelled (never retried). Anything else is treated as a Transient network
-// failure worth a retry, since raw transport errors are usually blips.
+// transportFault classifies a doer error. An explicit *fault.Error is kept, so a
+// caller or chaos adapter can mark a failure Terminal to stop retries. A cancelled
+// or expired context is Cancelled. Anything else is a Transient network failure,
+// since raw transport errors are usually blips.
 func transportFault(err error) *fault.Error {
 	var fe *fault.Error
 	if errors.As(err, &fe) {
@@ -279,12 +264,10 @@ func transportFault(err error) *fault.Error {
 	return fault.Wrap(fault.Transient, "http_transport", err)
 }
 
-// rewind rebuilds the request body for a retry. It reports false when the body
-// cannot be replayed (a non-nil body with no GetBody), so the caller stops rather
-// than sending a truncated request. [http.NoBody] is empty, so it replays trivially:
-// [http.NewRequest] leaves GetBody nil for it, and treating that as unreplayable would
-// stop every retry of a bodiless request built the way the standard library
-// recommends.
+// rewind rebuilds the request body for a retry, reporting false for a non-nil body
+// without GetBody so the caller never sends a truncated request. [http.NoBody]
+// replays trivially: [http.NewRequest] leaves its GetBody nil, and refusing it would
+// stop every retry of a bodiless request built the standard way.
 func rewind(req *http.Request) (io.ReadCloser, bool) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return req.Body, true
@@ -299,8 +282,7 @@ func rewind(req *http.Request) (io.ReadCloser, bool) {
 	return body, true
 }
 
-// drain reads and closes a response body so its connection returns to the pool
-// before the next attempt.
+// drain reads and closes a response body so its connection returns to the pool.
 func drain(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return

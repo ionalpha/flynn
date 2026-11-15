@@ -13,36 +13,32 @@ import (
 // stateFile is where the upgrade history lives, under the data directory.
 const stateFile = "upgrade.json"
 
-// state is what this machine remembers about upgrades between runs. It exists to
-// defeat two attacks that no signature can catch, because in both of them every
-// signature is genuine:
+// state is what this machine remembers about upgrades between runs. It defeats two
+// attacks no signature catches, because every signature in them is genuine:
 //
-//   - Rollback: an attacker who controls what the release listing shows serves an
-//     old, genuinely signed release that has a known hole in it. The signature checks
-//     out, because it really was us who signed it, a year ago.
-//   - Freeze: the same attacker instead shows nothing new at all, keeping a machine
-//     on a version whose vulnerabilities they know, and the machine, seeing no
-//     update, reports that it is up to date.
+//   - Rollback: an attacker controlling the release listing serves an old, genuinely
+//     signed release with a known hole.
+//   - Freeze: the attacker shows nothing new, keeping the machine on a version whose
+//     vulnerabilities they know while it reports itself up to date.
 //
-// Remembering the highest version ever verified, and the newest release ever seen,
-// turns both of those into something this binary can notice and say out loud.
+// Remembering the highest version verified and the newest release seen lets this
+// binary notice both and say so.
 type state struct {
 	// HighestVerified is the newest version whose provenance ever verified here.
 	HighestVerified string `json:"highest_verified,omitempty"`
-	// NewestSeen is the newest release the listing has ever offered, whether or not it
-	// was installed. A listing that later offers nothing newer than this is either
-	// stale or lying, and either way it is not evidence of being up to date.
+	// NewestSeen is the newest release the listing ever offered, installed or not. A
+	// listing that later offers nothing newer is stale or lying, and either way is no
+	// evidence of being up to date.
 	NewestSeen string `json:"newest_seen,omitempty"`
-	// LastCheck is when the listing was last read, so a machine can tell "no upgrade
-	// available" apart from "nobody has looked in six months".
+	// LastCheck is when the listing was last read, so "no upgrade available" is told
+	// apart from "nobody has looked in six months".
 	LastCheck time.Time `json:"last_check,omitempty"`
 }
 
 func loadState(dataDir string) state {
-	// A missing or unreadable state file means no memory, not a failure: a machine that
-	// refuses to upgrade because it cannot read its own notes is a machine that stays
-	// unpatched. The protections it powers degrade to the current version, which is
-	// still a floor.
+	// A missing or unreadable state file means no memory, and no failure: refusing to
+	// upgrade over unreadable notes would leave the machine unpatched. The protections
+	// fall back to the current version, which is still a floor.
 	var s state
 	// #nosec G304 -- the path is the data directory this binary was started with, joined
 	// with a constant file name.
@@ -64,18 +60,18 @@ func saveState(dataDir string, s state) error {
 	if err != nil {
 		return fault.Wrap(fault.Terminal, CodeState, err)
 	}
-	// Written through fsatomic, so an interrupted write cannot leave behind a
-	// half-parsed record of what this machine has verified, and a crash right after
-	// the write cannot lose it: the rename is fsynced along with the contents.
+	// fsatomic means an interrupted write cannot leave a half-written record of what
+	// was verified, and a crash just after cannot lose it, since the rename is fsynced
+	// with the contents.
 	if err := fsatomic.WriteFile(filepath.Join(dataDir, stateFile), raw, 0o600); err != nil {
 		return fault.Wrap(fault.Terminal, CodeState, err)
 	}
 	return nil
 }
 
-// floor is the version an upgrade must not go below: the highest of what is running
-// and what was ever verified here. The running version alone is not enough, because a
-// downgrade that already happened would lower the bar for the next one.
+// floor is the version an upgrade must not go below: the higher of what runs and what
+// was ever verified here. The running version alone would let a past downgrade lower
+// the bar for the next one.
 func (s state) floor(current Version) Version {
 	if v, ok := ParseVersion(s.HighestVerified); ok && v.Compare(current) > 0 {
 		return v
@@ -83,10 +79,9 @@ func (s state) floor(current Version) Version {
 	return current
 }
 
-// staleListing reports whether a release listing is older than what this machine has
-// already been shown, which is the signature of a freeze or rollback attempt: the
-// listing is the one thing in this whole path that is not signed, and the only defence
-// against it is remembering what it said last time.
+// staleListing reports whether a listing is older than what this machine was already
+// shown, the sign of a freeze or rollback attempt. The listing is the one unsigned
+// input on this path, and remembering what it said last time is the only defence.
 func (s state) staleListing(newest Version) (string, bool) {
 	prev, ok := ParseVersion(s.NewestSeen)
 	if !ok || prev.Compare(newest) <= 0 {

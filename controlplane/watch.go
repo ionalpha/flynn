@@ -25,21 +25,15 @@ type Change struct {
 	Resource resource.Resource
 }
 
-// Watcher reports resource changes for a kind. It is the interface a remote API
-// serves over a streaming transport; locally it is driven by polling. Defining it
-// alongside List and Describe keeps list, get, and watch one read model, so adding
-// live streaming later is a new transport over this interface, not a new query
-// path bolted on.
+// Watcher reports resource changes for a kind. A remote API serves it over a
+// streaming transport; locally it is driven by polling.
 type Watcher interface {
 	Poll(ctx context.Context) ([]Change, error)
 }
 
-// PollWatcher detects changes by comparing successive list snapshots of a kind. It
-// holds the last-seen sync version per resource id; each Poll returns the
-// transitions since the previous Poll and advances the baseline. A production
-// caller drives Poll on a ticker; tests drive it directly, so change detection is
-// deterministic and free of any clock. The first Poll reports every current
-// resource as Added.
+// PollWatcher detects changes by comparing successive list snapshots, keeping the
+// last-seen sync version per id. The caller drives Poll, so tests need no clock. The
+// first Poll reports every resource as Added.
 type PollWatcher struct {
 	store resource.Store
 	kind  string

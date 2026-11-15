@@ -10,19 +10,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// redirectStdout keeps the original stdout as a private descriptor and makes descriptor 1
-// the write end of a pipe. Order matters. The private copy is taken first, at or above
-// descriptor 3 so it cannot land on a standard stream, and with close-on-exec so no child
-// inherits it. Only then is descriptor 1 replaced, and the replacement clears close-on-exec
-// as dup3 and dup2 always do, so a child that inherits descriptor 1 inherits the pipe.
+// redirectStdout keeps the original stdout as a private descriptor and makes
+// descriptor 1 the write end of a pipe. The private copy is taken first, at or above
+// descriptor 3 so it cannot land on a standard stream, and close-on-exec so no child
+// inherits it. Then descriptor 1 is replaced; dup3 and dup2 clear close-on-exec, so a
+// child that inherits descriptor 1 inherits the pipe.
 //
-// The pipe is made with the raw syscall and not [os.Pipe], which marks its descriptors
-// non-blocking. Non-blocking mode belongs to the open file and not the descriptor, so it
-// would follow the write end onto descriptor 1 and make every write to stdout, from this
-// process or a child, fail with EAGAIN when the pipe is full.
+// The pipe is made with the raw syscall because [os.Pipe] marks its descriptors
+// non-blocking. That mode belongs to the open file, so it would follow the write end
+// onto descriptor 1 and make every write to a full pipe fail with EAGAIN.
 //
-// [os.Stdout] needs no reset on Unix: it is descriptor 1, and descriptor 1 now leads to
-// the pipe.
+// [os.Stdout] needs no reset on Unix: it is descriptor 1, which now leads to the pipe.
 func redirectStdout() (frames, strays *os.File, err error) {
 	orig, err := unix.FcntlInt(1, unix.F_DUPFD_CLOEXEC, 3)
 	if err != nil {
