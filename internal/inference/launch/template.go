@@ -6,36 +6,29 @@ import (
 	"strings"
 )
 
-// A trusted chat-template name reaches llama.cpp in one of three ways, because the
-// runtime reads --chat-template differently depending on the value. Jinja is on by
-// default, and in that mode the value is the template's source text; only "chatml" is
-// recognised as a name. Passing "llama3" or "gpt-oss" there makes the server render the
-// literal word as the whole prompt, so a name has to be turned into something the
-// runtime will actually apply:
+// A trusted template name reaches llama.cpp in one of three ways. With Jinja on, the
+// default, --chat-template takes source text and recognises only "chatml" as a name;
+// passing "llama3" there renders the literal word as the whole prompt. So:
 //
-//   - "chatml" is the one name the Jinja path expands itself.
-//   - A name llama.cpp also ships as a legacy built-in is passed with --no-jinja, which
-//     is the mode that looks names up. Those templates cannot carry native tool calls.
-//   - A name with embedded source is passed as that source. These are the families whose
-//     tool calling only exists in Jinja, so Flynn carries the reviewed template itself
-//     instead of reading the one inside the weights.
+//   - "chatml" is passed as the name.
+//   - A name llama.cpp ships as a legacy built-in is passed with --no-jinja, the mode
+//     that looks names up. Those templates cannot carry native tool calls.
+//   - A name with embedded source is passed as that source, for families whose tool
+//     calling exists only in Jinja.
 //
-// Whichever way it travels, the template is chosen by the catalog entry and never read
-// from the model.
+// Either way the catalog entry chooses the template; it is never read from the model.
 
-// gptOSSTemplate is OpenAI's published chat template for gpt-oss (the chat_template.jinja
-// in openai/gpt-oss-20b at revision 6cee5e81ee83917806bbde320786a8fb61efebee,
-// Apache-2.0, attributed in NOTICE), byte for byte the template the ggml-org GGUF
-// conversion embeds. It renders the harmony format, including tool definitions and the
-// reasoning_effort setting.
+// gptOSSTemplate is OpenAI's chat template for gpt-oss (chat_template.jinja in
+// openai/gpt-oss-20b at revision 6cee5e81ee83917806bbde320786a8fb61efebee,
+// Apache-2.0, attributed in NOTICE), byte for byte what the ggml-org GGUF embeds.
 //
 //go:embed templates/gpt-oss.jinja
 var gptOSSTemplate string
 
-// gemma4Template is Google's canonical Gemma 4 chat template (the chat_template.jinja in
+// gemma4Template is Google's Gemma 4 chat template (chat_template.jinja in
 // google/gemma-4-12B-it at revision 43c9d014b231474fa7212dbb48a762566c2b255d, Apache-2.0,
-// attributed in NOTICE), byte for byte. llama.cpp has no built-in name for Gemma 4; it
-// recognises the family from the template source, so the source has to be supplied.
+// attributed in NOTICE), byte for byte. llama.cpp has no built-in name for Gemma 4 and
+// recognises the family from the source, so the source is supplied.
 //
 //go:embed templates/gemma4.jinja
 var gemma4Template string
@@ -58,8 +51,7 @@ func templateArgs(name string) []string {
 	return []string{"--no-jinja", "--chat-template", name}
 }
 
-// TrustedChatTemplates lists the trusted template names in order, for a message that
-// tells a person which names a flag accepts.
+// TrustedChatTemplates lists the trusted template names in order, for an error message.
 func TrustedChatTemplates() []string {
 	names := make([]string, 0, len(knownChatTemplates))
 	for name := range knownChatTemplates {
@@ -70,21 +62,17 @@ func TrustedChatTemplates() []string {
 }
 
 // NativeToolCalls reports whether the server can offer native tool calls under the
-// trusted template name. The legacy built-ins run with --no-jinja, and a llama.cpp server
-// in that mode rejects a request that carries tools, so a model on one of them can chat
-// but cannot be an agent. A name that runs as Jinja can.
+// template name. A legacy built-in runs with --no-jinja, where llama.cpp rejects a request
+// carrying tools, so a model on one can chat but cannot be an agent.
 func NativeToolCalls(name string) bool {
 	return KnownChatTemplate(name) && len(templateArgs(name)) == 2
 }
 
 // MatchTemplate names the trusted template that fits a chat template found in a model
-// repository, and reports whether one does. The text is untrusted and is only searched
-// for the control tokens each family is known by: it is never rendered, executed or
-// passed on, and the answer is always a member of the trusted set, so a hostile template
-// can choose which reviewed template is used but cannot supply its own.
-//
-// A caller treats the answer as a suggestion for a human to confirm. A template that
-// mimics one family's tokens selects that family's reviewed template and nothing else.
+// repository. The text is untrusted, so it is only searched for each family's control
+// tokens, never rendered or passed on. The answer is always a trusted name, so a hostile
+// template can pick which reviewed template runs but cannot supply its own. A caller
+// treats the answer as a suggestion for a human to confirm.
 func MatchTemplate(src string) (string, bool) {
 	has := func(tokens ...string) bool {
 		for _, t := range tokens {
@@ -116,7 +104,7 @@ func MatchTemplate(src string) (string, bool) {
 }
 
 // TemplateReasoning reports whether a chat template renders a reasoning phase: a think
-// block, a reasoning-effort setting, or a thinking switch. Like [MatchTemplate] it only
+// block, a reasoning-effort setting or a thinking switch. Like [MatchTemplate] it only
 // searches the untrusted text.
 func TemplateReasoning(src string) bool {
 	for _, marker := range []string{"<think>", "<|think|>", "enable_thinking", "reasoning_effort", "<|channel>thought"} {

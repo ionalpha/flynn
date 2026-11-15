@@ -6,23 +6,19 @@ import (
 	"strings"
 )
 
-// Codex drives the codex CLI as an external agent backend over its non-interactive
-// exec mode, which streams an episode as JSON lines and writes the final message to a
-// file. It is constrained to a read-only native sandbox with native approvals denied,
-// so the model cannot write or run a command directly; its effects reach the
-// workspace only through the loopback MCP bridge, where they are governed.
+// Codex drives the codex CLI in non-interactive exec mode, which streams an episode as
+// JSON lines and writes the final message to a file. A read-only native sandbox with
+// approvals denied stops the model writing or running a command directly, so its
+// effects reach the workspace only through the governed bridge.
 type Codex struct {
-	// bin is the codex executable name or path; empty uses "codex" on PATH.
+	// bin is the executable name or path; empty uses "codex" on PATH.
 	bin string
-	// spawner runs the detection probes. It may be nil for an adapter used only to
-	// build invocations and parse output (the runner supplies its own spawner for the
-	// episode itself); Detect requires it.
+	// spawner runs the detection probes. Detect requires it; Command and Parse do not.
 	spawner Spawner
 }
 
-// NewCodex builds the codex adapter. bin overrides the executable to run (empty uses
-// "codex" resolved on PATH); spawner runs the detection probes through the sandbox
-// boundary and may be nil when the adapter is used only for Command and Parse.
+// NewCodex builds the codex adapter. Empty bin uses "codex" on PATH; spawner may be nil
+// when the adapter is used only for Command and Parse.
 func NewCodex(bin string, spawner Spawner) *Codex {
 	if bin == "" {
 		bin = "codex"
@@ -33,34 +29,25 @@ func NewCodex(bin string, spawner Spawner) *Codex {
 // Name identifies the adapter in the model spec and on the run.
 func (*Codex) Name() string { return "codex" }
 
-// Lockdown states what a codex episode leaves the harness holding. codex has no flag that
-// removes its shell or patch tools, so writes and commands are contained rather than
-// denied: the model is still offered them, the read-only sandbox with approvals denied
-// makes them fail, and each attempt lands in the steering metrics as native drift. That is
-// the honest posture to declare, and it is why claude and codex declare different ones
-// from the same contract.
-//
-// The operator's own configuration is contained: the host points the child at a CODEX_HOME
-// kept apart from the operator's own and holding no config.toml, so the MCP servers, model providers
-// and settings in the operator's own codex config are not on the child's path to find, and
-// the only server it loads is the one this episode configures on the command line.
+// Lockdown states what a codex episode leaves the harness holding. codex has no flag
+// that removes its shell or patch tools, so writes and commands are contained instead
+// of denied: the model is offered them, the read-only sandbox makes them fail, and each
+// attempt counts as native drift. The host points the child at a CODEX_HOME apart from
+// the operator's, with no config.toml, so the operator's MCP servers, model providers
+// and settings are out of reach and the only server loaded is the one on the command
+// line.
 func (*Codex) Lockdown() Lockdown {
 	return Lockdown{Writes: StripContained, Commands: StripContained, HostConfig: StripContained}
 }
 
-// codexBridgeName is the MCP server name the bridge is registered under in codex's
-// config. Tool names codex reports are namespaced by it.
+// codexBridgeName is the bridge's MCP server name; codex namespaces tool names with it.
 const codexBridgeName = "flynn"
 
-// codexCapabilityNotice is prepended to the episode's lower-authority preamble on every
-// run, so the model knows up front that it holds only the bridged tools and does not
-// waste a turn reaching for a built-in one it cannot use. It is the stated half of the
-// tool lockdown; the read-only sandbox with denied approvals and the disabled built-ins
-// are the enforced half. codex has no --append-system-prompt, so the notice rides the
-// user turn below codex's own harness prompt in authority, which is the honest position:
-// the run steers and the notice states the contract, the sandbox is what enforces it.
-// Managing memory is called out because a confined episode's memory never persists, so
-// any effort spent curating it is wasted.
+// codexCapabilityNotice leads the episode's preamble on every run, so the model knows
+// it holds only bridged tools and does not waste a turn on a built-in one. codex has no
+// --append-system-prompt, so the notice rides the user turn, below codex's harness
+// prompt; the sandbox enforces what it states. Memory is called out because a confined
+// episode's memory never persists.
 const codexCapabilityNotice = "You are running as a governed backend inside Flynn, a sandbox that contains this session. " +
 	"Your only usable tools are the ones provided by the Flynn MCP server (the server named \"flynn\"). " +
 	"Use those tools for every action, including reading and writing files. " +
@@ -71,12 +58,10 @@ const codexCapabilityNotice = "You are running as a governed backend inside Flyn
 	"Do not read, write, or manage memory of any kind: this session does not persist memory, so managing it is wasted effort. " +
 	"If a task cannot be done with the flynn tools, say so plainly rather than reaching for a built-in tool."
 
-// Detect probes that codex is installed, logged in, and new enough to be constrained
-// to the bridge. It runs codex's own version, auth, and help probes and never starts
-// an episode. A missing binary or a build without the lockdown knobs (the read-only
-// sandbox, the JSON event stream, the streamable-HTTP MCP client) is a hard refusal,
-// so the driver stops rather than running codex with unattested effects; a healthy
-// but logged-out CLI is a recoverable onboarding prompt.
+// Detect checks that codex is installed, logged in, and new enough to be constrained,
+// using its version, auth and help probes. A missing binary or a build lacking the
+// read-only sandbox, the JSON event stream or the streamable-HTTP MCP client is a hard
+// refusal; a logged-out CLI is a recoverable onboarding prompt.
 func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
 	version, stop := cliProbe{
 		name: "codex", bin: c.bin, spawner: c.spawner,
@@ -87,10 +72,8 @@ func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
 	}
 	r := Readiness{Available: true, Version: version}
 
-	// The lockdown depends on three knobs: the read-only sandbox and the JSON event
-	// stream on exec, and a streamable-HTTP MCP client. A build missing any of them
-	// cannot be constrained to route effects through the bridge, so refuse rather than
-	// run with native effects.
+	// A build missing the read-only sandbox, the JSON stream on exec, or the
+	// streamable-HTTP MCP client cannot be constrained.
 	execHelp, err := c.spawner.Probe(ctx, c.bin, "exec", "--help")
 	if err != nil || !strings.Contains(execHelp, "--json") || !strings.Contains(execHelp, "--sandbox") {
 		r.Refuse = true
@@ -104,13 +87,9 @@ func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
 		return r, nil //nolint:nilerr // a probe failure is a refusal reported on Readiness, not a Go error
 	}
 
-	// Login state: codex login status exits zero and reports a logged-in line when
-	// credentials are usable. A logged-out CLI is an onboarding prompt, not a refusal.
-	//
-	// The affirmative phrase is a substring of its own negation ("not logged in"
-	// contains "logged in"), so a bare Contains check reads a logged-out CLI as
-	// logged in. Today only the non-zero exit keeps that from happening. Rule the
-	// negation out explicitly, so the answer does not depend on the exit code.
+	// "not logged in" contains "logged in", so a bare Contains reads a logged-out CLI
+	// as logged in. The negation is ruled out explicitly so the answer does not rest on
+	// the exit code alone.
 	status, err := c.spawner.Probe(ctx, c.bin, "login", "status")
 	lower := strings.ToLower(status)
 	loggedIn := err == nil &&
@@ -124,13 +103,10 @@ func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
 	return r, nil
 }
 
-// Command builds the codex exec invocation for one episode. It pins the read-only
-// sandbox and denies native approvals so codex cannot write or run a command itself,
-// points codex's MCP client at the bridge over streamable HTTP with the bearer token
-// carried in the environment (not on the command line), and reads the final message
-// from a file rather than the event stream. The turn is written on stdin; a standing
-// instruction is prepended as a lower-authority preamble, since codex's own harness
-// prompt outranks anything injected.
+// Command builds the codex exec invocation for one episode: read-only sandbox, native
+// approvals denied, the MCP client pointed at the bridge over streamable HTTP with the
+// token in the environment, and the final message read from a file. The turn goes on
+// stdin, with the standing instruction as a lower-authority preamble.
 func (c *Codex) Command(ep Episode) (Invocation, error) {
 	bridge := ep.Bridge
 	if bridge.Name == "" {
@@ -138,10 +114,8 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	}
 	lastMsg := "codex-last-message.txt"
 
-	// Continue the conversation the CLI already holds instead of opening a new one: codex
-	// takes the thread it announced on an earlier episode as the resume subcommand's
-	// argument, and every exec flag below still applies to it. Only a session that has
-	// already run an episode of this run has an id to give.
+	// codex resumes the thread it announced on an earlier episode of this run, and
+	// every exec flag below still applies to the resume subcommand.
 	args := []string{"exec"}
 	if ep.Session != "" {
 		args = append(args, "resume", ep.Session)
@@ -151,28 +125,20 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 		"--sandbox", "read-only",
 		"--skip-git-repo-check",
 		"--output-last-message", lastMsg,
-		// Deny native approvals: with a read-only sandbox and no approval path, codex
-		// cannot escalate to a native write or command; effects must go through the bridge.
+		// With a read-only sandbox and no approval path codex cannot escalate to a
+		// native write or command.
 		"-c", "approval_policy=\"never\"",
-		// Turn on codex's rmcp streamable-HTTP MCP client. codex's legacy MCP client only
-		// speaks stdio; a url-configured server with bearer-token auth is not reached, and the
-		// token is not sent, unless the rmcp client is enabled. Without this the child never
-		// authenticates to the bridge and has no governed tools at all, which is codex's own
-		// bridge-reachability blocker, separate from the in-namespace loopback forward. The
-		// key is codex's documented switch for the HTTP client, set as a top-level config
-		// value; recent builds accept it as a compatibility alias.
+		// The rmcp client is codex's only HTTP MCP client; the legacy client speaks
+		// stdio only, so without it the child never sends the token and has no governed
+		// tools. Recent builds accept this top-level key as a compatibility alias.
 		"-c", "experimental_use_rmcp_client=true",
-		// Neutralize the built-in tool surface the CLI exposes so the model's only tools are
-		// the bridged ones. The read-only sandbox with approvals denied already stops native
-		// writes and commands; these deny the two built-ins codex would otherwise run
-		// unobserved: its web search (its own egress, outside the governed gate) and its image
-		// viewer. codex has no flag to deny its shell or patch tools, which the sandbox
-		// contains instead, and its native reads stay possible under a read-only host, matched
-		// by the capability notice telling the model to read through the bridge.
+		// Disable the two built-ins codex would run unobserved: web search (egress
+		// outside the gate) and the image viewer. Shell and patch cannot be disabled and
+		// are contained by the sandbox; native reads stay possible on a read-only host,
+		// which the capability notice steers toward the bridge.
 		"-c", "tools.web_search=false",
 		"-c", "tools.view_image=false",
-		// Point codex's MCP client at the loopback bridge over streamable HTTP, with the
-		// bearer token read from the environment so it is not in the process table.
+		// The token is read from the environment, out of the process table.
 		"-c", "mcp_servers."+bridge.Name+".url=\""+bridge.URL+"\"",
 		"-c", "mcp_servers."+bridge.Name+".bearer_token_env_var=\""+bridge.TokenEnv+"\"",
 	)
@@ -182,14 +148,12 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	if ep.Model != "" {
 		args = append(args, "-m", ep.Model)
 	}
-	// The turn is read from stdin (the "-" prompt), so a long or multi-line input does
-	// not land on the command line.
+	// "-" reads the turn from stdin, so a long or multi-line input stays off the
+	// command line.
 	args = append(args, "-")
 
-	// The run's instructions reach codex as part of the user turn, below its own harness
-	// prompt in authority. The translator is the one place that mapping is expressed. The
-	// capability notice leads the preamble, ahead of the run's standing instruction, so the
-	// model reads the tool contract before the objective.
+	// The notice leads the preamble so the model reads the tool contract before the
+	// objective.
 	system := codexCapabilityNotice
 	if ep.System != "" {
 		system += "\n\n" + ep.System
@@ -208,13 +172,13 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	return inv, nil
 }
 
-// codexEvent is the envelope codex exec --json emits, one JSON object per line. Only
-// the fields the projection needs are decoded; the rest is preserved in Raw.
+// codexEvent is one line of codex exec --json, decoded only as far as the projection
+// needs.
 type codexEvent struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
-	// ThreadID is the conversation the CLI opened or resumed, announced on thread.started.
-	// codex calls it a thread; it is the id its `exec resume` takes.
+	// ThreadID is the conversation opened or resumed, announced on thread.started; it is
+	// what `exec resume` takes.
 	ThreadID string          `json:"thread_id"`
 	Error    *codexErr       `json:"error"`
 	Usage    *codexUsage     `json:"usage"`
@@ -231,8 +195,8 @@ type codexUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-// codexItem is a thread item. codex flattens the item's typed payload into the item
-// object, so `type` selects which of the remaining fields are populated.
+// codexItem is a thread item. codex flattens the typed payload into the item, so Type
+// selects the populated fields.
 type codexItem struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -245,18 +209,14 @@ type codexItem struct {
 	// command_execution
 	Command string `json:"command"`
 
-	// shared by mcp_tool_call and command_execution: in_progress, completed, failed, or
-	// (for a command codex refused to run) declined.
+	// Status is in_progress, completed, failed, or declined for a command codex refused.
 	Status string `json:"status"`
 }
 
-// Parse projects one codex exec --json line to typed events. Recognized boundaries
-// (thread and turn start) become attested progress; a reported error or a failed
-// turn becomes an error event, terminal when the message names a permanent
-// condition; a completed turn becomes a done event carrying any usage; an assistant
-// message item becomes attested text. A line it cannot decode becomes an attested
-// progress event carrying the raw line, so nothing is dropped and noise does not end
-// the episode.
+// Parse projects one codex exec --json line to events. Thread and turn starts are
+// attested progress; an error or failed turn is an error, terminal when the message
+// names a permanent condition; a completed turn is done with any usage; an assistant
+// message is attested text. An undecodable line is attested progress with the raw line.
 func (c *Codex) Parse(line []byte) ([]Event, error) {
 	line = trimLine(line)
 	if len(line) == 0 {
@@ -264,8 +224,7 @@ func (c *Codex) Parse(line []byte) ([]Event, error) {
 	}
 	var ev codexEvent
 	if err := json.Unmarshal(line, &ev); err != nil {
-		// A line that is not JSON is CLI noise (a banner, a warning), kept as attested
-		// progress rather than dropped or treated as a fatal parse error.
+		// A non-JSON line is CLI noise (a banner, a warning).
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: cloneRaw(line)}}, nil //nolint:nilerr // noise is recorded, not fatal
 	}
 	raw := cloneRaw(line)
@@ -286,14 +245,11 @@ func (c *Codex) Parse(line []byte) ([]Event, error) {
 		}
 		out = []Event{{Kind: EventError, Err: msg, Terminal: terminalCodexError(msg), Tier: TierAttested, Raw: raw}}
 	case "item.completed":
-		// Only a completed item is projected to a typed tool event. codex emits
-		// item.started for the same call and item.updated as it progresses, so projecting
-		// any of those too would count one call two or three times and skew the steering
-		// metrics the tuning depends on.
+		// codex also emits item.started and item.updated for the same call; projecting
+		// those would count one call up to three times and skew the steering metrics.
 		out = []Event{c.projectItem(ev.Item, raw)}
 	case "item.started", "item.updated":
-		// An assistant message is projected as it appears, so the live trace streams text
-		// rather than waiting for the turn. Everything else waits for item.completed.
+		// Assistant text is projected on item.started so the live trace streams it.
 		if ev.Item != nil && isAgentMessage(ev.Item.Type) && ev.Item.Text != "" && ev.Type == "item.started" {
 			out = []Event{{Kind: EventText, Text: ev.Item.Text, Tier: TierAttested, Raw: raw}}
 		} else {
@@ -302,16 +258,13 @@ func (c *Codex) Parse(line []byte) ([]Event, error) {
 	default:
 		out = []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
 	}
-	// thread.started announces the conversation id; stamping it on the projections is
-	// what lets a later episode continue this thread instead of opening a new one.
+	// A later episode needs the thread id to continue this thread.
 	return withSession(out, ev.ThreadID), nil
 }
 
-// projectItem projects a completed thread item to a typed event. A bridge call and a
-// natively-run command are distinguished because the tuning needs to know which tools
-// the harness reached for; everything else is attested progress. Every projection is
-// attested: the CLI is reporting on itself. A bridged call is separately enforced at the
-// dispatch waist, which records it independently of the CLI's account.
+// projectItem projects a completed item. Bridge calls and native commands are told
+// apart because tuning needs to know which tools the harness chose; everything else is
+// attested progress.
 func (c *Codex) projectItem(item *codexItem, raw json.RawMessage) Event {
 	if item == nil {
 		return Event{Kind: EventProgress, Tier: TierAttested, Raw: raw}
@@ -327,9 +280,8 @@ func (c *Codex) projectItem(item *codexItem, raw json.RawMessage) Event {
 			Server: item.Server, Tool: item.Tool, Args: item.Arguments, Status: item.Status,
 		}
 	case "command_execution", "file_change":
-		// The CLI used its own shell or patch tool instead of a bridged one. Under the
-		// read-only sandbox with approvals denied a write cannot land, but a read can, and
-		// the run never sees what it read.
+		// A native shell or patch tool. The sandbox stops a write, but a read succeeds
+		// and the run never sees what it read.
 		return Event{
 			Kind: EventNativeCommand, Tier: TierAttested, Raw: raw,
 			Command: item.Command, Status: item.Status,
@@ -338,15 +290,15 @@ func (c *Codex) projectItem(item *codexItem, raw json.RawMessage) Event {
 	return Event{Kind: EventProgress, Tier: TierAttested, Raw: raw}
 }
 
-// isAgentMessage reports whether an item type names the assistant's visible message.
-// codex names it agent_message; assistant_message is accepted for an older build.
+// isAgentMessage reports whether an item is the assistant's visible message:
+// agent_message, or assistant_message from an older build.
 func isAgentMessage(t string) bool {
 	return t == "agent_message" || t == "assistant_message"
 }
 
-// terminalCodexError reports whether an error message names a permanent condition
-// (auth, an unsupported model, exhausted quota) that a retry cannot fix, so the run
-// stops instead of looping. An unrecognized error is treated as transient.
+// terminalCodexError reports whether an error is permanent (auth, an unsupported model,
+// exhausted quota), so the run stops instead of retrying. Unrecognized errors are
+// transient.
 func terminalCodexError(msg string) bool {
 	m := strings.ToLower(msg)
 	for _, s := range []string{"not supported", "unauthorized", "invalid_api_key", "invalid api key", "insufficient_quota", "quota", "forbidden", "401", "403"} {
@@ -357,13 +309,12 @@ func terminalCodexError(msg string) bool {
 	return false
 }
 
-// trimLine drops a trailing carriage return and surrounding whitespace, so a line
-// framed with CRLF parses cleanly.
+// trimLine drops surrounding whitespace, including a CRLF line's carriage return.
 func trimLine(line []byte) []byte {
 	return []byte(strings.TrimSpace(string(line)))
 }
 
-// cloneRaw copies a line so the retained Raw does not alias a reused scan buffer.
+// cloneRaw copies a line so Raw does not alias a reused scan buffer.
 func cloneRaw(line []byte) json.RawMessage {
 	out := make([]byte, len(line))
 	copy(out, line)

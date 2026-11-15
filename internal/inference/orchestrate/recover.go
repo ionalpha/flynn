@@ -1,64 +1,54 @@
 package orchestrate
 
-// This file is the resilience counterpart to the scheduling policy: a pure decision that
-// says how to react when a model server keeps failing to start or stay healthy. It is kept
-// free of any runtime or serve dependency so the recovery ladder can be reasoned about and
-// tested exhaustively; the controller that observes failures and applies the chosen action,
-// and the serve layer that classifies a runtime's failure, are wired separately.
-
-// FailureKind classifies why a model server failed, because the right reaction differs by
-// cause: retrying an out-of-memory launch unchanged is futile, while a one-off crash is
-// worth another try.
+// FailureKind classifies why a model server failed, because the right reaction differs
+// by cause: an out-of-memory launch retried unchanged fails again, while a one-off
+// crash is worth another try.
 type FailureKind int
 
 const (
 	// FailureNone means the model is not in a failed state.
 	FailureNone FailureKind = iota
-	// FailureCrash means the server process exited or failed to start, with no sign that
-	// memory was the cause: a transient fault worth retrying a bounded number of times.
+	// FailureCrash means the server exited or failed to start with no sign of a memory
+	// cause, so a bounded number of retries is worthwhile.
 	FailureCrash
-	// FailureOOM means the launch ran out of device or host memory. Retrying the same
-	// footprint cannot succeed, so recovery must shrink it or fall back.
+	// FailureOOM means the launch ran out of device or host memory, so the footprint must
+	// shrink or the model fall back.
 	FailureOOM
-	// FailureHang means the server started but never became healthy: it may be a slow load
-	// worth one retry, or a wedged runtime that needs a lighter config or a fallback.
+	// FailureHang means the server started but never became healthy: a slow load worth
+	// one retry, or a wedged runtime that needs a lighter config.
 	FailureHang
 )
 
-// RecoveryAction is the next step to take for a failing model, in increasing severity. The
-// controller maps each onto a concrete move: retry the same launch, relaunch with a reduced
-// footprint, serve a smaller fallback model instead, or stop trying for now.
+// RecoveryAction is the next step for a failing model, in increasing severity.
 type RecoveryAction int
 
 const (
-	// RecoverRetry tries the same launch again; the failure looked transient.
+	// RecoverRetry tries the same launch again.
 	RecoverRetry RecoveryAction = iota
 	// RecoverDegrade relaunches with a smaller footprint (shorter context, lower memory
-	// use), the first answer to memory pressure or a wedged load.
+	// use).
 	RecoverDegrade
-	// RecoverFallback gives up on this model for now and serves a smaller one in its place,
-	// so something usable stays available rather than nothing.
+	// RecoverFallback serves a smaller model in this one's place, so something usable
+	// stays available.
 	RecoverFallback
-	// RecoverQuarantine stops launching the model until its state is reset, so a model that
-	// fails no matter what does not consume the loop in a hot restart cycle.
+	// RecoverQuarantine stops launching the model until its state is reset, so a model
+	// that always fails cannot hold the loop in a restart cycle.
 	RecoverQuarantine
 )
 
-// RecoveryState is a model's recent failure memory: the kind of the most recent failure and
-// how many consecutive attempts have failed (including the one that produced this state). A
-// successful launch resets it to the zero value.
+// RecoveryState is a model's recent failure memory: the kind of the latest failure and
+// the count of consecutive failed attempts, including that one. A successful launch
+// resets it to the zero value.
 type RecoveryState struct {
 	Kind     FailureKind
 	Attempts int
 }
 
-// Recover decides the next action for a failing model, applying a graded ladder that escalates
-// with repeated failure and never retries a cause that an identical retry cannot fix. An
-// out-of-memory failure degrades, then falls back, then quarantines, and is never retried
-// unchanged. A hang gets one retry (a slow load) before degrading and falling back. A plain
-// crash is retried a bounded number of times, then quarantined. The action severity never
-// decreases as attempts grow, so escalation is monotonic and a persistently failing model
-// always reaches quarantine rather than looping forever.
+// Recover decides the next action for a failing model. Out of memory degrades, falls
+// back, then quarantines, and is never retried unchanged. A hang gets one retry before
+// degrading and falling back. A crash is retried a bounded number of times, then
+// quarantined. Severity never decreases as attempts grow, so a persistently failing
+// model always reaches quarantine.
 func Recover(s RecoveryState) RecoveryAction {
 	attempts := s.Attempts
 	if attempts < 1 {

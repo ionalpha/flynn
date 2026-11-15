@@ -1,16 +1,13 @@
-// Package huggingface is a read-only client for the Hugging Face Hub HTTP API: it
-// searches the Hub for models, lists the files in a model repository, and reads a
-// model's card metadata, all over the same hardened, public-only transport the file
-// downloader uses. It is the upstream half of turning a hub reference into a verified
-// catalog entry, and the discovery surface (search, then list and view a candidate)
-// that finds the reference in the first place.
+// Package huggingface is a read-only client for the Hugging Face Hub HTTP API. It
+// searches for models, lists a repository's files and reads a model's card metadata over
+// the hardened, public-only transport the file downloader uses, to find a hub reference
+// and turn it into a verified catalog entry.
 //
-// It reads metadata only. It never downloads weights or executes anything: a file's
-// bytes are fetched and verified separately through the download path. The value it
-// adds is trust-bearing structure: for a large weights file the Hub records an LFS
-// object id that is the file's sha256, so a manifest listed here already carries the
-// content digest a download can be pinned to, captured from the registry rather than
-// typed by hand.
+// It reads metadata only and never downloads weights or executes anything; a file's bytes
+// are fetched and verified through the download path. For a large weights file the Hub
+// records an LFS object id that is the file's sha256, so a manifest listed here carries
+// the content digest a download is pinned to, taken from the registry instead of typed by
+// hand.
 package huggingface
 
 import (
@@ -27,13 +24,12 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// defaultBase is the public Hub origin. It is configurable only so a test can point
-// the client at a local server; production always talks to the real Hub over https.
+// defaultBase is the public Hub origin. It is configurable only so a test can point the
+// client at a local server.
 const defaultBase = "https://huggingface.co"
 
-// maxBodyBytes caps a metadata response so a hostile or runaway endpoint cannot
-// exhaust memory. A repo tree or model card is kilobytes to low megabytes; this leaves
-// generous room while staying bounded.
+// maxBodyBytes caps a metadata response so a hostile or runaway endpoint cannot exhaust
+// memory. A repo tree or model card is kilobytes to low megabytes.
 const maxBodyBytes = 16 << 20 // 16 MiB
 
 // Client reads model metadata from the Hugging Face Hub over a hardened transport.
@@ -84,13 +80,11 @@ type File struct {
 	Path string
 	// Size is the file's size in bytes.
 	Size int64
-	// SHA256 is the content hash, present only for an LFS-tracked file (the large
-	// weights), taken from the Hub's recorded LFS object id. It is empty for a small
-	// git-tracked file, whose Hub object id is a git blob hash, not a content sha256;
-	// such a file's digest is established by hashing it on download instead.
+	// SHA256 is the content hash, taken from the Hub's LFS object id and set only for an
+	// LFS-tracked file. A small git-tracked file's object id is a git blob hash, so its
+	// digest comes from hashing it on download.
 	SHA256 string
-	// LFS reports whether the file is stored in LFS (the large binary objects). An LFS
-	// file carries a usable SHA256; a non-LFS file does not.
+	// LFS reports whether the file is stored in LFS, and so whether SHA256 is set.
 	LFS bool
 }
 
@@ -106,10 +100,9 @@ type treeEntry struct {
 	} `json:"lfs"`
 }
 
-// Tree lists the files at the main revision of a model repository, with the content
-// digest already attached to every LFS-tracked file. repo is "owner/name". A missing
-// repo is reported as a terminal not-found rather than an empty list, so a typo never
-// looks like an empty model.
+// Tree lists the files at the main revision of a model repository, with the content digest
+// attached to every LFS-tracked file. repo is "owner/name". A missing repo is a terminal
+// not-found error, so a typo never looks like an empty model.
 func (c *Client) Tree(ctx context.Context, repo string) ([]File, error) {
 	if err := checkRepo(repo); err != nil {
 		return nil, err
@@ -201,8 +194,8 @@ type SearchQuery struct {
 	// Sort orders the results: "downloads" (default), "likes", or "modified". An
 	// unknown value falls back to downloads so a typo never returns an unordered page.
 	Sort string
-	// Limit caps the number of results. It is clamped to a sane range so a caller can
-	// neither ask for zero nor pull an unbounded page.
+	// Limit caps the number of results. A non-positive value uses the default and a
+	// large one is cut to the maximum page.
 	Limit int
 }
 
@@ -241,10 +234,9 @@ const (
 	searchLimitMax     = 100
 )
 
-// Search lists models on the Hub ranked by the query's sort order, returning each
-// candidate's id and the signals needed to judge it. It reads metadata only, over the
-// same hardened transport the rest of the client uses, and never fetches a tree or
-// weights: a returned id is what bless and run consume next.
+// Search lists models on the Hub in the query's sort order, with each candidate's id and
+// the signals needed to judge it. It reads metadata only and fetches no tree or weights;
+// a returned id is what bless and run take next.
 func (c *Client) Search(ctx context.Context, q SearchQuery) ([]SearchResult, error) {
 	params := url.Values{}
 	if t := strings.TrimSpace(q.Text); t != "" {
@@ -357,7 +349,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 }
 
 // checkRepo rejects an empty or malformed "owner/name" before a request is built, so a
-// bad reference fails locally with a clear message rather than as a remote 404.
+// bad reference fails locally with a clear message.
 func checkRepo(repo string) error {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {

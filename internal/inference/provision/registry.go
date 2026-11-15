@@ -6,24 +6,17 @@ import (
 )
 
 // llamaCppVersion is the pinned llama.cpp build Flynn installs. It is above the
-// runtime's minimum-supported floor, so every entry below passes the version gate. The
-// digests are the published sha256 of each release archive; the download is refused
-// unless the bytes match.
+// runtime's floor, so every entry in releases passes the version gate.
 var llamaCppVersion = inference.Version{9813}
 
 // llamaCppAsset is where the pinned build's release assets are published.
 const llamaCppAsset = "https://github.com/ggml-org/llama.cpp/releases/download/b9813/" //nolint:gosec // a public release URL prefix, not a credential
 
-// releases is the fixed set of runtime builds Flynn will fetch and install, one per
-// supported platform. It covers llama.cpp, the runtime Flynn provisions itself when no
-// runtime is present: its release archives are small, ship for every common platform,
-// and use only zip and gzip, so installing one adds no decompression dependency and no
-// large download. A present system runtime is preferred over fetching one; this set is
-// the fallback that makes a clean machine able to run a model with no manual setup.
-//
-// Each entry pins the archive URL, its size, and its sha256. Changing the pinned build
-// means updating these values together, so the set of bytes Flynn will execute is
-// always explicit and reviewable.
+// releases is the fixed set of runtime builds Flynn will fetch, for when no system
+// runtime is present. It covers llama.cpp because its archives are small, ship for
+// every common platform, and use only zip and gzip, so no decompression dependency is
+// needed. Each entry pins URL, size and sha256, and changing the build means updating
+// them together, so the bytes Flynn will execute stay reviewable.
 var releases = []Release{
 	{
 		Runtime: "llama.cpp", Version: llamaCppVersion, GOOS: "windows", GOARCH: "amd64",
@@ -108,11 +101,9 @@ var releases = []Release{
 	},
 }
 
-// ReleaseFor returns the pinned CPU baseline Flynn would install for a platform, and
-// whether one exists. The runtime is matched by name (matching inference.Runtime.Name),
-// the platform by Go's runtime.GOOS and runtime.GOARCH. The baseline runs on every
-// machine of the platform, which is why callers that have not looked at the hardware use
-// it; [Choose] and [ReleasesFor] are for those that have.
+// ReleaseFor returns the pinned CPU baseline for a platform, and whether one exists.
+// The baseline runs on every machine of the platform, so callers that have not looked
+// at the hardware use it; [Choose] and [ReleasesFor] are for those that have.
 func ReleaseFor(runtime, goos, goarch string) (Release, bool) {
 	for _, r := range ReleasesFor(runtime, goos, goarch) {
 		if r.Variant == "" {
@@ -138,8 +129,7 @@ func ReleasesFor(runtime, goos, goarch string) []Release {
 	return out
 }
 
-// Releases returns a copy of the full pinned release set, for reporting which builds
-// Flynn can install.
+// Releases returns a copy of the full pinned release set.
 func Releases() []Release { return append([]Release(nil), releases...) }
 
 // Variants are the names a user can pass to select a build of a platform: "cpu" for the
@@ -162,18 +152,17 @@ func ByVariant(rels []Release, name string) (Release, bool) {
 	return Release{}, false
 }
 
-// Choose picks the build of rels (one runtime, one platform) that makes best use of the
+// Choose picks the build of rels (one runtime, one platform) that best uses the
 // hardware in hw, falling back to the CPU baseline.
 //
-// A CUDA build is offered only to an NVIDIA GPU whose driver reports a CUDA version at least
-// the build's, because a build made with a newer toolkit than the driver supports does not
-// load, and the failure arrives at launch rather than at install. The newest such build
-// wins. A build that dropped older architectures (MinComputeCap) is withheld from a card it
-// no longer targets, and from a card whose compute capability the driver did not report.
+// A CUDA build is offered only when the NVIDIA driver reports at least the build's
+// CUDA version, because a newer-toolkit build fails at launch, not at install. The
+// newest fitting build wins. A build with MinComputeCap is withheld from a card below
+// it and from a card whose compute capability the driver did not report.
 //
-// Vulkan is chosen on Windows when an AMD or Intel Arc adapter was found and no CUDA build
-// fits. It is not chosen on Linux, where the Vulkan loader is a separate package a machine
-// may lack and the build would then fail to start; a Linux user asks for it by name.
+// Vulkan is chosen on Windows for an AMD or Intel Arc adapter when no CUDA build fits.
+// It is not chosen on Linux, where the Vulkan loader is a separate package a machine
+// may lack; a Linux user asks for it by name.
 func Choose(rels []Release, hw gpu.Info) (Release, bool) {
 	var best *Release
 	for i := range rels {

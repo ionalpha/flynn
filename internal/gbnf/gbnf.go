@@ -1,21 +1,16 @@
 // Package gbnf compiles a tool's JSON Schema into a GBNF grammar that a local
-// inference runtime applies as a token mask during decoding, so a model cannot
-// emit a structurally invalid tool call no matter how small or weak it is. The
-// malformed-call failure class is removed by construction, independent of model
-// size, because the runtime can only sample tokens the grammar permits.
+// inference runtime applies as a token mask during decoding. The runtime can only
+// sample tokens the grammar permits, so a model of any size cannot emit a
+// structurally invalid tool call.
 //
-// The package is deliberately self-contained and has an in-process recognizer for
-// the same grammar AST it renders. That recognizer is the executable meaning of a
-// grammar: tests compile a schema, then check that the grammar accepts exactly the
-// JSON values the schema admits, so the emitted text is proven correct here without
-// needing a GPU or a running runtime in the loop. Rendering to GBNF text and
-// recognizing against the AST share one representation, so what the tests verify is
-// what ships to the runtime.
+// The package has an in-process recognizer for the same grammar AST it renders.
+// Tests compile a schema and check that the grammar accepts exactly the JSON values
+// the schema admits, so the emitted text is proven without a GPU or a runtime.
 //
-// Only the subset of JSON Schema that tool argument schemas actually use is
-// supported (objects with typed properties, required lists, enums, arrays, nested
-// objects, closed or open). An unsupported construct is a compile error, never a
-// silently wrong grammar: refusing is safe, guessing is not.
+// Only the JSON Schema subset tool argument schemas use is supported: typed object
+// properties, required lists, enums, arrays, nested objects, closed or open. An
+// unsupported construct is a compile error, because a wrong grammar would admit
+// invalid calls.
 package gbnf
 
 import (
@@ -24,10 +19,8 @@ import (
 	"strings"
 )
 
-// node is one element of a grammar production. The concrete kinds form a small
-// regular-plus-recursion algebra that is enough to describe JSON values: a literal
-// string, a character class, a reference to another rule, and the usual
-// composition (sequence, alternation, and the three repetitions).
+// node is one element of a grammar production: a literal, a character class, a
+// rule reference, or a sequence, alternation or repetition of nodes.
 type node interface{ isNode() }
 
 type (
@@ -88,11 +81,9 @@ func (g *Grammar) String() string {
 	return b.String()
 }
 
-// ruleName renders an internal rule name for the grammar text. The grammar dialect
-// admits only letters, digits, and hyphens in a rule name, so the underscores used to
-// build readable internal names are rewritten to hyphens. Internal names never contain
-// a hyphen, so the rewrite is unambiguous, and only the emitted text is affected: the
-// in-process recognizer keeps using the original names.
+// ruleName rewrites underscores to hyphens because GBNF rule names admit only
+// letters, digits and hyphens. Internal names never contain a hyphen, so the
+// rewrite is unambiguous. The recognizer keeps the original names.
 func ruleName(s string) string { return strings.ReplaceAll(s, "_", "-") }
 
 // Root returns the name of the grammar's start rule.
@@ -160,8 +151,7 @@ func renderInSeq(n node) string {
 	return render(n)
 }
 
-// renderAtom wraps a node so a postfix repetition operator binds to the whole node
-// rather than only its last element.
+// renderAtom wraps a node so a postfix repetition binds to the whole node.
 func renderAtom(n node) string {
 	switch n.(type) {
 	case lit, ref, class:
@@ -214,10 +204,8 @@ func classEscape(r rune) string {
 	case '\t':
 		return `\t`
 	default:
-		// A control character or a rune outside printable ASCII is emitted as a GBNF
-		// numeric escape rather than written raw, so a wide range such as "any text
-		// character" renders to valid, portable grammar text. Printable ASCII is left
-		// as-is. Existing classes use only printable ASCII, so their output is unchanged.
+		// A control character or a rune outside printable ASCII is emitted as a
+		// numeric escape, so a wide range renders to portable grammar text.
 		switch {
 		case r < 0x20 || r == 0x7f:
 			return fmt.Sprintf(`\x%02X`, r)

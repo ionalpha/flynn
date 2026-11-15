@@ -15,15 +15,10 @@ type ToolSchema struct {
 	Schema json.RawMessage
 }
 
-// ToolCall compiles a grammar whose root matches a single tool-call object of the
-// form {"name": <one of the tool names>, "arguments": <object matching that tool's
-// schema>}. A runtime applies it so a local model can only ever name a real tool and
-// can only ever emit arguments that satisfy that specific tool's schema. The tool
-// name and its argument shape are bound together: a call naming one tool cannot
-// borrow another's arguments.
-//
-// The tool set must be non-empty and every tool's argument schema must compile;
-// either failure is reported rather than producing a permissive grammar.
+// ToolCall compiles a grammar whose root matches one tool-call object,
+// {"name": <tool name>, "arguments": <that tool's arguments>}. Name and argument
+// shape are bound together, so a call naming one tool cannot carry another's
+// arguments. An empty tool set or a schema that fails to compile is an error.
 func ToolCall(tools []ToolSchema) (*Grammar, error) {
 	b, alts, err := buildToolAlts(tools)
 	if err != nil {
@@ -38,24 +33,18 @@ func ToolCall(tools []ToolSchema) (*Grammar, error) {
 	return b.grammar(root)
 }
 
-// ToolCallOrText compiles a grammar whose root matches EITHER a structurally valid
-// tool call (exactly as ToolCall) OR a free-text final answer that does not begin
-// with "{". A constrained local model can therefore still end its turn with prose,
-// while every tool call it does emit stays well-formed by construction. The two
-// branches are told apart by the first character: an output that starts with "{" is
-// a tool call and nothing else, so there is no ambiguity. This is the form used for
-// an agent loop, where a turn is either a tool call or the model's final answer.
+// ToolCallOrText compiles a grammar whose root matches either a tool call, as
+// [ToolCall], or a free-text answer that does not begin with "{". An agent loop uses
+// it so a constrained model can still end its turn with prose. The first character
+// tells the branches apart, so there is no ambiguity.
 func ToolCallOrText(tools []ToolSchema) (*Grammar, error) {
 	b, alts, err := buildToolAlts(tools)
 	if err != nil {
 		return nil, err
 	}
-	// answer: a first character that is any text character except "{", then any run of
-	// text characters. The character classes are negated so they admit any UTF-8 code
-	// point, excluding only the NUL byte (and "{" in the leading position, which is what
-	// distinguishes a free-text answer from the tool-call branch). A negated class is the
-	// portable way to express "any character" in this grammar dialect; a positive range
-	// up to the maximum code point is not.
+	// A negated class admits any code point except NUL (and "{" in the first
+	// position). It is the portable "any character" in this dialect; a positive
+	// range up to the maximum code point is not.
 	b.add("text_char", class{ranges: [][2]rune{{0, 0}}, negated: true})
 	b.add("text_head", class{ranges: [][2]rune{{0, 0}, {'{', '{'}}, negated: true})
 	b.add("answer", seq{[]node{ref{"text_head"}, star{ref{"text_char"}}}})
@@ -64,10 +53,8 @@ func ToolCallOrText(tools []ToolSchema) (*Grammar, error) {
 	return b.grammar("root")
 }
 
-// buildToolAlts validates the tool set and compiles each tool into a call-envelope
-// node, returning a builder primed with the shared whitespace rule and the
-// alternatives in a stable, caller-order-independent sequence. Both ToolCall and
-// ToolCallOrText build their root from these alternatives.
+// buildToolAlts validates the tool set and compiles each tool into a call envelope,
+// in an order independent of the caller's, so the grammar is deterministic.
 func buildToolAlts(tools []ToolSchema) (*builder, []node, error) {
 	if len(tools) == 0 {
 		return nil, nil, errors.New("gbnf: no tools to constrain")
@@ -134,23 +121,17 @@ func callEnvelope(name, argsRule string) node {
 	}}
 }
 
-// maxSchemaBytes bounds the size of a raw argument schema. A schema can be supplied
-// by a semi-trusted source (an external tool server), so an unbounded one is a
-// denial-of-service vector: parsing and compiling it costs time and memory, and a
-// pathologically nested one could exhaust the stack. Real tool schemas are far
-// smaller than this; an oversized one is refused rather than processed.
+// maxSchemaBytes bounds a raw argument schema. Schemas can come from an external
+// tool server, and an unbounded one costs unbounded parse time and memory.
 const maxSchemaBytes = 1 << 18 // 256 KiB
 
-// maxSchemaDepth bounds how deeply schema compilation may recurse through nested
-// objects and arrays, so a deeply nested schema is refused with an error instead of
-// overflowing the stack. Tool argument schemas are shallow; this is generous.
+// maxSchemaDepth bounds compile recursion, so a deeply nested schema is an error
+// instead of a stack overflow.
 const maxSchemaDepth = 64
 
-// decodeSchema parses a raw argument schema into the internal node. An empty raw
-// schema is a tool that takes no arguments: a closed, empty object. Malformed JSON,
-// or a schema larger than maxSchemaBytes, is an error rather than a silently
-// permissive grammar, so every entry point refuses a schema it cannot safely read
-// instead of admitting any call.
+// decodeSchema parses a raw argument schema. An empty schema is a tool with no
+// arguments, a closed empty object. Malformed JSON or a schema over
+// [maxSchemaBytes] is an error, so no entry point admits a schema it cannot read.
 func decodeSchema(raw json.RawMessage) (*schemaNode, error) {
 	if len(raw) == 0 {
 		closed := false

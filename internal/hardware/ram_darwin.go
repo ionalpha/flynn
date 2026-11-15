@@ -9,9 +9,8 @@ import (
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
-// systemRAMBytes queries the kernel for the physical memory total via sysctl, which is
-// present on every macOS install and prints the byte count directly. It is
-// best-effort: a missing tool or unexpected output yields 0. The context bounds the
+// systemRAMBytes queries sysctl, present on every macOS install, for the physical memory
+// total in bytes. A missing tool or unexpected output yields 0, and the context bounds the
 // probe so a wedged tool cannot hang the caller.
 func systemRAMBytes(ctx context.Context) int64 {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)

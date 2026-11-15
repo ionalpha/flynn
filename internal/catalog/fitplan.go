@@ -42,12 +42,11 @@ const (
 
 	// gpuToRAMBandwidth is how much faster the GPU reads its own memory than it reads
 	// system RAM across the bus: a laptop GPU's memory runs near 400 GB/s against about
-	// 50 GB/s for dual-channel DDR5. It sets the speed estimate for a split, and is an
-	// assumption about typical hardware, not something the probe measures.
+	// 50 GB/s for dual-channel DDR5. It assumes typical hardware; the probe does not
+	// measure it.
 	gpuToRAMBandwidth = 8.0
 
-	// legacyHeadroomDenom sizes the cache of a model with no [Arch] as a fifth of its
-	// weights, the allowance the catalog used before it carried architecture data.
+	// legacyHeadroomDenom sizes the cache of a model with no [Arch] as a fifth of its weights.
 	legacyHeadroomDenom = 5
 )
 
@@ -107,7 +106,7 @@ type FitPlan struct {
 	// WeightBytes, KVBytes and OverheadBytes sum to [FitPlan.NeedBytes].
 	WeightBytes, KVBytes, OverheadBytes int64
 	// KVEstimated is true when the entry has no [Arch], so KVBytes is a flat fraction of
-	// the weights rather than computed from the network's shape.
+	// the weights.
 	KVEstimated bool
 	// GPUBytes and RAMBytes are how NeedBytes divides between VRAM and system RAM.
 	GPUBytes, RAMBytes int64
@@ -279,9 +278,9 @@ type Ranked struct {
 
 // Rank orders models for a machine, strongest runnable first: local models that run
 // (feasible before tight, then larger parameter count first), then hosted models, then
-// local models that do not run. On a machine with a GPU, a model that can only run from
-// system RAM ranks last among those that run. Ties break on id so the order is stable. A split is
-// ranked like any other placement, since its row carries the label and the slowdown.
+// local models that do not run. On a machine with a GPU, a model that runs only from
+// system RAM ranks last among those that run. Ties break on id so the order is stable. A
+// split ranks like any other placement, since its row carries the label and the slowdown.
 func Rank(models []ModelSpec, mc Machine, s FitSettings) []Ranked {
 	out := make([]Ranked, len(models))
 	for i, m := range models {

@@ -65,24 +65,22 @@ type Server struct {
 	StartedAt int64
 }
 
-// Stats is a best-effort reading of how loaded a running server is. Known false means
-// the load is unknown, not zero.
+// Stats is a best-effort reading of how loaded a running server is. When Known is false
+// the load is unknown and the zero fields are no reading.
 type Stats = serve.RuntimeStats
 
 // Serve brings a model in the host's catalog up and returns its endpoint. An entry that is
-// not [TrustBlessed] is classified by the origin it names, so it needs the isolation that
-// origin needs and is refused with [ErrNotAdmitted] where the host gives less. A reference
-// that is not a catalog entry has nothing pinned to fetch it by and is [ErrNotServable].
-// Calls for one model run one at a time. A server already running is adopted only if it was
-// started from a build at or above the current floor, under at least the isolation
-// [Config.MinContainment] asks for, with a key file still readable, and if its listener
-// passes the handshake below; otherwise it is stopped and replaced.
+// not [TrustBlessed] needs the isolation its origin needs and is refused with
+// [ErrNotAdmitted] where the host gives less. A reference outside the catalog has nothing
+// pinned to fetch it by and is [ErrNotServable]. Calls for one model run one at a time. A
+// running server is adopted only if its build meets the current floor, its isolation
+// meets [Config.MinContainment], its key file is readable and its listener passes the
+// handshake below; otherwise it is stopped and replaced.
 //
-// Another process can take the chosen port before the runtime binds it, so the token goes
-// nowhere until the listener is attributed: Serve sends it a request with no credential and
-// one with a made-up one, both of which it must refuse, then one with a probe key, which it
-// must not refuse. Failing the first two returns [ErrUnauthenticated], the third
-// [ErrWrongListener]; the server is stopped either way.
+// Another process can take the port before the runtime binds it, so the token is sent
+// nowhere until the listener refuses a request with no credential and one with a made-up
+// key, then accepts the probe key. Failing the first two returns [ErrUnauthenticated], the
+// third [ErrWrongListener]; the server is stopped either way.
 func (h *Host) Serve(ctx context.Context, ref string, opts ServeOptions) (Endpoint, error) {
 	_, _, a, err := h.assess(ref)
 	if err != nil {
@@ -196,13 +194,10 @@ func (h *Host) start(ctx context.Context, m Model, opts ServeOptions, have sandb
 	}, nil
 }
 
-// reuse adopts a running server for the model, or stops it and reports none. A server is
-// stopped, and its key file removed, when it was started from a build below the floor now
-// in force (or from one the record does not name), when it runs under less isolation than
-// [Config.MinContainment] asks for, or when its key file cannot be read: an endpoint
-// nobody holds the token for is of no use, and one that might be someone else's should not
-// be left up. A server that passes those is attested before its token is remembered or
-// returned, and one that fails attestation is stopped with the error.
+// reuse adopts a running server for the model, or stops it, removes its key file and
+// reports none. A server that adoptable rejects, or whose key file cannot be read, is
+// stopped: nobody holds its token, and it might be someone else's. One that passes is
+// attested before its token is remembered or returned.
 func (h *Host) reuse(ctx context.Context, id string) (Endpoint, bool, error) {
 	recs, err := h.mgr.Status(ctx)
 	if err != nil {
@@ -308,8 +303,8 @@ func (h *Host) Stop(id string) (bool, error) {
 	return found, h.fail(err)
 }
 
-// Stats reads the load of a running server. It returns [ErrNotRunning] when there is
-// none, and an unknown reading, not an error, when the server cannot be read.
+// Stats reads the load of a running server. It returns [ErrNotRunning] when there is none,
+// and an unknown reading with a nil error when the server cannot be read.
 func (h *Host) Stats(ctx context.Context, id string) (Stats, error) {
 	if _, err := h.Reach(ctx, id); err != nil {
 		return Stats{}, err
@@ -354,16 +349,13 @@ func (h *Host) readToken(id string) (string, bool) {
 	return keys[0], true
 }
 
-// attest shows that the listener at baseURL is the server this host launched, using only
-// requests that carry neither the session token nor anything that would let the
-// listener's owner use it. The server is started with two keys and accepts either. A
-// listener is attributed to the launch when it refuses a request with no credential,
-// refuses one with a key nobody issued, and accepts one with the probe key. A squatter
-// that answers 200 to everything fails the first, one that accepts any bearer fails the
-// second, and one that refuses everything fails the third. Only a process that read the
-// key file passes all three, and the file is readable by the owning account alone. The
-// probe key reaches the listener only after the first two have shown it enforces a
-// credential, and it opens nothing but the server it was written for.
+// attest shows that the listener at baseURL is the server this host launched, without
+// sending the session token. The server accepts two keys. The listener must refuse a
+// request with no credential, refuse one with a key nobody issued, and accept one with the
+// probe key. A squatter answering 200 to everything fails the first, one accepting any
+// bearer fails the second, and one refusing everything fails the third. Only a process
+// that read the owner-only key file passes all three. The probe key is sent only after the
+// first two show the listener enforces a credential, and it opens only its own server.
 func (h *Host) attest(ctx context.Context, baseURL, probeKey string) error {
 	st, err := h.chatStatus(ctx, baseURL, "")
 	if err != nil {
@@ -393,7 +385,6 @@ func (h *Host) attest(ctx context.Context, baseURL, probeKey string) error {
 	return nil
 }
 
-// refused reports whether a status is an authentication refusal.
 func refused(status int) bool {
 	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }

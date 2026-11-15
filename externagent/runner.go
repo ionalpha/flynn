@@ -19,30 +19,25 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// bridgeForwarder is a Spawner that confines the child's network into a separate namespace,
-// where the host-loopback bridge is unreachable, and so must forward it in. ForwardBridge
-// reports the URL the child should use to reach a bridge listening at hostURL, and the host
-// address the sandbox must forward that URL to (empty when the child reaches hostURL
-// directly and no forward is needed). A spawner that does not implement it leaves the child
-// pointed straight at the host bridge, correct for a child that shares the host's stack.
+// bridgeForwarder is a Spawner whose child has its own network namespace and so cannot
+// reach the host-loopback bridge. ForwardBridge returns the URL the child should dial
+// and the host address to forward it to (empty when no forward is needed). A spawner
+// without it leaves the child pointed at the host bridge, which suits a shared stack.
 type bridgeForwarder interface {
 	ForwardBridge(hostURL string) (childURL, forwardTo string)
 }
 
-// defaultBridgeName is the MCP server name the loopback bridge is registered under.
 const defaultBridgeName = "flynn"
 
-// defaultTokenEnv is the environment variable the external CLI reads the bridge's
-// bearer token from, so the token stays out of the process table.
+// defaultTokenEnv carries the bridge's bearer token, keeping it out of the process
+// table.
 const defaultTokenEnv = "FLYNN_MCP_TOKEN" //nolint:gosec // G101: this is the env var NAME the token is read from, not a credential
 
-// Runner drives one external-agent episode end to end: it hosts the loopback MCP
-// bridge over a local streamable-HTTP port, spawns the CLI constrained to route its
-// effects through that bridge, projects the CLI's output stream to typed events, and
-// tears everything down. The bridge is served on the governed context passed to Run,
-// so every tool call the CLI makes is admitted, contained, braked, and recorded at
-// the dispatch waist; cancelling that context (a halt or shutdown) both refuses
-// further tool calls and kills the subprocess.
+// Runner drives one episode: it hosts the loopback MCP bridge on a local
+// streamable-HTTP port, spawns the CLI, projects its output to events, and tears
+// everything down. The bridge serves on the governed context passed to Run, so every
+// tool call is admitted, contained, braked and recorded at the dispatch waist, and
+// cancelling that context refuses further calls and kills the subprocess.
 type Runner struct {
 	adapter Adapter
 	server  *mcp.Server
@@ -51,25 +46,21 @@ type Runner struct {
 	probes  []Probe
 }
 
-// NewRunner builds a runner that drives adapter, hosting server as the bridge,
-// spawning the episode subprocess through spawner (the sandbox-confined process
-// host), and forwarding each projected event to report (nil drops them).
+// NewRunner builds a runner hosting server as the bridge and spawning through spawner.
+// report receives each projected event; nil drops them.
 func NewRunner(adapter Adapter, server *mcp.Server, spawner Spawner, report func(Event)) *Runner {
 	return &Runner{adapter: adapter, server: server, spawner: spawner, report: report}
 }
 
-// WithProbes sets the conformance probes the runner watches the episode against. Their
-// instructions must also be folded into the episode (see Episode.Probes); a probe whose
-// instruction was never sent measures nothing but the model's guesswork.
+// WithProbes sets the conformance probes to watch for. Their instructions must also go
+// into Episode.Probes, or the probe measures only the model's guesswork.
 func (r *Runner) WithProbes(probes []Probe) *Runner {
 	r.probes = probes
 	return r
 }
 
-// Result is the outcome of one episode: the final assistant message, the token
-// usage the CLI reported, whether it failed and why, and the provenance-tier tally
-// of the projected events. Reasoning is not in the tally because it is unobservable
-// with an external harness in the loop; the record names that gap separately.
+// Result is the outcome of one episode. Reasoning is absent from the tier tally because
+// an external harness keeps it unobservable; the record names that gap separately.
 type Result struct {
 	Text     string
 	Usage    Usage
@@ -77,33 +68,26 @@ type Result struct {
 	Err      string
 	Terminal bool
 	Tiers    map[Tier]int
-	// Conformance is how the harness answered the episode's probes and how it chose its
-	// tools. It is the evidence that the run's instructions took, rather than the
-	// assumption that they did.
+	// Conformance is the evidence of whether the run's instructions were followed.
 	Conformance ConformanceReport
-	// Session is the conversation id the CLI announced, empty when it announced none.
-	// Handing it back on a later Episode continues that conversation, which is how a
-	// multi-turn session keeps the harness's own context across turns.
+	// Session is the conversation id the CLI announced, if any. Passing it on a later
+	// Episode keeps the harness's context across turns.
 	Session string
 }
 
-// Run hosts the bridge, runs one episode of ep, and returns its Result. ctx must
-// carry the run's governance bindings (the grant and the brake) so bridged calls are
-// governed; cancelling ctx halts the episode and kills the subprocess. Run returns a
-// non-nil error only on a failure to start or host the episode (a bad invocation, a
-// bridge that will not bind); an episode that runs and the CLI reports as failed is a
-// completed Run with Failed set on the Result.
+// Run hosts the bridge, runs one episode, and returns its Result. ctx must carry the
+// run's grant and brake so bridged calls are governed; cancelling it kills the
+// subprocess. The error is non-nil only when the episode cannot start or be hosted; an
+// episode the CLI reports as failed returns Failed on the Result.
 func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
-	// The lockdown is read before anything is bound or spawned: a provider whose native
-	// surface cannot be taken away is refused, not run and then judged. The refusal is
-	// terminal because it is an integration gap, not a bad moment, and it names what could
-	// not be stripped so the operator can pick another backend or close the gap.
+	// Read before anything binds or spawns, so a provider whose native surface cannot
+	// be removed never runs. Terminal, because it is an integration gap; the reason
+	// names what could not be stripped.
 	if why := r.adapter.Lockdown().Refusal(r.adapter.Name()); why != "" {
 		return Result{}, fault.New(fault.Terminal, "externagent_lockdown", why)
 	}
 
-	// The bridge binds a loopback port through the bind-safe gate, never a raw or
-	// non-loopback listen, so the endpoint an external process reaches stays local.
+	// Loopback only, through the bind-safe gate, so the endpoint stays local.
 	ln, err := bindguard.Listen("tcp", "127.0.0.1:0", bindguard.Loopback())
 	if err != nil {
 		return Result{}, fault.Wrap(fault.Transient, "externagent_bridge_listen", err)
@@ -122,11 +106,8 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	defer func() { _ = srv.Close() }()
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	// The bridge listens on this host-loopback address. A child that shares the host's
-	// network stack reaches it directly; a child confined to its own network namespace
-	// cannot, so the spawner reports an in-namespace address it forwards to this one, and the
-	// child is handed that instead. A spawner that does not confine the network reports the
-	// host address unchanged and no forward.
+	// A child in its own network namespace gets an in-namespace address the spawner
+	// forwards here; otherwise it dials this address directly.
 	hostURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
 	childURL, forwardTo := hostURL, ""
 	if fw, ok := r.spawner.(bridgeForwarder); ok {
@@ -153,8 +134,8 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	result := Result{Tiers: map[Tier]int{}}
 	watch := newConformanceWatch(r.probes, ep.Bridge.Name)
 	scanner := bufio.NewScanner(proc.Stdout())
-	// An episode line (a tool result echoed in the stream) can be large; raise the
-	// scanner's line ceiling well above the default 64KiB.
+	// An echoed tool result can be large, so the line limit is 4 MiB instead of the
+	// default 64 KiB.
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		evs, perr := r.adapter.Parse(scanner.Bytes())
@@ -171,22 +152,19 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	waitErr := proc.Wait()
 	result.Conformance = watch.report()
 
-	// The final assistant message is read from the file the CLI wrote, which is more
-	// reliable than reconstructing it from the event stream.
+	// The message file is more reliable than reconstructing the reply from events.
 	if inv.LastMessageFile != "" {
 		path := inv.LastMessageFile
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(ep.Workdir, inv.LastMessageFile)
 		}
-		// The path is the episode workdir joined with the adapter's fixed filename, not
-		// caller-tainted input.
+		// Not caller-tainted: the workdir joined with the adapter's fixed filename.
 		if b, rerr := os.ReadFile(path); rerr == nil && len(b) > 0 { //nolint:gosec // G304: path is workdir + adapter's fixed filename
 			result.Text = string(b)
 		}
 	}
 
-	// A cancelled context is a halt: report it as a terminal failure regardless of how
-	// the process exited, so a killed episode is recorded as halted rather than done.
+	// A cancelled context is a halt, recorded as terminal whatever the exit status.
 	if ctx.Err() != nil {
 		result.Failed = true
 		result.Terminal = true
@@ -195,7 +173,7 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 		}
 		return result, nil
 	}
-	// A non-zero exit with no error event projected is still a failure worth recording.
+	// A non-zero exit with no error event is still a failure.
 	if waitErr != nil && !result.Failed {
 		result.Failed = true
 		result.Err = waitErr.Error()
@@ -203,16 +181,11 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	return result, nil
 }
 
-// redact removes the bridge's bearer token from a harness line before the line leaves
-// the runner. The line is the harness's verbatim output and it is kept verbatim in the
-// record, so anything the CLI echoes (its own argv, its environment, an error quoting
-// the header it sent) is echoed into a signed, durable artifact. The token is the one
-// secret this run mints and hands the CLI, so it is the one this layer can remove with
-// certainty; a secret the CLI printed from its own environment is beyond what the runner
-// can recognize.
-//
-// The token is a URL-safe id with no JSON metacharacter, so replacing it inside the line
-// leaves the JSON valid and the rest of the line byte-identical.
+// redact removes the bridge's bearer token from a harness line. The line is kept
+// verbatim in a signed, durable record, so anything the CLI echoes (its argv, its
+// environment, an error quoting its header) would carry the token. The token is the one
+// secret this run mints, so it is the one the runner can remove with certainty. It is a
+// URL-safe id with no JSON metacharacter, so the line stays valid JSON.
 func redact(raw json.RawMessage, token string) json.RawMessage {
 	if len(raw) == 0 || token == "" {
 		return raw
@@ -220,20 +193,18 @@ func redact(raw json.RawMessage, token string) json.RawMessage {
 	return bytes.ReplaceAll(raw, []byte(token), []byte(secret.Redacted))
 }
 
-// emit forwards an event to the reporter when one is set.
 func (r *Runner) emit(ev Event) {
 	if r.report != nil {
 		r.report(ev)
 	}
 }
 
-// absorb folds one event into the running result: the latest usage, the final text
-// (an attested text event is a fallback when no message file is written), any failure,
-// and the provenance-tier tally.
+// absorb folds one event into the result. Attested text is the fallback when no
+// message file is written.
 func (res *Result) absorb(ev Event) {
 	res.Tiers[ev.Tier]++
-	// Any event may carry the conversation id (both harnesses announce it on the first
-	// line and repeat it), so it is read off the event rather than off a kind.
+	// Both harnesses repeat the conversation id on many lines, so it is read from any
+	// event kind.
 	if ev.Session != "" {
 		res.Session = ev.Session
 	}
@@ -251,8 +222,7 @@ func (res *Result) absorb(ev Event) {
 		res.Err = ev.Err
 		res.Terminal = res.Terminal || ev.Terminal
 	case EventProgress, EventBridgeCall, EventNativeCommand:
-		// None of these carry a result of their own. They are counted in the tier tally
-		// above, folded into the steering metrics by the conformance watch, and forwarded
-		// to the reporter for the live trace.
+		// No result of their own; already tallied, and counted for steering by the
+		// conformance watch.
 	}
 }
