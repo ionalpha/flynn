@@ -11,11 +11,7 @@
 # lines it fixed. Never add a line or raise a count: fix the comment.
 allowance/allowance.go filler 1
 brakes/brakes.go deliberately 1
-bus/bus.go deliberately 1
-chain/conformance/conformance.go deliberately 2
-chain/conformance/crypto.go deliberately 1
 chain/conformance/crypto.go length 1
-chain/verify.go deliberately 1
 controlplane/delegation.go length 1
 controlplane/name.go length 1
 controlplane/possession.go length 1
@@ -26,11 +22,6 @@ driver/driver.go history 1
 evidence/evidence.go deliberately 1
 evidence/invariant.go deliberately 1
 evidence/invariant.go filler 1
-extension/extension.go deliberately 1
-extension/fetch.go deliberately 1
-extension/release.go deliberately 1
-extension/signerchannel.go deliberately 1
-extension/signing.go matters 1
 goal/evidence.go deliberately 1
 goal/goal.go deliberately 1
 goal/invariant.go matters 1
@@ -66,10 +57,6 @@ internal/sigstore/sigstore.go dash 1
 internal/sigstore/sigstore.go deliberately 1
 internal/sigstore/sigstore.go matters 1
 internal/sqlitex/sqlitex.go deliberately 1
-internal/tui/editor/editor.go deliberately 1
-internal/tui/screen/screen.go deliberately 1
-internal/tui/term/term.go deliberately 1
-internal/tui/theme/theme.go deliberately 1
 memory/consolidate/consolidate.go matters 1
 memory/curate/curate.go filler 1
 memory/digest/builder.go matters 1
@@ -99,16 +86,12 @@ notices/feed.go matters 1
 notices/fetch.go deliberately 1
 notices/keyring.go deliberately 2
 notices/store.go filler 1
-observe/observe.go deliberately 1
-orchestration/units.go deliberately 1
 progress/progress.go deliberately 1
 reconcile/manager.go deliberately 1
 refusal/refusal.go filler 1
 resource/bitemporal.go length 1
 resource/merge.go matters 1
 resource/resource.go deliberately 1
-runtime/runtime.go dash 1
-runtime/runtime.go filler 2
 sandbox/appcontainer_windows.go deliberately 2
 sandbox/confined_open.go length 1
 sandbox/local.go deliberately 2
@@ -128,10 +111,6 @@ skill/skillmd/skillmd.go deliberately 2
 skill/skillmd/skillmd.go filler 1
 skill/skillmd/write.go deliberately 2
 skill/skillrecall/skillrecall.go deliberately 1
-state/usage.go deliberately 1
-state/usage.go filler 1
-storage/sqlite/compress.go matters 1
-storage/sqlite/warm.go length 1
 tools/github/app.go matters 1
 tools/github/github.go deliberately 2
 tools/github/resolve.go filler 1
