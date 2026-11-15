@@ -1,17 +1,10 @@
 // Package provision installs a local inference runtime that Flynn fetches itself, so a
-// machine with no runtime can still run a model with no manual setup step. It pairs with
-// the pure inference core: that package decides which runtime version is safe to run,
-// this one obtains a pinned, safe build and places it on disk.
-//
-// The mechanics of fetching, verifying, extracting, and atomically installing a pinned
-// archive are the generic acquire layer's job; this package adds the model-runtime policy
-// on top: a release is gated against the inference advisory floor before any network
-// access, and a build is installed under a versioned directory so versions coexist.
-//
-// It does not run the runtime. Launching the installed binary, which is the
-// code-execution surface a malicious model targets, is the caller's job and happens
-// inside the sandbox. This package only guarantees the bytes on disk are the pinned,
-// gate-approved build.
+// machine with no runtime can run a model without a manual setup step. Package
+// inference decides which version is safe; this package obtains a pinned, gate-approved
+// build and places it on disk, under a versioned directory so versions coexist. The
+// generic acquire layer fetches, verifies, extracts and installs; this package adds the
+// advisory gate before any network access. It never runs the runtime: launching the
+// binary, the surface a malicious model targets, happens inside the sandbox.
 package provision
 
 import (
@@ -23,8 +16,8 @@ import (
 	"github.com/ionalpha/flynn/internal/inference"
 )
 
-// ArchiveKind is the container format a runtime release ships in. Its values match
-// acquire.ArchiveKind, so a runtime release maps to the generic acquire layer directly.
+// ArchiveKind is the container format a runtime release ships in, the same type the
+// acquire layer uses.
 type ArchiveKind = acquire.ArchiveKind
 
 const (
@@ -34,16 +27,16 @@ const (
 	ArchiveTarGz = acquire.ArchiveTarGz
 )
 
-// Release is a single pinned runtime build for one OS and architecture: where to get it,
-// the digest it must match, and which executable inside it is the server to run. A
-// release is data, fixed at build time, so the set of builds Flynn will install is
-// auditable and cannot be redirected at runtime.
+// Release is one pinned runtime build for one OS and architecture: where to get it, the
+// digest it must match, and which executable inside it is the server. Releases are
+// fixed at build time, so the set of installable builds is auditable and cannot be
+// redirected at runtime.
 type Release struct {
-	// Runtime is the inference runtime this build is, matching inference.Runtime.Name.
+	// Runtime matches inference.Runtime.Name.
 	Runtime string
-	// Version is the build's version, used to gate it and to name its install dir.
+	// Version gates the build and names its install directory.
 	Version inference.Version
-	// GOOS and GOARCH are the platform this build targets (Go's runtime.GOOS/GOARCH).
+	// GOOS and GOARCH are the platform this build targets, as Go names them.
 	GOOS, GOARCH string
 	// URL is the https source of the release archive.
 	URL string
@@ -53,26 +46,25 @@ type Release struct {
 	SizeBytes int64
 	// Archive is the archive's container format.
 	Archive ArchiveKind
-	// BinName is the server executable to locate inside the extracted archive (for
-	// example "llama-server" or "llama-server.exe"). Its sibling libraries are extracted
-	// alongside it, so the located binary is runnable in place.
+	// BinName is the server executable inside the extracted archive, such as
+	// "llama-server.exe". Its sibling libraries are extracted beside it, so it runs in
+	// place.
 	BinName string
 
-	// Variant names the build flavor within one runtime version and platform: empty for the
-	// CPU baseline, otherwise "cuda-13.3", "vulkan" and so on. Each variant has its own
-	// digest and its own install directory, so a CPU and a CUDA build of one version
-	// coexist and neither is mistaken for the other.
+	// Variant names the build flavor: empty for the CPU baseline, otherwise "cuda-13.3",
+	// "vulkan" and so on. Each variant has its own digest and install directory, so a CPU
+	// and a CUDA build of one version coexist.
 	Variant string
 	// Accel is the GPU API the variant needs; the zero value is the CPU baseline.
 	Accel Accel
-	// CUDA is the toolkit version a CUDA variant was built with. A driver that supports an
-	// older CUDA cannot load it.
+	// CUDA is the toolkit version a CUDA variant was built with. A driver that supports
+	// only an older CUDA cannot load it.
 	CUDA inference.Version
-	// MinComputeCap is the lowest CUDA compute capability the variant carries kernels for;
+	// MinComputeCap is the lowest CUDA compute capability the variant has kernels for;
 	// zero means no floor.
 	MinComputeCap float64
-	// Companions are further pinned archives unpacked beside the main one: the CUDA
-	// runtime libraries upstream ships separately from the llama.cpp CUDA build.
+	// Companions are further pinned archives unpacked beside the main one, such as the
+	// CUDA runtime libraries upstream ships apart from the llama.cpp CUDA build.
 	Companions []Companion
 }
 
@@ -119,8 +111,7 @@ func (r Release) DownloadBytes() int64 {
 }
 
 // Dir is the directory under destDir the release installs into. The CPU baseline keeps
-// the layout builds had before variants existed, so an install made by an earlier Flynn is
-// still found; any other variant gets its own sibling.
+// the layout from before variants existed, so an older Flynn's install is still found.
 func (r Release) Dir(destDir string) string {
 	v := r.Version.String()
 	if r.Variant != "" {
@@ -129,9 +120,8 @@ func (r Release) Dir(destDir string) string {
 	return filepath.Join(destDir, r.Runtime, v)
 }
 
-// Gate reports the error from the version gate for this release, or nil when the build
-// is safe to run. A release should never be installed if it does not pass, so a caller
-// can refuse before fetching anything.
+// Gate returns the version gate's verdict for this release, so a caller can refuse
+// before fetching anything.
 func (r Release) Gate() error { return inference.SafeToRun(r.Runtime, r.Version) }
 
 // Installed describes a runtime build present on disk after Install.
@@ -146,11 +136,10 @@ type Installed struct {
 	FromCache bool
 }
 
-// Install ensures the release's runtime build is present under destDir and returns the
-// path to its server binary. It is idempotent: a build already extracted at its versioned
-// location is reused without a download. The release is gated before any network access,
-// so a build that would be refused at run time is never fetched; the download, digest
-// verification, traversal-guarded extraction, and atomic install are the acquire layer's.
+// Install ensures the release's build is present under destDir and returns its server
+// binary. A build already at its versioned location is reused without a download. The
+// release is gated before any network access, so a build that would be refused at run
+// time is never fetched.
 func Install(ctx context.Context, dl *fetch.Downloader, rel Release, destDir string) (Installed, error) {
 	if err := rel.Gate(); err != nil {
 		return Installed{}, err
@@ -172,10 +161,9 @@ func Install(ctx context.Context, dl *fetch.Downloader, rel Release, destDir str
 	return Installed{BinPath: bin, Version: rel.Version, Variant: rel.Variant, FromCache: reused}, nil
 }
 
-// Lookup reports the build of rel already installed under destDir, without fetching
-// anything. It finds exactly what [Install] places, because both locate it through
-// [Release.Dir], so a command that asks whether a runtime is installed cannot disagree
-// with the command that installed it.
+// Lookup reports the build of rel already installed under destDir, without fetching.
+// It and [Install] both locate the build through [Release.Dir], so they cannot
+// disagree about whether a runtime is installed.
 func Lookup(rel Release, destDir string) (Installed, bool) {
 	bin, ok := acquire.FindBinary(rel.Dir(destDir), rel.BinName)
 	if !ok {

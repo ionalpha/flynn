@@ -1,67 +1,43 @@
 // Package localmodel runs a catalog model on this machine behind the guards the flynn
-// binary applies, so a host that embeds the agent does not have to rebuild them. A host
-// that assembled the same parts itself (a model server started from a download) would
-// have no advisory gate, no digest pinning and no sandbox, and each of those is a way to
-// run attacker-chosen code next to the agent.
+// binary applies, so an embedding host need not rebuild them. A model server started
+// from a bare download has no advisory gate, digest pinning or sandbox, and each gap lets
+// attacker-chosen code run next to the agent.
 //
-// A [Host] walks one model from reference to running endpoint: [Host.Classify] decides how
-// far a source is trusted and whether this machine isolates it enough, [Host.EnsureRuntime]
-// installs a runtime build after the advisory gate and against a pinned digest,
-// [Host.EnsureWeights] fetches weights against the catalog digest, [Host.Serve] starts the
-// server inside the sandbox and returns an [Endpoint], and [Host.Status], [Host.Reach],
-// [Host.Stats] and [Host.Stop] observe and end it. [Host.Models], [Host.Fit] and
-// [Host.Hardware] answer what the catalog offers and what the machine can run.
+// A [Host] takes a model from reference to endpoint: [Host.Classify] decides trust and
+// whether the sandbox isolates it enough, [Host.EnsureRuntime] installs a gated, pinned
+// runtime build, [Host.EnsureWeights] fetches weights against the catalog digest,
+// [Host.Serve] starts the server and returns an [Endpoint], and [Host.Status],
+// [Host.Reach], [Host.Stats] and [Host.Stop] observe and end it.
 //
 // # Guarantees
 //
-// Each guarantee holds for every exported path, and none has a switch to turn it off:
+// Each holds on every exported path, with no switch to turn it off:
 //
-//   - The server binds 127.0.0.1 only. No [Config] field or argument names an address,
-//     and the port is chosen from the loopback interface.
-//   - A runtime build below its advisory floor is refused before any network access, on a
-//     first install and on a cached one, and a running server built below it is stopped
-//     instead of adopted. [Host.RaiseFloor] can only raise a floor. A host cannot name
-//     the runtime build or its version, so the version the gate reads is the one this
-//     module pins.
-//   - The prompt contract is the catalog's chat template. A template embedded in the
-//     weights is read with a hardened parser, reported through [Endpoint.TemplateOverridden],
-//     and replaced.
-//   - The runtime runs in the sandbox the [Host] built. [Host.Serve] refuses to start it
-//     unless the sandbox applies kernel confinement, or [Config.MinContainment] records
-//     that the host accepts a process jail, and [Endpoint.Containment] reports the level
-//     the server got. A source whose trust needs stronger isolation than the sandbox
-//     provides is refused.
-//   - Weights are fetched against a catalog digest and refused without one. The digest is
-//     checked again just before launch, and the runtime binary is checked against the
-//     hash recorded when it was installed, so a file swapped after provisioning is not
-//     served.
-//   - The endpoint demands a per-launch bearer token ([Endpoint.Token]). The token reaches
-//     the runtime through a file only the owning account can read, never the command line.
-//     Before the token is sent anywhere, the listener on the chosen port must prove it is
-//     the server this call started: it refuses a request with no token, refuses a made-up
-//     one, and accepts a second key that only the key file holds. A server that fails any
-//     of these is stopped, and nothing it answered carried the token.
-//   - Errors do not carry tokens, and URLs in them are reduced to scheme and host.
+//   - The server binds 127.0.0.1 only; nothing in [Config] names an address.
+//   - A runtime build below its advisory floor is refused before any network access, and
+//     a running server below it is stopped instead of adopted. [Host.RaiseFloor] only
+//     raises, and the gate reads the version this module pins.
+//   - The prompt contract is the catalog's chat template. A template in the weights is
+//     read with a hardened parser, reported through [Endpoint.TemplateOverridden], and
+//     replaced.
+//   - [Host.Serve] requires kernel confinement unless [Config.MinContainment] accepts a
+//     process jail, and refuses a source whose trust needs more isolation than the
+//     sandbox gives. [Endpoint.Containment] reports the level.
+//   - Weights need a catalog digest, checked again just before launch, and the runtime
+//     binary is checked against its install-time hash, so a swapped file is not served.
+//   - The endpoint demands a per-launch token ([Endpoint.Token]) passed in an owner-only
+//     file, never argv. Before the token is sent, the listener must refuse no token and a
+//     made-up one and accept a key only the key file holds, or it is stopped.
+//   - Errors carry no tokens, and URLs in them are reduced to scheme and host.
 //
 // # Limits
 //
-// The sandbox leaves outbound network access open to a served runtime (see
-// [Host.Serve]); the loopback pin and the token are what keep the endpoint private. Calls
-// for one model are serialized within a [Host]; two processes starting the same model at
-// once are not, and the later one finds a server it did not start and stops it. On a
-// platform without owner-only file permissions (Windows) the token file relies on the
-// data directory's own access control. The runtime reads the token from a file whose path
-// is on its command line; it is not handed over an inherited descriptor, because the
-// sandbox cannot yet pass one. The runtime opens the weights by path, so the digest is
-// checked on a descriptor before the header is parsed and again just before launch, but
-// the window between that last check and the runtime's own open stays: the file is
-// read-only then, so only the owning account can change it. A runtime that outlives a
-// crashed host is not reaped. The handshake that attributes the listener relies on the
-// runtime accepting several keys from one key file and answering an empty chat request
-// with a status other than 401 or 403 when the key is valid; a build that behaves
-// otherwise is refused, not trusted.
-//
-// This package is experimental: it may change before it is listed in the stable tier.
+// A served runtime keeps outbound network access. Two processes starting one model race,
+// and the later stops the server it did not start. On Windows the token file relies on
+// the data directory's ACL. The runtime opens weights by path after the last digest
+// check, while the file is read-only to its owner. A runtime outliving a crashed host is
+// not reaped. A runtime that cannot pass the listener handshake is refused. This package
+// is experimental and may change.
 package localmodel
 
 import (
@@ -89,8 +65,7 @@ import (
 const Runtime = "llama.cpp"
 
 // Model is a catalog entry: identity, provenance, license, size, capabilities and the
-// quantizations that can be downloaded, each with the digest its bytes are checked
-// against. It is the catalog schema, so a host reads the fields it needs from it.
+// downloadable quantizations, each with the digest its bytes are checked against.
 type Model = catalog.ModelSpec
 
 // Quant is one downloadable quantization of a [Model], with the digest its bytes are
@@ -249,9 +224,9 @@ var (
 	// ErrDigestMismatch is returned when a file on disk no longer hashes to the digest it
 	// was installed under.
 	ErrDigestMismatch = errors.New("localmodel: digest mismatch")
-	// ErrRuntimeUnrecorded is returned when an installed runtime binary has no hash record
-	// beside it, as one installed by Flynn v0.1.3 has not. Provenance is unknown, so the
-	// build is fetched again rather than hashed where it lies; it is not a mismatch.
+	// ErrRuntimeUnrecorded is returned when an installed runtime binary has no hash
+	// record beside it, as with Flynn v0.1.3 installs. Its provenance is unknown, so the
+	// build is fetched again; it is not a mismatch.
 	ErrRuntimeUnrecorded = errors.New("localmodel: runtime binary has no recorded hash")
 	// ErrNotServable is returned for a source that can be classified but not served here.
 	ErrNotServable = errors.New("localmodel: source cannot be served")
@@ -305,11 +280,10 @@ func Open(cfg Config) (*Host, error) {
 	confinement := sandbox.WithDefaultConfinement()
 	containment := func() sandbox.Containment { return sandbox.ContainmentOf(sb) }
 	if minContainment < sandbox.ContainmentKernel {
-		// The sandbox refuses a launch it cannot confine, so a host that accepts a process
-		// jail has to say so to the sandbox too. A launch under the opt-in may run at the
-		// floor without the sandbox's reported tier changing, so every server this Host
-		// starts is recorded at the floor: a later Host that requires kernel confinement
-		// then refuses to adopt it, where a kernel record could hand it an unconfined server.
+		// The sandbox refuses a launch it cannot confine, so a process-jail opt-in must
+		// reach the sandbox too. Such a launch may fall back without the reported tier
+		// changing, so every server this Host starts is recorded at the floor, and a
+		// later Host that requires kernel confinement refuses to adopt it.
 		confinement = sandbox.WithBestEffortConfinement(func(error) {})
 		containment = func() sandbox.Containment { return sandbox.ContainmentNone }
 	}

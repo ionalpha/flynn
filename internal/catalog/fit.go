@@ -1,8 +1,7 @@
 package catalog
 
-// Fit is how a model sits against a memory budget: can the box run it, run it with
-// little headroom, or not at all. It is the answer to "which of these can I actually
-// run" once the machine's memory is known.
+// Fit is how a model sits against a memory budget: it runs, runs with little headroom, or
+// does not run.
 type Fit string
 
 const (
@@ -13,8 +12,8 @@ const (
 	FitTight Fit = "tight"
 	// FitOverBudget means the weights alone do not fit; the model is out of spec.
 	FitOverBudget Fit = "over-budget"
-	// FitUnknown means there was not enough information to judge (no size, or no
-	// detected/!given memory budget).
+	// FitUnknown means there was not enough information to judge (no size, or no detected
+	// or given memory budget).
 	FitUnknown Fit = "unknown"
 )
 
@@ -28,9 +27,8 @@ const (
 )
 
 // Feasibility classifies whether a quantization of sizeBytes runs within availBytes of
-// memory, reserving a headroom over the weights so a model judged feasible has room to
-// actually run, not just to load. A non-positive size or budget is unknown rather than
-// a false verdict.
+// memory. A headroom is reserved over the weights so a feasible model has room to run
+// once loaded. A non-positive size or budget is [FitUnknown].
 func Feasibility(availBytes, sizeBytes int64) Fit {
 	if availBytes <= 0 || sizeBytes <= 0 {
 		return FitUnknown

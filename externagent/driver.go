@@ -20,24 +20,17 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Driver adapts an external agent CLI to the driver.Driver port, so an external
-// harness is a selectable run loop like any other: an additive registry entry, no
-// edit to the default loop. Its loop shape is one CLI episode per goal step. It
-// composes with governance rather than replacing it: the same grant, containment,
-// brake, and event spine that bound a native loop bound every tool call the external
-// harness makes, because those sit at the dispatch waist outside the loop.
-//
-// Construct it with the adapter for the CLI and the spawner that runs the CLI under
-// the sandbox's confinement. The workspace is where the CLI reads and where its
-// bridged effects land.
+// Driver adapts an external CLI to the driver.Driver port as one CLI episode per goal
+// step, registered beside the default loop without editing it. The grant,
+// containment, brake and event spine that bind a native loop bind every bridged tool
+// call too, because they sit at the dispatch waist outside the loop.
 type Driver struct {
 	adapter Adapter
 	spawner Spawner
 	workdir string
 
-	// mu guards tiers and steering, which every episode of the run folds its projected
-	// events into, and the recorder's failure tally. A fan-out runs episodes concurrently
-	// against the one Driver, so these are locked rather than owned by a single step.
+	// mu guards tiers, steering and the recorder's failure tally, because a fan-out
+	// runs episodes concurrently against one Driver.
 	mu       sync.Mutex
 	tiers    map[Tier]int
 	steering Steering
@@ -45,26 +38,22 @@ type Driver struct {
 	lost     int
 	lostErr  error
 
-	// recorder persists the harness's attested events onto the run's record. It is set
-	// by the host once the run's stream exists, before the first episode runs, and read
-	// by every episode after. Nil records nothing.
+	// recorder receives the harness's attested events. The host sets it before the
+	// first episode; nil records nothing.
 	recorder Recorder
 }
 
 // NewDriver builds the driver for one external CLI. spawner runs the CLI confined;
-// workdir is the directory the episode operates in (the CLI reads it and its bridged
-// tools act in it).
+// workdir is where the CLI reads and its bridged tools act.
 func NewDriver(adapter Adapter, spawner Spawner, workdir string) *Driver {
 	return &Driver{adapter: adapter, spawner: spawner, workdir: workdir}
 }
 
-// Name is the adapter's identifier, the name this loop is selected by and recorded
-// under on the run.
+// Name is the adapter's identifier, which selects this loop and is recorded on the run.
 func (d *Driver) Name() string { return d.adapter.Name() }
 
-// Close releases what the run's episodes shared: the harness's credential-and-state home,
-// where the CLI kept the conversation this run's turns continued. It is called when the run
-// ends. A spawner that holds nothing (a test fake) closes to nothing.
+// Close releases the CLI home the run's episodes shared, with the conversation it
+// held. Call it when the run ends.
 func (d *Driver) Close() error {
 	if c, ok := d.spawner.(io.Closer); ok {
 		return c.Close()
@@ -72,10 +61,9 @@ func (d *Driver) Close() error {
 	return nil
 }
 
-// Tiers returns a copy of the provenance-tier tally of every event the run's episodes
-// projected: how many actions the record vouches for at each tier. The host reads it
-// after the run to declare the tier mix on the sealed record. Bridged effects are not
-// counted here; they are recorded at the dispatch waist as they happen.
+// Tiers returns a copy of the provenance-tier tally of the events the run's episodes
+// projected, which the host declares on the sealed record. Bridged effects are not
+// counted here; the dispatch waist records them.
 func (d *Driver) Tiers() map[Tier]int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -86,7 +74,6 @@ func (d *Driver) Tiers() map[Tier]int {
 	return out
 }
 
-// absorbTiers folds one episode's tier tally into the run's.
 func (d *Driver) absorbTiers(m map[Tier]int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -98,9 +85,8 @@ func (d *Driver) absorbTiers(m map[Tier]int) {
 	}
 }
 
-// absorbConformance folds one episode's conformance report into the run's: the steering
-// counts add up, and each probe the harness failed is counted by name so a run reports
-// how often the contract drifted, not merely whether it drifted last.
+// absorbConformance folds one episode's conformance report into the run's. Failed
+// probes are counted by name, so a run reports how often the contract drifted.
 func (d *Driver) absorbConformance(rep ConformanceReport) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -117,17 +103,16 @@ func (d *Driver) absorbConformance(rep ConformanceReport) {
 	}
 }
 
-// Steering returns the run's tool-choice counts across every episode: how often the
-// harness used the bridged tools it was told to use, and how often it reached for its
-// own instead. It is the number the tool descriptions and the preamble are tuned against.
+// Steering returns the run's tool-choice counts: bridged tools used versus the
+// harness's own. The tool descriptions and preamble are tuned against it.
 func (d *Driver) Steering() Steering {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.steering
 }
 
-// Drift returns how many episodes failed each conformance probe, by probe name. An empty
-// map means the harness honored the session contract on every episode.
+// Drift returns how many episodes failed each conformance probe, by name. Empty means
+// every episode honored the contract.
 func (d *Driver) Drift() map[string]int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -138,10 +123,9 @@ func (d *Driver) Drift() map[string]int {
 	return out
 }
 
-// SetRecorder binds the sink the harness's attested events are recorded to. The host
-// calls it once, after the run's stream exists and before the first episode runs; the
-// driver is constructed earlier (detection happens before a run is assembled), which is
-// why this is a setter rather than a constructor argument.
+// SetRecorder binds the sink for attested events. The host calls it once, before the
+// first episode; it is a setter because detection builds the driver before the run's
+// stream exists.
 func (d *Driver) SetRecorder(r Recorder) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -149,11 +133,9 @@ func (d *Driver) SetRecorder(r Recorder) {
 }
 
 // recordAttested persists one attested event, counting a failure instead of failing the
-// episode: the run's effects are enforced and recorded at the waist whatever happens
-// here, so a lost line is a hole in the harness's account, not a reason to abandon the
-// work. The hole is not silent - the host reports the tally, and the record's declared
-// attested count will not match the events it carries, which `flynn spine verify` calls
-// out.
+// episode, since the effects are recorded at the waist regardless. The host reports
+// the tally, and `flynn spine verify` flags the mismatch between the declared attested
+// count and the events recorded.
 func (d *Driver) recordAttested(ctx context.Context, ev Event) {
 	d.mu.Lock()
 	rec := d.recorder
@@ -161,10 +143,8 @@ func (d *Driver) recordAttested(ctx context.Context, ev Event) {
 	if rec == nil {
 		return
 	}
-	// Detach the append from the episode's cancellation. A halt kills the subprocess and
-	// cancels this context, but the lines the harness already wrote are still drained and
-	// projected; recording them under the cancelled context would drop exactly the events
-	// leading up to the halt, which are the ones worth reading.
+	// Detached from cancellation: after a halt the harness's remaining lines are still
+	// drained, and the events just before a halt are the ones worth reading.
 	if err := rec.Record(context.WithoutCancel(ctx), ev); err != nil {
 		d.mu.Lock()
 		d.lost++
@@ -173,39 +153,31 @@ func (d *Driver) recordAttested(ctx context.Context, ev Event) {
 	}
 }
 
-// Unrecorded reports how many of the harness's attested events could not be written to
-// the record, and the last failure. Zero and nil mean the record carries the harness's
-// whole account.
+// Unrecorded reports how many attested events failed to record, and the last error.
 func (d *Driver) Unrecorded() (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.lost, d.lostErr
 }
 
-// Build assembles the episode loop from the Spec. It captures the governance
-// ingredients (tools, grant, sandbox gate, brake, event sink, reporter) and defers
-// the wiring to each step, so a step's bridge is scoped and attributed to the goal
-// it runs under. The Spec's Model (an llm.Model) is intentionally unused: an
-// external harness drives its own model, selected by the goal's model string, not a
-// model port.
+// Build assembles the episode loop from the Spec and defers wiring to each step, so a
+// step's bridge is scoped and attributed to its goal. The Spec's Model is unused: the
+// harness drives its own model, chosen by the goal's model string.
 func (d *Driver) Build(s driver.Spec) (goal.StepExecutor, goal.StopEvaluator, error) {
 	return &episodeExec{drv: d, spec: s}, episodeStop{}, nil
 }
 
 var _ driver.Driver = (*Driver)(nil)
 
-// episodeExec runs a goal one CLI episode per step. It implements goal.StepExecutor.
+// episodeExec runs a goal as one CLI episode per step. It implements goal.StepExecutor.
 type episodeExec struct {
 	drv  *Driver
 	spec driver.Spec
 }
 
-// Execute runs one episode. A resumed step whose checkpoint is already done returns
-// it unchanged, so the step is safe to re-run after a crash. Each call assembles the
-// governed dispatcher and the loopback bridge scoped to this goal, binds the goal's
-// grant and the run's brake onto the context, and runs the episode through the
-// spawner; every tool call the CLI makes is admitted, contained, braked, and
-// recorded at that waist.
+// Execute runs one episode with a governed dispatcher and loopback bridge scoped to
+// this goal. A step whose checkpoint is already done is returned unchanged, so a
+// re-run after a crash is safe.
 func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
 	spec, err := goal.DecodeSpec(r)
 	if err != nil {
@@ -225,11 +197,8 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 
 	scope := state.Scope(r.Scope)
 
-	// The governed dispatcher for this goal's bridged tool calls: admit against the
-	// grant, gate on the sandbox's containment, apply the brake, and record the
-	// lifecycle onto the spine. The same waist a native loop dispatches through.
-	// Counts the bridged calls the harness dispatched, so the steering metrics rest on
-	// what the waist observed rather than on what the harness said about itself.
+	// counter counts bridged calls at the waist, so steering metrics rest on what the
+	// run observed instead of what the harness reported.
 	counter := &bridgeCounter{}
 	dopts := []dispatch.Option{dispatch.WithAdmitter(capability.Admitter{}), dispatch.WithHook(counter)}
 	if e.spec.EventSink != nil {
@@ -242,43 +211,35 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		dopts = append(dopts, dispatch.WithHook(exemptProbe{e.spec.Brakes}))
 	}
 	if e.spec.Budget != nil {
-		// Charge every bridged tool call against the run's spend pool and refuse one once
-		// the ceiling is reached, the same waist a native loop budgets through. The pool is
-		// keyed by the run (the goal's own pool, else its name), so `flynn --model
-		// codex:<model> --max-cost N` bounds an external run too. The external harness's own
-		// inner model calls are outside this waist (unobserved), so the ceiling bounds the
-		// governed effects, not the CLI's private provider spend.
+		// Bridged calls are charged against the run's spend pool and refused at the
+		// ceiling, so `flynn --model codex:<model> --max-cost N` bounds an external run.
+		// The harness's inner model calls are outside the waist, so the ceiling bounds
+		// governed effects only, never the CLI's own provider spend.
 		dopts = append(dopts, dispatch.WithHook(exemptProbe{e.spec.Budget}))
 	}
 	d := dispatch.New(dopts...)
 
-	// The episode opens with conformance probes: the harness's own prompt outranks
-	// anything injected here, so the contract that it route effects through the bridged
-	// tools is a request. The probes turn the request's outcome into evidence. The nonce
-	// is per episode, so compliance cannot be replayed from an earlier one.
+	// The harness's prompt outranks ours, so routing effects through the bridge is only
+	// a request; the probes turn its outcome into evidence. The nonce is per episode so
+	// compliance cannot be replayed.
 	probeTool := NewProbeTool(ids.New())
-	// A later turn of a session continues a conversation this run already opened, and the
-	// episode that opened it proved the harness reaches the bridge. See SessionProbes for
-	// why that makes the probe evidence rather than a gate from the second turn on.
+	// A later turn continues a conversation whose first episode already proved the
+	// bridge is reachable; see SessionProbes.
 	probes := SessionProbes(probeTool, cp.Session != "")
 	toolset := append(append([]mission.Tool{}, e.spec.Tools...), probeTool)
 
 	server := mcp.NewServer(d, toolset, mcp.WithScope(scope), mcp.WithGoal(r.Name))
 	runner := NewRunner(e.drv.adapter, server, e.drv.spawner, e.reporter(ctx)).WithProbes(probes)
 
-	// Bind the goal's grant and the run's brake onto the context the bridge dispatches
-	// under, the same bindings the mission executor sets before it dispatches. The
-	// goal's own grant wins; absent it, the Spec's default grant applies; absent both,
-	// the run is unconstrained (a standalone run).
+	// The goal's grant wins, else the Spec's default; with neither the run is
+	// unconstrained (a standalone run). The mission executor binds the same.
 	if grant, ok := e.grant(spec); ok {
 		ctx = capability.Into(ctx, grant)
 	}
 	ctx = brakes.Into(ctx, r.Name)
 	if e.spec.Budget != nil {
-		// Bind the run's spend pool onto the dispatching context so the budget hook can
-		// charge it: the goal's own pool when it carries one (a fan-out shares the root's),
-		// else the goal's name, which for a single external run is the run id the ceiling
-		// was opened under.
+		// The goal's pool when it has one (a fan-out shares the root's), else the goal's
+		// name, which for a single external run is the run id the ceiling was opened under.
 		pool := spec.BudgetPool
 		if pool == "" {
 			pool = r.Name
@@ -286,9 +247,8 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		ctx = budget.Into(ctx, pool)
 	}
 
-	// The turn to put to the harness: a later turn of an interactive session carries its
-	// own input, and the CLI already holds the conversation the earlier turns built, so
-	// the episode continues that conversation rather than restating the objective.
+	// A later turn carries its own input; the CLI already holds the conversation, so
+	// the objective is not restated.
 	input := cp.Input
 	if input == "" {
 		input = objective(spec)
@@ -301,22 +261,19 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		Probes:  Instructions(probes),
 		Session: cp.Session,
 	})
-	// Fold the episode's tier tally in before the error check: an episode that ran and
-	// failed still projected events the record must account for. A start failure yields
-	// an empty tally, which folds to nothing.
+	// Before the error check, because a failed episode still projected events the
+	// record must account for.
 	e.drv.absorbTiers(res.Tiers)
 	if err != nil {
 		return nil, err
 	}
-	// The bridged count comes from the waist, not the episode's event stream.
+	// From the waist, not the harness's event stream.
 	res.Conformance.Steering.BridgeCalls = counter.count()
 	e.drv.absorbConformance(res.Conformance)
 
-	// A required probe failed: the harness could not or would not reach the bridge, so
-	// nothing it does can be enforced and its record would be entirely attested while
-	// looking like a governed run. Refuse the episode rather than produce that record.
-	// The failure is terminal, since a harness that ignores the contract on one episode
-	// will ignore it on a retry.
+	// A failed required probe means the harness cannot or will not reach the bridge, so
+	// its record would be entirely attested while looking governed. Terminal, because a
+	// harness that ignores the contract once will ignore it on a retry.
 	if res.Conformance.Refused() {
 		return nil, fault.New(fault.Terminal, "externagent_conformance",
 			"the external agent did not honor the session contract: "+res.Conformance.Summary())
@@ -326,31 +283,25 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	cp.Result = res.Text
 	cp.Failed = res.Failed
 	cp.Err = res.Err
-	// Keep the conversation the CLI reported, so a later turn continues it. A CLI that
-	// announced none leaves the previous id in place rather than clearing it: an episode
-	// that could not name its conversation is not evidence the conversation is gone.
+	// An episode that names no conversation keeps the previous id: not naming it is
+	// no evidence it is gone.
 	if res.Session != "" {
 		cp.Session = res.Session
 	}
 	return encodeEpisodeCheckpoint(cp)
 }
 
-// bridgeCounter counts the tool calls the external harness actually dispatched through
-// the waist. It is the authoritative count of bridged calls: unlike the harness's event
-// stream, which is its account of itself, this counts what the run admitted and ran.
-//
-// The conformance probe is not counted. It is the run's own instrument, and counting it
-// would credit the harness with a bridged call it was ordered to make.
+// bridgeCounter counts the tool calls the harness dispatched through the waist, the
+// authoritative bridged count. The conformance probe is excluded, since counting it
+// would credit the harness with a call it was ordered to make.
 type bridgeCounter struct {
 	mu sync.Mutex
 	n  int
 }
 
-// Before counts a dispatched call. Hooks run ahead of the admitter, so this counts every
-// call the harness attempted, including one the grant went on to deny. That is the right
-// unit: the native side of the ratio counts attempts too (a command the CLI's sandbox
-// declined is still a turn spent reaching for the wrong tool), and a ratio of bridged
-// successes to native attempts would flatter the steering.
+// Before counts a dispatched call. Hooks run ahead of the admitter, so a call the grant
+// denies is still counted; the native side counts attempts too, and comparing bridged
+// successes with native attempts would flatter the steering.
 func (c *bridgeCounter) Before(_ context.Context, a dispatch.Action) error {
 	if a.Name == ProbeToolName {
 		return nil
@@ -361,31 +312,22 @@ func (c *bridgeCounter) Before(_ context.Context, a dispatch.Action) error {
 	return nil
 }
 
-// After is required by the hook port and has nothing to account for.
+// After has nothing to account for.
 func (*bridgeCounter) After(context.Context, dispatch.Action, dispatch.Metering, error) {}
 
-// count reports how many bridged calls the harness dispatched.
 func (c *bridgeCounter) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.n
 }
 
-// exemptProbe wraps a governance hook so it does not apply to the conformance probe.
-//
-// The probe is the run's own instrument, not work the harness asked for: it consumes no
-// model tokens, lands no effect, and exists only to measure whether the harness honors
-// the contract. Charging it against the run's spend ceiling or its runaway brake would
-// let an exhausted budget or a tripped brake deny the probe, which the run would then
-// read as the harness refusing to cooperate. The failure would be reported against the
-// harness when the run itself caused it.
-//
-// It stays under the admitter and the containment gate. Those decide whether an action
-// may run at all, and the probe should be no exception; what it is exempt from is the
-// accounting of work it does not do.
+// exemptProbe keeps a hook's accounting off the conformance probe. The probe uses no
+// tokens and has no effect; charging it to the budget or brake would let an exhausted
+// budget deny it, which the run would then blame on the harness. The probe stays under
+// the admitter and containment gate, which decide whether any action may run.
 type exemptProbe struct{ dispatch.Hook }
 
-// Before skips the wrapped hook for the probe action and applies it to everything else.
+// Before applies the wrapped hook to every action but the probe.
 func (h exemptProbe) Before(ctx context.Context, a dispatch.Action) error {
 	if a.Name == ProbeToolName {
 		return nil
@@ -393,7 +335,7 @@ func (h exemptProbe) Before(ctx context.Context, a dispatch.Action) error {
 	return h.Hook.Before(ctx, a)
 }
 
-// After skips the wrapped hook's accounting for the probe action.
+// After applies the wrapped hook's accounting to every action but the probe.
 func (h exemptProbe) After(ctx context.Context, a dispatch.Action, m dispatch.Metering, err error) {
 	if a.Name == ProbeToolName {
 		return
@@ -401,18 +343,16 @@ func (h exemptProbe) After(ctx context.Context, a dispatch.Action, m dispatch.Me
 	h.Hook.After(ctx, a, m, err)
 }
 
-// grant returns the capability grant to bind for this goal: the goal's own action
-// set when it carries one, else the Spec's default grant, and reports whether any
-// grant is bound at all (an unbound grant leaves the run unconstrained).
+// grant returns the goal's action set, else the Spec's default, and whether any grant
+// is bound (none leaves the run unconstrained).
 func (e *episodeExec) grant(spec goal.Spec) (capability.Grant, bool) {
 	if len(spec.Grant) > 0 {
 		return capability.NewGrant(withProbeAction(spec.Grant)...), true
 	}
 	if e.spec.HasGrant {
-		// An unrestricted grant already allows the probe; a restricted one is widened by
-		// exactly the probe tool, which grants no authority of its own (it touches no file,
-		// runs no command, reaches no network). Without this a run whose grant omits the
-		// probe would fail its required probe on a denial the harness never caused.
+		// A restricted grant is widened by exactly the probe tool, which has no authority
+		// of its own, so a grant that omits it cannot fail the probe on a denial the
+		// harness never caused.
 		if e.spec.Grant.Unrestricted() {
 			return e.spec.Grant, true
 		}
@@ -421,18 +361,15 @@ func (e *episodeExec) grant(spec goal.Spec) (capability.Grant, bool) {
 	return capability.Grant{}, false
 }
 
-// withProbeAction returns the granted actions plus the probe tool, copied rather than
-// appended in place: the caller's slice is the decoded goal spec, which the run must not
-// mutate.
+// withProbeAction copies instead of appending in place, because actions is the decoded
+// goal spec, which the run must not mutate.
 func withProbeAction(actions []string) []string {
 	out := make([]string, 0, len(actions)+1)
 	out = append(out, actions...)
 	return append(out, ProbeToolName)
 }
 
-// system returns the standing instruction for the episode: the goal's own when set,
-// else the Spec's default. It lands as a lower-authority layer, since the external
-// harness's own prompt outranks anything injected.
+// system returns the goal's standing instruction, else the Spec's default.
 func (e *episodeExec) system(spec goal.Spec) string {
 	if spec.System != "" {
 		return spec.System
@@ -440,15 +377,10 @@ func (e *episodeExec) system(spec goal.Spec) string {
 	return e.spec.System
 }
 
-// reporter fans each of the episode's typed events out to the two places that want
-// them: the Spec's mission reporter, for the live trace (assistant text only, as it is
-// produced), and the record, which keeps every attested event with the harness's own
-// line. An event the run enforced is not recorded here - the dispatch waist records
-// those as they cross it, and writing them twice would double-count the harness's claim
-// against the run's observation.
-//
-// It returns nil only when neither destination is bound, so the runner can skip the
-// projection entirely.
+// reporter sends each event to the mission reporter (assistant text, for the live
+// trace) and the recorder (every attested event with its line). Enforced events are
+// skipped because the waist records them and writing them twice would double-count.
+// It returns nil when neither is bound, so the runner can skip projection.
 func (e *episodeExec) reporter(ctx context.Context) func(Event) {
 	e.drv.mu.Lock()
 	recording := e.drv.recorder != nil
@@ -466,8 +398,8 @@ func (e *episodeExec) reporter(ctx context.Context) func(Event) {
 	}
 }
 
-// objective renders the goal into the episode's opening input: the objective, and
-// the stop condition as the explicit definition of done.
+// objective renders the goal's objective, with the stop condition as the definition of
+// done.
 func objective(spec goal.Spec) string {
 	s := spec.Objective
 	if spec.StopCondition != "" {
@@ -476,12 +408,12 @@ func objective(spec goal.Spec) string {
 	return s
 }
 
-// episodeStop converges as soon as an episode has completed the step. It implements
+// episodeStop converges once an episode has completed the step. It implements
 // goal.StopEvaluator.
 type episodeStop struct{}
 
-// Met reports whether the episode has finished, returning its final message (or the
-// failure) as the reason.
+// Met reports whether the episode finished, with its final message or failure as the
+// reason.
 func (episodeStop) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool, string, error) {
 	cp, err := decodeEpisodeCheckpoint(status.Checkpoint)
 	if err != nil {
@@ -504,35 +436,26 @@ func (episodeStop) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool
 	return true, reason, nil
 }
 
-// episodeCheckpoint is the loop's resumable state: whether the episode has run, its
-// final message, whether it failed, the CLI conversation the run holds, and the turn
-// to put to it. It is the external loop's answer to the native loop's message list:
-// the conversation itself lives inside the CLI, so what is carried here is the handle
-// to it, not a transcript this side could never faithfully reconstruct.
+// episodeCheckpoint is the external loop's resumable state. The conversation lives in
+// the CLI, so this carries its handle where a native loop carries a transcript.
 type episodeCheckpoint struct {
 	Done   bool   `json:"done"`
 	Result string `json:"result,omitempty"`
 	Failed bool   `json:"failed,omitempty"`
 	Err    string `json:"err,omitempty"`
-	// Session is the conversation the CLI opened for this goal, as the CLI named it. The
-	// next episode hands it back so the harness continues where it left off.
+	// Session is the CLI's id for this goal's conversation, handed back so the next
+	// episode continues it.
 	Session string `json:"session,omitempty"`
-	// Input is the turn the next episode runs. Empty on the first episode, which runs the
-	// goal's objective; a later turn (ContinueEpisode) sets it, so the objective stays the
-	// record of what the run set out to do rather than being overwritten by the last thing
-	// the user typed.
+	// Input is the next episode's turn. Empty on the first episode, which runs the
+	// objective; ContinueEpisode sets it, so the objective keeps recording what the run
+	// set out to do.
 	Input string `json:"input,omitempty"`
 }
 
-// ContinueEpisode reopens a settled external goal for another turn: it clears the
-// episode's completion so the next reconcile runs a new one, sets the turn to put to
-// the harness, and keeps the conversation id so the CLI continues the session it
-// already holds rather than starting cold. It mirrors what a native loop does by
-// appending a user message to its transcript; here the transcript is the CLI's, and
-// this is the handle to it.
-//
-// The goal's objective is left alone: it records what the run set out to do, and the
-// turn is not a new objective.
+// ContinueEpisode reopens a settled external goal for another turn. It clears the
+// completion, sets the turn and keeps the conversation id, so the CLI continues the
+// session it holds; a native loop appends a user message instead. The objective is
+// left unchanged.
 func ContinueEpisode(status goal.Status, text string) (goal.Status, error) {
 	cp, err := decodeEpisodeCheckpoint(status.Checkpoint)
 	if err != nil {
@@ -551,9 +474,8 @@ func ContinueEpisode(status goal.Status, text string) (goal.Status, error) {
 	status.Phase = goal.PhasePending
 	status.Message = ""
 	status.Steps = 0
-	// Drop any record of an in-flight step: the prior turn has ended (it converged, or it
-	// was cancelled mid-episode), so a fresh turn dispatches a new step rather than
-	// waiting on a job whose runtime is gone.
+	// The prior turn ended, so a fresh turn dispatches a new step instead of waiting on
+	// a job whose runtime is gone.
 	status.InFlight = nil
 	return status, nil
 }

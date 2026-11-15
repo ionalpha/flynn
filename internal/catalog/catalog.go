@@ -1,17 +1,12 @@
 // Package catalog is the model catalog: a vetted, versioned list of models with
-// provenance, so a user (or the agent) can discover, compare, and choose a model on
-// evidence instead of guessing. The adapter registry (provider) knows how to talk to
-// a provider:model; this package knows which models exist, what they cost in size and
-// context, what they can do, and where they came from.
+// provenance, so a user or the agent can choose a model on evidence. The provider package
+// knows how to talk to a provider:model; this package knows which models exist, their
+// size and context, what they can do and where they came from.
 //
-// The catalog ships as data, not code: a models.json embedded in the binary so it
-// works offline, authored and reviewed in the public repository, and intended to be
-// published as a public artifact that can update without a rebuild. Every entry
-// carries a provenance record and a license, and is held at a trust tier, so the list
-// is auditable and nothing is offered as if vetted when it is not.
-//
-// This package is the discovery foundation. Hardware-fit ranking, fetch-to-run, the
-// per-model eval, and live enrichment from upstream sources build on the same schema.
+// The catalog is a models.json embedded in the binary, so it works offline, and is
+// authored and reviewed in the public repository. Every entry carries a provenance record
+// and a license and is held at a trust tier, so the list is auditable and nothing unvetted
+// is offered as vetted.
 package catalog
 
 import (
@@ -33,8 +28,8 @@ const (
 	KindLocal Kind = "local"
 )
 
-// Trust is how far an entry has been vetted. It is surfaced, never hidden, so a model
-// is never presented as trusted when it is merely known.
+// Trust is how far an entry has been vetted. It is always shown, so a model that is only
+// known is never presented as trusted.
 type Trust string
 
 const (
@@ -55,16 +50,15 @@ const (
 	// FormatGGUF is the quantized single-file format local runtimes use; tensors plus
 	// metadata, no code execution.
 	FormatGGUF Format = "gguf"
-	// FormatPickle (.bin/.pt) can execute arbitrary code when loaded, so it is unsafe
-	// and an entry using it is flagged, never silently fetched.
+	// FormatPickle (.bin/.pt) can execute arbitrary code when loaded, so an entry using it
+	// is flagged and refused at fetch.
 	FormatPickle Format = "pickle"
 )
 
 // safe reports whether a weight format executes no code on load.
 func (f Format) safe() bool { return f == FormatSafetensors || f == FormatGGUF }
 
-// Source is where a model came from, so an entry can be traced to an authoritative
-// publisher rather than hearsay.
+// Source is where a model came from, so an entry can be traced to its publisher.
 type Source struct {
 	// Publisher is the first-party namespace that released the model (e.g. "Qwen",
 	// "meta-llama", "Anthropic"). Preferring publisher orgs over reuploads is part of
@@ -89,28 +83,22 @@ type Quant struct {
 	// Ref is the pull reference a runtime fetches this quantization by (a registry tag
 	// or a file path).
 	Ref string `json:"ref"`
-	// URL is the direct https location of the weights file, when the quantization can
-	// be downloaded and verified directly. Empty means there is no pinned direct
-	// download yet, so the verified fetch path treats the entry as not downloadable
-	// rather than reaching for an unverified source.
+	// URL is the direct https location of the weights file, when the quantization can be
+	// downloaded and verified directly. Empty means no pinned direct download, and the
+	// verified fetch path treats the entry as not downloadable.
 	URL string `json:"url,omitempty"`
 	// Digest is the content hash (e.g. "sha256:...") the download is verified against.
-	// Empty means unpinned: the fetcher pins it from the registry's own manifest at
-	// pull time and still verifies the bytes, so an unpinned entry is never trusted
-	// blindly.
+	// Empty means unpinned: the fetcher pins it from the registry's manifest at pull time
+	// and still verifies the bytes.
 	Digest string `json:"digest,omitempty"`
-	// Files, when set, is the multi-file manifest for a model served from a directory
-	// rather than a single file: a safetensors model is a set of weight shards plus the
-	// tokenizer and config files a GPU runtime loads from a directory. It is the multi-file
-	// counterpart to URL: a single-file quantization (GGUF) names URL, a directory model
-	// names Files. A quant names one or the other, never both.
+	// Files is the manifest of a directory model, such as a safetensors model's weight
+	// shards plus the tokenizer and config files a GPU runtime loads. A single-file
+	// quantization (GGUF) names URL instead; a quant names one or the other.
 	Files []QuantFile `json:"files,omitempty"`
 }
 
-// QuantFile is one file of a multi-file quantization: its name within the model directory,
-// where to fetch it, and the digest it is verified against. The set of these is how a
-// safetensors model (shards + tokenizer + config) is acquired with the same per-file
-// verification a single-file weight gets.
+// QuantFile is one file of a multi-file quantization, verified per file as a single-file
+// weight is.
 type QuantFile struct {
 	// Name is the file's path within the model directory (for example "model.safetensors"
 	// or "tokenizer.json"). It is relative and must not escape the directory.
@@ -123,8 +111,7 @@ type QuantFile struct {
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
 }
 
-// MultiFile reports whether the quant is a directory model (a set of files) rather than a
-// single downloadable file.
+// MultiFile reports whether the quant is a directory model made of several files.
 func (q Quant) MultiFile() bool { return len(q.Files) > 0 }
 
 // Capabilities is what a model can do, used to filter to models that fit a task.
@@ -175,8 +162,8 @@ type ModelSpec struct {
 	Kind Kind `json:"kind"`
 	// Source is the provenance record.
 	Source Source `json:"source"`
-	// License is the SPDX id or license name; surfaced so commercial use is an
-	// informed choice. Required, so an unknown-license entry cannot slip in unlabeled.
+	// License is the SPDX id or license name, shown so commercial use is an informed
+	// choice. It is required, so no entry ships unlabeled.
 	License string `json:"license"`
 	// ParamsB is the parameter count in billions (0 when undisclosed, as for hosted
 	// proprietary models).
@@ -193,11 +180,10 @@ type ModelSpec struct {
 	Quants []Quant `json:"quants,omitempty"`
 	// Trust is how far the entry has been vetted.
 	Trust Trust `json:"trust"`
-	// ChatTemplate is the trusted chat template a local model is served with, named so
-	// the runtime applies a known-good prompt contract instead of the template embedded
-	// in the weights (which a hostile model could use to rewrite the contract). It is
-	// the name of a template the runtime recognizes, for example "chatml". Required for
-	// a local model; empty for a hosted API model, which formats prompts server-side.
+	// ChatTemplate names the trusted chat template a local model is served with (for
+	// example "chatml"), replacing the template embedded in the weights, which a hostile
+	// model could use to rewrite the prompt contract. Required for a local model; empty for
+	// a hosted API model, which formats prompts server-side.
 	ChatTemplate string `json:"chatTemplate,omitempty"`
 	// Notes is an optional one-line human note (why it is here, caveats).
 	Notes string `json:"notes,omitempty"`
@@ -223,8 +209,8 @@ func (m ModelSpec) SmallestQuant() (Quant, bool) {
 type Catalog struct {
 	// Version is the catalog schema/content version.
 	Version string `json:"version"`
-	// Updated is the date the catalog was last revised (ISO 8601), set by the
-	// publisher, not at runtime, so the embedded copy is deterministic.
+	// Updated is the date the catalog was last revised (ISO 8601), set by the publisher so
+	// the embedded copy is deterministic.
 	Updated string `json:"updated"`
 	// Models are the entries.
 	Models []ModelSpec `json:"models"`
@@ -233,9 +219,8 @@ type Catalog struct {
 //go:embed models.json
 var seed []byte
 
-// Load parses and validates the embedded curated catalog. A malformed or invalid
-// embedded catalog is a build-time mistake, so it returns a terminal error rather
-// than shipping a broken list.
+// Load parses and validates the embedded curated catalog. An invalid embedded catalog is
+// a build-time mistake, so it is a terminal error.
 func Load() (Catalog, error) {
 	var c Catalog
 	if err := json.Unmarshal(seed, &c); err != nil {
@@ -247,9 +232,8 @@ func Load() (Catalog, error) {
 	return c, nil
 }
 
-// Validate checks every entry has the provenance and license the catalog promises,
-// and that quant formats are known. It is the gate that keeps an unlabeled or unsafe
-// entry out of a shipped catalog.
+// Validate checks every entry has the provenance and license the catalog promises and
+// known quant formats, so an unlabeled or unsafe entry stays out of a shipped catalog.
 func (c Catalog) Validate() error {
 	seen := map[string]bool{}
 	for _, m := range c.Models {

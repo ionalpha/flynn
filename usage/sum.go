@@ -20,8 +20,8 @@ type Summary struct {
 	Unpriced  int              `json:"unpriced,omitempty"`
 }
 
-// Complete reports whether every summed record was priced, so the cost totals
-// are the whole cost and not a part of it.
+// Complete reports whether every summed record was priced, so the cost totals are the
+// whole cost.
 func (s Summary) Complete() bool { return s.Unpriced == 0 }
 
 // Currencies returns the currencies in Costs, sorted, for stable output.

@@ -28,9 +28,9 @@ var (
 	procGlobalMemoryStatus = modkernel32.NewProc("GlobalMemoryStatusEx")
 )
 
-// systemRAMBytes reads the physical memory total from the kernel via GlobalMemoryStatusEx,
-// the documented Win32 call, so it needs no external tool and cannot be spoofed by PATH.
-// It is best-effort: a failed call yields 0, treated by the caller as unknown.
+// systemRAMBytes reads the physical memory total through GlobalMemoryStatusEx, so it runs
+// no external tool and PATH cannot spoof it. A failed call yields 0, read by the caller as
+// unknown.
 func systemRAMBytes(_ context.Context) int64 {
 	m := memoryStatusEx{}
 	m.length = uint32(unsafe.Sizeof(m))

@@ -48,18 +48,14 @@ func (r RefusalError) Error() string { return fmt.Sprintf("catalog: refused %q: 
 func foldID(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 
 // Merge adds a user's entries under a catalog and returns the result with the entries it
-// refused. The precedence is fixed, highest first: a signed remote list when one is
-// present, then the embedded catalog, then the user overlay. base is whatever the higher
-// sources produced, and a user entry never replaces anything in it: an id base already
-// holds, compared without regard to case or surrounding space, is refused with the id
-// named, so a user can neither shadow a blessed entry nor stand in for one.
-//
-// Every accepted entry is held at [TrustLocal] whatever its file claims, which is how
-// callers tell it from a vetted entry. An entry is refused as well when it is not a local
-// model, when it fails [Catalog.Validate], or when the same id appears twice in the
-// overlay (the first wins).
-//
-// base is not modified.
+// refused. Precedence is fixed, highest first: a signed remote list when present, the
+// embedded catalog, then the user overlay. base is what the higher sources produced and is
+// not modified. A user entry whose id base already holds, compared ignoring case and
+// surrounding space, is refused with the id named, so a user can neither shadow a blessed
+// entry nor stand in for one. An entry is refused as well when it is not a local model,
+// fails [Catalog.Validate], or repeats an id earlier in the overlay. Every accepted entry
+// is held at [TrustLocal] whatever its file claims, which is how callers tell it from a
+// vetted entry.
 func Merge(base Catalog, user []ModelSpec) (Catalog, []RefusalError) {
 	taken := make(map[string]bool, len(base.Models)+len(user))
 	for _, m := range base.Models {
@@ -100,8 +96,8 @@ func entryProblem(m ModelSpec, taken map[string]bool) string {
 	return ""
 }
 
-// ReadOverlay returns the user's entries for a data directory. A missing file is no
-// entries, not an error. The entries are returned as written; [Merge] is what checks them.
+// ReadOverlay returns the user's entries for a data directory. A missing file yields no
+// entries and no error. The entries are returned as written; [Merge] checks them.
 func ReadOverlay(dataDir string) ([]ModelSpec, error) {
 	path := OverlayPath(dataDir)
 	b, err := readCapped(path, maxOverlayBytes)
