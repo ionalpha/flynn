@@ -56,6 +56,7 @@ func (c *client) graphql(ctx context.Context, query string, vars map[string]any,
 	return json.Unmarshal(envelope.Data, out)
 }
 
+// ReviewThread is a conversation on a line of a pull request's diff.
 type ReviewThread struct {
 	// ID is the GraphQL node id that resolveReviewThread takes, which differs
 	// from the REST comment id.

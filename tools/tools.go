@@ -15,6 +15,7 @@ type Set struct {
 	sb sandbox.Sandbox
 }
 
+// New builds the toolset executing through sb.
 func New(sb sandbox.Sandbox) *Set {
 	return &Set{sb: sb}
 }
