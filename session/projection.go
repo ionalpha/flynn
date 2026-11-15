@@ -1,61 +1,54 @@
 package session
 
-// RecordState is a run's record lifecycle, the value the status badge shows. A run
-// records until it is sealed into a signed record, and a sealed record can be verified
-// against its tiers. The states are ordered: a run only ever moves recording -> sealed
-// -> verified.
+// RecordState is a run's record lifecycle, shown on the status badge. A run
+// only moves recording, then sealed, then verified.
 type RecordState string
 
 const (
-	// RecordRecording is the live state: events are still being appended to the run.
+	// RecordRecording is the live state: events are still being appended.
 	RecordRecording RecordState = "recording"
-	// RecordSealed is set once the run's stream is sealed into a signed record.
+	// RecordSealed is a stream sealed into a signed record.
 	RecordSealed RecordState = "sealed"
-	// RecordVerified is set once a sealed record has passed verification.
+	// RecordVerified is a sealed record that passed verification.
 	RecordVerified RecordState = "verified"
 )
 
-// ActionState is where one governed action stands: running once admitted, done once
-// it completes, blocked once it is refused. The states are terminal except running,
-// which resolves to done or blocked when the action's outcome arrives.
+// ActionState is where one governed action stands. Only running is
+// non-terminal; it resolves to done or blocked when the outcome arrives.
 type ActionState string
 
 const (
-	// ActionRunning is an admitted action that has not yet reported an outcome.
+	// ActionRunning is an admitted action with no outcome yet.
 	ActionRunning ActionState = "running"
-	// ActionDone is an admitted action that finished (cleanly, or with a fault it
-	// carries).
+	// ActionDone is an admitted action that finished, cleanly or with the fault it
+	// carries.
 	ActionDone ActionState = "done"
 	// ActionBlocked is an action the dispatch waist refused.
 	ActionBlocked ActionState = "blocked"
 )
 
-// ActionEntry is one governed action in the projection's ledger: what it was, the
-// trust level it ran under, where it stands, and its fault class when it failed or
-// was refused. The governance panel reads the ledger to show the run's recent
-// boundary decisions, which the scalar counts summarize but cannot name.
+// ActionEntry is one governed action in the ledger, so the governance panel can
+// name decisions the scalar counts only tally.
 type ActionEntry struct {
-	// Call is the dispatch correlation id that pairs an admission with its outcome,
-	// so a completion or rejection updates the entry its admission created rather
-	// than adding a second row for the same action.
+	// Call pairs an admission with its outcome, so the outcome updates the
+	// admission's entry instead of adding a second row.
 	Call int64
-	// Action is the governed action's name (empty when the waist recorded none).
+	// Action is the action's name; empty when the waist recorded none.
 	Action string
-	// Trust is the trust level the action ran under.
+
 	Trust string
-	// State is where the action stands: running, done, or blocked.
+
 	State ActionState
-	// Fault is the fault class of a blocked or failed action, empty otherwise.
+	// Fault is the fault class of a blocked or failed action.
 	Fault string
 }
 
-// FanoutState is where a delegated child stands in the fan-out tree: running from the
-// moment it is spawned until it folds back into its parent, then done or failed by the
-// outcome it folded. The states are terminal except running.
+// FanoutState is where a delegated child stands: running from spawn until it
+// folds back into its parent, then done or failed.
 type FanoutState string
 
 const (
-	// FanoutRunning is a spawned child that has not yet folded back into its parent.
+	// FanoutRunning is a child that has not folded back yet.
 	FanoutRunning FanoutState = "running"
 	// FanoutDone is a child that folded back with a clean result.
 	FanoutDone FanoutState = "done"
@@ -63,137 +56,113 @@ const (
 	FanoutFailed FanoutState = "failed"
 )
 
-// FanoutChild is one delegated child in a run's fan-out tree: which goal spawned it,
-// the sub-objective it was given, where it stands, how many turns it has taken, its own
-// governance posture (trust level and blocked count, folded from the actions it ran), its
-// seal state within the run's sealed record, and its folded answer once it finishes. The
-// tree is flat with a Parent id on each node rather
-// than nested, so a renderer builds the hierarchy and a deeper delegation (a child that
-// itself spawns) needs no change here. Children are kept in spawn order.
+// FanoutChild is one delegated child in a run's fan-out tree. The tree is flat,
+// with a Parent id on each node, so a renderer builds the hierarchy and a
+// deeper delegation needs no change here. Children are kept in spawn order.
 type FanoutChild struct {
-	// ID is the child goal's id, the value its own events carry in Goal.
+	// ID is the child goal's id, the value its events carry in Goal.
 	ID string
-	// Parent is the id of the goal that spawned this child.
+
 	Parent string
 	// Objective is the sub-objective the parent delegated.
 	Objective string
-	// State is where the child stands: running, done, or failed.
+
 	State FanoutState
-	// Turns counts the model turns the child has completed so far.
+	// Turns counts the model turns the child has completed.
 	Turns int
-	// Result is the child's folded answer once it is done or failed, empty while it
-	// runs.
+	// Result is the folded answer once done or failed; empty while running.
 	Result string
-	// Trust is the trust level of this child's most recent governed action, its own
-	// containment posture (the per-child analogue of the run's Containment). Empty until
-	// the child has an action admitted or rejected.
+	// Trust is the trust level of the child's latest governed action, its own
+	// containment posture. Empty until it has an action admitted or rejected.
 	Trust string
-	// Blocked counts this child's governed actions the dispatch waist refused. A non-zero
-	// Blocked is the signal that this child, not a sibling, hit a governance boundary.
+	// Blocked counts the child's actions the waist refused, so a refusal is
+	// attributed to this child and not a sibling.
 	Blocked int
-	// Seal is the child's record lifecycle within the run's sealed record: recording
-	// while its events are still being appended, sealed once it has folded back and the
-	// run's stream is signed (its events are then under the signed Merkle root, provable
-	// with a per-event proof), verified once the run's sealed record passes verification.
-	// A child still running when a seal lands stays recording, since its events are not
-	// yet final. It is the per-child analogue of the run-level Record above.
+	// Seal is the child's state within the run's sealed record. A child sealed
+	// while running stays recording, because its events are not final; once it has
+	// folded back a seal covers its events under the signed Merkle root, provable
+	// per event.
 	Seal RecordState
 }
 
-// maxLedger bounds the projection's action ledger to its most recent entries, so a
-// long run's status stays a fixed size. The panel shows a tail of recent decisions,
-// not the whole history (the sealed record holds that); older entries fall off the
-// front as newer ones arrive.
+// maxLedger caps the action ledger at its most recent entries, so a long run's
+// status stays a fixed size. The sealed record holds the full history.
 const maxLedger = 64
 
-// maxEgress bounds the projection's egress ledger the same way maxLedger bounds the
-// action ledger: a run that dials many destinations keeps only its most recent egress
-// decisions in the projection, and the counts summarize the rest.
+// maxEgress caps the egress ledger the same way; the counts cover the rest.
 const maxEgress = 16
 
-// EgressEntry is one outbound-network decision in the projection's egress ledger: the
-// destination host netguard was asked to reach, whether it allowed the dial, and its
-// short reason. The governance panel reads the ledger to name the recent destinations
-// the scalar egress counts only tally.
+// EgressEntry is one netguard decision in the egress ledger, so the panel can
+// name the recent destinations the counts only tally.
 type EgressEntry struct {
-	// Host is the destination the decision concerned (a resolved literal address).
+	// Host is the resolved literal address the decision concerned.
 	Host string
-	// Allowed reports whether netguard permitted the dial.
+
 	Allowed bool
-	// Reason is netguard's short why for the verdict.
+	// Reason is netguard's short reason for the verdict.
 	Reason string
 }
 
-// Projection is the current status of a run, folded from its event stream: the facts
-// an always-on status line and a governance panel read. It is a pure function of the
-// events seen so far, so a live client, a replay, and a reattached client that folds
-// from Seq 0 all compute the same status. It carries no presentation, only the run's
-// state; a renderer decides how to show it (and combines it with UI-local facts a
-// stream does not carry, such as the model's context-window size, to derive a
-// context-fill percentage from Usage).
+// Projection is a run's status folded from its event stream. It is a pure
+// function of the events seen, so a live client, a replay and a client that
+// reattaches from Seq 0 compute the same status. It carries no presentation; a
+// renderer combines it with UI-local facts such as the model's context window
+// to derive, for example, context fill from Usage.
 type Projection struct {
-	// Objective is the run's opening goal; Result is its final answer once converged.
+	// Objective is the run's opening goal; Result is its final answer once
+	// converged.
 	Objective string
 	Result    string
 
-	// Turns counts the model turns completed. Usage is the run's cumulative token cost
-	// across those turns, summed from each turn.completed.
+	// Turns counts completed model turns. Usage sums their token cost from each
+	// turn.completed.
 	Turns int
 	Usage Usage
 
-	// Record is the run's record lifecycle for the badge.
 	Record RecordState
 
-	// Containment is the trust level of the most recent governed action, the run's
-	// current containment posture. Empty until the first action is admitted.
+	// Containment is the trust level of the latest governed action. Empty until the
+	// first admission.
 	Containment string
 
-	// Admitted, Completed, and Rejected count governed actions by outcome. Admitted
-	// minus Completed minus the admitted-then-rejected races is the in-flight count; a
-	// non-zero Rejected is the signal a run hit a governance boundary.
+	// Admitted, Completed and Rejected count governed actions by outcome. Admitted
+	// minus Completed minus the admitted-then-rejected races is the in-flight
+	// count.
 	Admitted  int
 	Completed int
 	Rejected  int
 
-	// Actions is a bounded ledger of the run's most recent governed actions, newest
-	// last, each carrying its name, trust level, state, and fault class. It names the
-	// decisions the scalar counts above only tally, for a governance panel to show.
-	// It is capped at maxLedger entries; older actions fall off the front.
+	// Actions holds the latest governed actions, newest last, capped at
+	// [maxLedger].
 	Actions []ActionEntry
 
-	// EgressAllowed and EgressBlocked count outbound dials netguard permitted and
-	// refused over the run. A non-zero EgressBlocked is the signal the run tried to reach
-	// a destination the policy denied. Both stay zero for a run that made no
-	// netguard-gated egress (a local, loopback model), so the egress row stays silent.
+	// EgressAllowed and EgressBlocked count dials netguard permitted and refused.
+	// Both stay zero for a run with no netguard-gated egress (a loopback model), so
+	// the egress row stays empty.
 	EgressAllowed int
 	EgressBlocked int
 
-	// Egress is a bounded ledger of the run's most recent egress decisions, newest last,
-	// each naming the destination host and whether it was allowed. It names the
-	// destinations the counts above only tally, for a governance panel to show. It is
-	// capped at maxEgress entries; older decisions fall off the front.
+	// Egress holds the latest egress decisions, newest last, capped at
+	// [maxEgress].
 	Egress []EgressEntry
 
-	// Fanout is the run's delegated children in spawn order, each with its parent, its
-	// sub-objective, where it stands, and its turn count. It is empty for a single
-	// conversation and grows as a fan-out spawns children, so a live tree view reads
-	// the run's delegation shape straight from the projection.
+	// Fanout lists delegated children in spawn order. It is empty for a single
+	// conversation.
 	Fanout []FanoutChild
 
-	// Terminal reports whether the run reached a terminal event. Err is the stall
-	// reason when it stalled, empty on a clean convergence.
+	// Terminal reports a terminal event. Err is the stall reason; empty on
+	// convergence.
 	Terminal bool
 	Err      string
 }
 
-// NewProjection returns the status of a run with no events yet: recording, and
-// otherwise zero. Fold events into it with Reduce, or use Project over a slice.
+// NewProjection returns the status of a run with no events: recording, and
+// otherwise zero.
 func NewProjection() Projection { return Projection{Record: RecordRecording} }
 
-// Reduce folds one event into a running Projection and returns the updated status. It
-// is the single place a stream becomes status, shared by the live status line (folding
-// each event as it arrives) and a replay (folding History). Unrecognized events leave
-// the status unchanged, so the projection is stable as the event vocabulary grows.
+// Reduce folds one event into p. It is the one place a stream becomes status,
+// shared by the live status line and a replay. Unrecognized events leave p
+// unchanged, so new event kinds do not disturb it.
 func Reduce(p Projection, ev Event) Projection {
 	switch ev.Kind {
 	case KindSessionStarted:
@@ -206,9 +175,7 @@ func Reduce(p Projection, ev Event) Projection {
 			p.Usage.CacheReadTokens += ev.Usage.CacheReadTokens
 			p.Usage.CacheWriteTokens += ev.Usage.CacheWriteTokens
 		}
-		// A completed turn belonging to a spawned child advances that child's turn
-		// count in the tree; a turn on the root goal matches no child and only bumps the
-		// run total above.
+		// A root turn matches no child and only bumps the run total.
 		if ev.Goal != "" {
 			p.Fanout = bumpChildTurns(p.Fanout, ev.Goal)
 		}
@@ -249,7 +216,7 @@ func Reduce(p Projection, ev Event) Projection {
 		}
 		p.Egress = appendEgress(p.Egress, EgressEntry{Host: ev.Host, Allowed: ev.Allowed, Reason: ev.Reason})
 	case KindRecordSealed:
-		// Verified outranks sealed: a re-seal never demotes a record already checked.
+		// A re-seal never demotes a verified record.
 		if p.Record != RecordVerified {
 			p.Record = RecordSealed
 			p.Fanout = sealFoldedChildren(p.Fanout, RecordSealed)
@@ -264,26 +231,22 @@ func Reduce(p Projection, ev Event) Projection {
 		p.Terminal = true
 		p.Err = ev.Err
 	default:
-		// Assistant text, tool calls and results, and any later event kind carry no
-		// status the badge or panel summarize; the transcript renders them directly.
+		// Assistant text, tool calls and results carry no status; the transcript
+		// renders them.
 	}
 	return p
 }
 
-// upsertAction folds one action event into the ledger and returns the updated ledger,
-// leaving the input untouched (the reducer is pure, so a caller holding the pre-fold
-// projection keeps its slice). An entry whose Call matches an existing one updates it
-// in place, so an admission followed by its completion or rejection is a single row
-// that changes state rather than two rows for one action; a Call of zero (a waist that
-// records no correlation id) always appends. The ledger is capped at maxLedger, oldest
-// dropped first.
+// upsertAction returns ledger with e folded in, leaving the input untouched
+// because the reducer is pure. An entry with a matching Call is updated in
+// place, so an action is one row that changes state; Call zero (no correlation
+// id) always appends. The oldest entries drop past [maxLedger].
 func upsertAction(ledger []ActionEntry, e ActionEntry) []ActionEntry {
 	if e.Call != 0 {
 		for i := range ledger {
 			if ledger[i].Call == e.Call {
 				out := append([]ActionEntry(nil), ledger...)
-				// A completion carries no action name on some waists; keep the name
-				// the admission recorded rather than blanking it.
+				// Some waists send no name on completion; keep the admission's.
 				if e.Action == "" {
 					e.Action = out[i].Action
 				}
@@ -302,10 +265,8 @@ func upsertAction(ledger []ActionEntry, e ActionEntry) []ActionEntry {
 	return out
 }
 
-// appendEgress folds one egress decision into the ledger and returns the updated ledger,
-// leaving the input untouched (the reducer is pure). The ledger is capped at maxEgress,
-// oldest dropped first, so the projection stays a fixed size on a run that dials many
-// destinations.
+// appendEgress returns ledger with e appended, leaving the input untouched.
+// The oldest entries drop past [maxEgress].
 func appendEgress(ledger []EgressEntry, e EgressEntry) []EgressEntry {
 	out := append(append([]EgressEntry(nil), ledger...), e)
 	if len(out) > maxEgress {
@@ -314,9 +275,8 @@ func appendEgress(ledger []EgressEntry, e EgressEntry) []EgressEntry {
 	return out
 }
 
-// bumpChildTurns increments the turn count of the child whose id is goal, returning the
-// updated slice and leaving the input untouched (the reducer is pure). A goal that names
-// no known child, the run's root, leaves the tree unchanged.
+// bumpChildTurns increments child goal's turn count, leaving the input
+// untouched. The root names no child and changes nothing.
 func bumpChildTurns(children []FanoutChild, goal string) []FanoutChild {
 	for i := range children {
 		if children[i].ID == goal {
@@ -328,11 +288,9 @@ func bumpChildTurns(children []FanoutChild, goal string) []FanoutChild {
 	return children
 }
 
-// foldChildGovernance attributes one governed action to the child whose id is goal,
-// updating that child's trust posture and, when the action was blocked, its blocked
-// count. It returns the updated slice and leaves the input untouched (the reducer is
-// pure). A goal that names no known child, the run's root, leaves the tree unchanged, so
-// a root action folds only into the run-level containment above.
+// foldChildGovernance attributes a governed action to child goal: its trust
+// posture and, when blocked, its blocked count. The input is untouched. A root
+// action matches no child and folds only into the run-level containment.
 func foldChildGovernance(children []FanoutChild, goal, trust string, blocked bool) []FanoutChild {
 	if goal == "" {
 		return children
@@ -352,12 +310,10 @@ func foldChildGovernance(children []FanoutChild, goal, trust string, blocked boo
 	return children
 }
 
-// sealFoldedChildren advances the seal state of a run's folded children when the run's
-// record advances, returning the updated slice and leaving the input untouched (the
-// reducer is pure). On a seal, a child that has folded back has its events under the
-// signed root, so it moves to sealed; a child still running is left recording, since its
-// events are not yet final and a later seal segment will cover them. On a verify, every
-// folded child moves to verified. A run with no children leaves the tree unchanged.
+// sealFoldedChildren advances folded children when the run's record advances,
+// leaving the input untouched. On a seal, folded children move to sealed and
+// running ones stay recording, since a later seal segment covers their events.
+// On a verify, every folded child moves to verified.
 func sealFoldedChildren(children []FanoutChild, rec RecordState) []FanoutChild {
 	if len(children) == 0 {
 		return children
@@ -365,7 +321,7 @@ func sealFoldedChildren(children []FanoutChild, rec RecordState) []FanoutChild {
 	out := append([]FanoutChild(nil), children...)
 	for i := range out {
 		if out[i].State == FanoutRunning {
-			continue // a running child's events are not final; it stays recording
+			continue
 		}
 		switch rec {
 		case RecordSealed:
@@ -375,15 +331,14 @@ func sealFoldedChildren(children []FanoutChild, rec RecordState) []FanoutChild {
 		case RecordVerified:
 			out[i].Seal = RecordVerified
 		case RecordRecording:
-			// Never called with recording (a run does not un-seal); leave the child as is.
+			// A run never un-seals, so recording is not passed here.
 		}
 	}
 	return out
 }
 
-// completeChild flips the child named by id from running to its folded outcome (failed
-// when isErr, else done) and records its result, returning the updated slice and leaving
-// the input untouched. A completion for an unknown child leaves the tree unchanged.
+// completeChild sets child id to failed (isErr) or done with its result,
+// leaving the input untouched. An unknown id changes nothing.
 func completeChild(children []FanoutChild, id, result string, isErr bool) []FanoutChild {
 	for i := range children {
 		if children[i].ID == id {
@@ -399,10 +354,8 @@ func completeChild(children []FanoutChild, id, result string, isErr bool) []Fano
 	return children
 }
 
-// Project folds a whole event slice into the run's status, the replay counterpart of
-// Reduce: History or a resume picker reads a run's status by projecting its recorded
-// events. It seeds from NewProjection, so an empty slice is a recording run with no
-// activity yet.
+// Project folds a whole event slice, starting from [NewProjection]; a replay or
+// a resume picker uses it on recorded events.
 func Project(evs []Event) Projection {
 	p := NewProjection()
 	for _, ev := range evs {

@@ -28,20 +28,16 @@ import (
 	"github.com/ionalpha/flynn/tools/github"
 )
 
-// errChangesRequested is returned by runReview when the reviewer submitted a
-// REQUEST_CHANGES verdict. The review itself succeeded; the distinct error lets
-// main map the verdict to a non-zero exit so a CI step can gate a merge on it.
+// errChangesRequested marks a successful review whose verdict was REQUEST_CHANGES, so
+// main exits non-zero and a CI step can gate a merge on it.
 var errChangesRequested = errors.New("review requested changes")
 
-// exitChangesRequested is the exit code for a completed review whose verdict was
-// REQUEST_CHANGES. It is distinct from 1 (the command failed) and 2 (usage), so a
-// pipeline can tell "the reviewer said no" from "the reviewer broke".
+// exitChangesRequested is distinct from 1 (command failed) and 2 (usage), so a pipeline
+// can tell a refusal from a broken reviewer.
 const exitChangesRequested = 3
 
-// The references the review command resolves its GitHub credentials by. Each is
-// looked up through the same vault-then-environment chain the model keys use, so
-// a value stored once (`flynn auth`) wins over an exported variable, and a CI
-// workflow with only its ambient environment still works.
+// GitHub credential references, resolved vault first and then environment like the
+// model keys, so a stored value wins and a CI job's ambient environment still works.
 const (
 	refToken           = "GITHUB_TOKEN" //nolint:gosec // G101: a credential reference, not a credential
 	refAppIssuer       = "FLYNN_GITHUB_APP_ISSUER"
@@ -54,15 +50,13 @@ const (
 // github`) authenticate a review when no App is configured.
 const githubIntegration = "github"
 
-// envAPIBase names the REST API root to review against. It is not a credential, so
-// it is read from the environment rather than the vault. GitHub Actions exports it
-// into every job, holding github.com's API root on the hosted service and the
-// appliance's own root on GitHub Enterprise, so a workflow that sets nothing still
-// reviews against the API it is running under.
+// envAPIBase names the REST API root. It is not a credential, so it comes from the
+// environment. GitHub Actions sets it in every job, to github.com's root or the
+// Enterprise appliance's, so a workflow that sets nothing reviews the API it runs under.
 const envAPIBase = "GITHUB_API_URL"
 
-// reviewFlags is what the review command line asked for: the pull request to review, the
-// authority it grants the reviewer, and the budgets that bound the run.
+// reviewFlags is the pull request to review, the authority granted, and the run's
+// budgets.
 type reviewFlags struct {
 	owner, repo string
 	number      int
@@ -76,9 +70,8 @@ type reviewFlags struct {
 	apiBase     string
 }
 
-// parseReviewFlags reads the review command line. It refuses an APPROVE grant without a
-// self-identity, because approval that cannot tell its own pull request apart cannot refuse
-// self-approval.
+// parseReviewFlags refuses an APPROVE grant without a self-identity, because approval
+// that cannot recognise its own pull request cannot refuse self-approval.
 func parseReviewFlags(args []string) (reviewFlags, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	var (
@@ -102,10 +95,8 @@ func parseReviewFlags(args []string) (reviewFlags, error) {
 		fmt.Fprintf(os.Stderr, "  exit: 0 clean, %d changes requested, 1 failure\n", exitChangesRequested)
 		fs.PrintDefaults()
 	}
-	// The flag package stops parsing at the first argument that is not a flag, so a
-	// single Parse of "<pull-request> --approve" would take --approve for a second
-	// pull request. The usage line puts the pull request first because that is how the
-	// command is written, so collect positionals and keep parsing what follows them.
+	// The flag package stops at the first non-flag, so "<pull-request> --approve" would
+	// leave --approve unparsed. Positionals are collected and parsing continues after them.
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -138,20 +129,17 @@ func parseReviewFlags(args []string) (reviewFlags, error) {
 	}, nil
 }
 
-// runReview reviews one pull request with the reviewer archetype and submits a
-// formal verdict. The archetype supplies the standing instruction and the exact
-// authority (package review); this command only assembles: parse the target, build
-// the repository-bound toolset from the environment's credentials, bind the grant,
-// drive the loop, and map the submitted verdict to an exit code.
+// runReview reviews one pull request with the reviewer archetype, which supplies the
+// instruction and the exact authority (package review), and maps the submitted verdict
+// to an exit code.
 func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	fl, err := parseReviewFlags(args)
 	if err != nil {
 		return err
 	}
 
-	// The reviewer's loop is Flynn's own: governance rides the dispatch waist, and
-	// an external harness's inner reasoning is unobserved, which a review verdict
-	// cannot afford.
+	// Governance rides Flynn's own dispatch waist, and a review verdict cannot rest on an
+	// external harness's unobserved reasoning.
 	if name, _, ok := externalAgentSpec(modelSpec); ok {
 		return fmt.Errorf("review runs the native loop; the %s external agent backend is not supported here", name)
 	}
@@ -179,9 +167,8 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		return err
 	}
 
-	// Credentials resolve vault first, environment second: the chain model keys
-	// already use, plus the github integration's stored credentials. The raw token
-	// variable is dropped from the process environment either way.
+	// Vault before environment, plus the github integration's stored credentials. The raw
+	// token variable is removed from the process environment either way.
 	creds := credential.NewStore(store.Resources(reg))
 	cfg, err := resolveReviewCredentials(ctx, credentialSource(dataDir),
 		storedGitHubToken(creds, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), fl.credRef), os.ReadFile)
@@ -228,16 +215,16 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		withBudget(budgetpkg.Limits{Tokens: fl.maxTokens, Cost: fl.maxCost}),
 	).execute(ctx)
 	if err != nil {
-		// A review that stalled or ran out of budget is the one a maintainer asks about, so
-		// it is sealed with how it ended before the error is returned.
+		// A stalled or over-budget review is the one a maintainer asks about, so it is sealed
+		// with its ending before the error returns.
 		if rec != nil && source != "" {
 			sealStopped(ctx, os.Stdout, store, rec, source, signer, err)
 		}
 		return err
 	}
 
-	// Seal the run before acting on its outcome, so the verdict the command reports
-	// is one a third party can verify from the record alone.
+	// Sealed before the outcome is acted on, so the reported verdict is verifiable from the
+	// record alone.
 	if rec != nil {
 		sealReported(ctx, os.Stdout, store, rec, source, signer)
 	}
@@ -245,10 +232,8 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	return verdict.outcome(os.Stdout)
 }
 
-// verdictTracker reads the submitted review verdict off the run's own event
-// stream: the github_submit_review tool call whose result did not error. Reading
-// the recorded events, rather than a side channel, means the verdict the command
-// exits on is the one the sealed record shows.
+// verdictTracker reads the verdict from the run's events (the github_submit_review call
+// whose result did not error), so the exit follows what the sealed record shows.
 type verdictTracker struct {
 	pending map[string]string // tool-use id -> requested verdict
 	final   string
@@ -258,10 +243,8 @@ func newVerdictTracker() *verdictTracker {
 	return &verdictTracker{pending: make(map[string]string)}
 }
 
-// observe watches the session stream for a submitted review. A call registers the
-// verdict it asks for; the matching non-error result confirms it. A refused
-// submission (an ungated APPROVE, a truncated diff) errors and confirms nothing,
-// so a later successful submission is the one that counts.
+// observe pairs a submit call with its non-error result. A refused submission (an
+// ungated APPROVE, a truncated diff) confirms nothing, so a later success counts.
 func (v *verdictTracker) observe(ev session.Event) {
 	switch ev.Kind {
 	case session.KindToolCall:
@@ -283,10 +266,9 @@ func (v *verdictTracker) observe(ev session.Event) {
 	}
 }
 
-// outcome reports the review's verdict and maps it to the command's result: nil
-// for a clean verdict, errChangesRequested for a blocking one, and an error when
-// the run converged without submitting any review, which is a reviewer that did
-// not do its job and must not read as a pass.
+// outcome returns nil for a clean verdict, errChangesRequested for a blocking one, and
+// an error when the run converged without submitting a review, which must not read as a
+// pass.
 func (v *verdictTracker) outcome(out io.Writer) error {
 	switch v.final {
 	case "":
@@ -300,9 +282,8 @@ func (v *verdictTracker) outcome(out io.Writer) error {
 	}
 }
 
-// parsePRRef resolves the command's pull-request argument: a full URL
-// (https://github.com/OWNER/REPO/pull/N) or OWNER/REPO#N, with --repo allowed to
-// carry the OWNER/REPO half when the argument is only #N.
+// parsePRRef accepts https://github.com/OWNER/REPO/pull/N or OWNER/REPO#N, with --repo
+// supplying OWNER/REPO for a bare #N.
 func parsePRRef(arg, repoFlag string) (owner, repo string, number int, err error) {
 	var coords, numPart string
 	switch {
@@ -340,12 +321,11 @@ func parsePRRef(arg, repoFlag string) (owner, repo string, number int, err error
 	return owner, repo, number, nil
 }
 
-// hostResolver maps a host name to the addresses it answers on. resolveHost is the
-// real one; a test supplies its own to fix what a name resolves to.
+// hostResolver maps a host name to its addresses; tests supply one to fix the answer.
 type hostResolver func(ctx context.Context, host string) ([]netip.Addr, error)
 
-// resolveHost resolves a host name, or parses it when it is already an address
-// literal, which the resolver would otherwise have to be trusted to pass through.
+// resolveHost parses an address literal itself, so the resolver need not be trusted to
+// pass it through.
 func resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr}, nil
@@ -353,20 +333,17 @@ func resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// configureAPIBase points the toolset at an API root other than github.com's, and
-// widens the egress policy just far enough to reach it.
+// configureAPIBase points the toolset at a non-github.com API root and widens egress
+// just enough to reach it.
 //
-// The default toolset dials through a public-only policy, which refuses private,
-// loopback, and cloud-metadata addresses. That is the right default against a public
-// API and the wrong one against a GitHub Enterprise appliance, which commonly answers
-// on an internal address the policy would refuse. An empty base, or github.com's own,
-// changes nothing and keeps that default.
+// The default public-only policy refuses private, loopback and metadata addresses, but
+// a GitHub Enterprise appliance often answers on an internal one. An empty base or
+// github.com's keeps the default.
 //
-// A configured base widens the policy by address rather than by class: the policy
-// permits exactly the addresses this host resolves to, and nothing else, so naming an
-// internal appliance does not also open the run to the rest of the private network or
-// to the metadata endpoint. Pagination is separately pinned to the API origin by the
-// client, so a response cannot redirect the credential elsewhere.
+// The widened policy permits exactly the addresses the host resolves to, so naming an
+// appliance opens neither the rest of the private network nor the metadata endpoint.
+// The client pins pagination to the API origin, so a response cannot redirect the
+// credential.
 func configureAPIBase(ctx context.Context, cfg *github.Config, base string, resolve hostResolver) error {
 	base = strings.TrimSuffix(strings.TrimSpace(base), "/")
 	if base == "" || base == github.DefaultAPIBase {
@@ -381,14 +358,12 @@ func configureAPIBase(ctx context.Context, cfg *github.Config, base string, reso
 	return nil
 }
 
-// apiEgressPolicy builds the outbound policy for reaching base, and refuses a base
-// that would carry the credential unsafely.
+// apiEgressPolicy builds the policy for base and refuses a base that would expose the
+// credential.
 //
-// Every request to the API root attaches the reviewer's token, so the scheme is not a
-// preference. Plain http is permitted only when every address the host resolves to is
-// loopback, where the request never leaves the machine; against any other address it
-// would put the token on the wire in the clear, and an internal network is not a
-// trusted one.
+// Every API request carries the token, so plain http is allowed only when every
+// resolved address is loopback. Anywhere else it puts the token on the wire in the
+// clear, and an internal network is not a trusted one.
 func apiEgressPolicy(ctx context.Context, base string, resolve hostResolver) (netguard.Policy, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -423,15 +398,14 @@ func apiEgressPolicy(ctx context.Context, base string, resolve hostResolver) (ne
 	return policy, nil
 }
 
-// tokenLookup resolves a stored GitHub token, returning secret.ErrNotFound when
-// none is configured so the caller can continue down the chain.
+// tokenLookup returns secret.ErrNotFound when no token is stored, so the caller tries
+// the next source.
 type tokenLookup func(ctx context.Context) (secret.Text, error)
 
-// storedGitHubToken resolves the github integration's stored credential: the one
-// named by ref ("github/<name>"), or the integration's default when ref is empty.
-// A named reference that does not exist is an error, because the operator asked
-// for that credential specifically; an absent default is ErrNotFound, because
-// falling through to the environment is then the intended path.
+// storedGitHubToken resolves the credential named by ref ("github/<name>"), or the
+// integration default when ref is empty. A missing named credential is an error, since
+// the operator asked for it; a missing default is ErrNotFound, falling through to the
+// environment.
 func storedGitHubToken(creds *credential.Store, vaultStore *vault.Store, ref string) tokenLookup {
 	return func(ctx context.Context) (secret.Text, error) {
 		var (
@@ -456,20 +430,17 @@ func storedGitHubToken(creds *credential.Store, vaultStore *vault.Store, ref str
 	}
 }
 
-// resolveReviewCredentials builds the toolset's credentials, strongest identity
-// first and vault before environment at every step:
+// resolveReviewCredentials picks the strongest identity first, vault before environment
+// at each step:
 //
-//  1. A GitHub App: issuer + installation id + private key (PEM content, or a
-//     file path), each reference resolved through src. The App is the identity a
-//     formal approval wants, so when it is fully configured it wins. A partial
-//     App configuration is an error rather than a silent fall-through: the
-//     operator set it up and would not want a quiet downgrade to a weaker path.
+//  1. A GitHub App: issuer, installation id and private key (PEM content or a file
+//     path), each resolved through src. Formal approval wants this identity. A partial
+//     App configuration is an error, so the operator never gets a silent downgrade.
 //  2. A stored github credential (`flynn auth add github`), via stored.
-//  3. The GITHUB_TOKEN reference through src (vault entry, else the ambient
-//     environment variable a CI workflow provides).
+//  3. GITHUB_TOKEN through src (vault entry, else a CI workflow's environment).
 //
-// Every value is a secret.Text from the moment it is read, so none survives to a
-// log or a crash dump.
+// Every value is a secret.Text from the moment it is read, so none reaches a log or a
+// crash dump.
 func resolveReviewCredentials(ctx context.Context, src secret.Source, stored tokenLookup, readFile func(string) ([]byte, error)) (github.Config, error) {
 	var cfg github.Config
 

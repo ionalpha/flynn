@@ -12,9 +12,8 @@ import (
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
-// driveConfig collects the optional levers a run is driven with. Its zero value (no
-// budget, the strictest shell policy) drives a run as a caller that passes no option
-// expects, so leaving an option out never opens anything.
+// driveConfig holds a run's optional levers. Its zero value (no budget, the strictest
+// shell policy) opens nothing, so leaving an option out is always safe.
 type driveConfig struct {
 	budget   budgetpkg.Limits
 	shell    governed.ShellPolicy
@@ -25,144 +24,119 @@ type driveConfig struct {
 	proof    bool
 	skills   *skilltool.Set
 	gates    gateSetup
-	// allowances are the irreversible actions outside the workspace this run was declared
-	// to be allowed, carried onto the goal spec so the waist checks them and the
-	// reconciler can tell an ask that has been answered from one that has not.
+	// allowances are the irreversible actions outside the workspace this run may take. They
+	// ride the goal spec, so the waist checks them and the reconciler can tell an answered
+	// ask from an open one.
 	allowances []goal.Allowance
-	// terms are the invariants the run is held to, and stopCondition is what the operator
-	// says being finished means. Both come off a goal spec file; empty leaves the run with
-	// no stated terms and the default stop condition, which is every run that does not
-	// pass one.
+	// terms are the invariants the run is held to; stopCondition is the operator's meaning
+	// of finished. Both come from a goal spec file; empty means no terms and the default
+	// stop condition.
 	terms         []goal.Invariant
 	stopCondition string
-	// emb is the embedding model recall ranks by, nil for the lexical order alone. It
-	// is read by runLearningMission, which builds the run's memory, and not by drive:
-	// the run's memory is assembled before the conversation is, and this is the option
-	// set the entry points already thread through to it.
+	// emb is the embedding model recall ranks by; nil ranks lexically. runLearningMission
+	// reads it, because the run's memory is assembled before the conversation; drive does
+	// not.
 	emb hybrid.Embedder
-	// project is the trust decision for the repository's instruction files. Its zero
-	// value is no files found, which adds, taints and records nothing.
+	// project is the trust decision for the repository's instruction files. The zero value
+	// means none found, and adds, taints and records nothing.
 	project projectctx.Decision
 }
 
-// driveOption configures a run driven by drive.
 type driveOption func(*driveConfig)
 
-// withBudget caps a run's total spend: every model and tool call the run makes (and,
-// in a fan-out, its children, which share one pool) is charged against the ceiling,
-// and an action is refused once it is reached. A zero-limit budget is unlimited, so
-// passing it leaves the run uncapped.
+// withBudget caps a run's total spend. Every model and tool call, including a fan-out's
+// children, which share one pool, is charged, and an action is refused at the ceiling.
+// A zero-limit budget is unlimited.
 func withBudget(l budgetpkg.Limits) driveOption {
 	return func(c *driveConfig) { c.budget = l }
 }
 
-// withMemoryEmbedder ranks the run's memory recall by meaning as well as words. A
-// nil embedder is the default and leaves the durable store's own lexical order, so
-// an install with no embedding model configured runs exactly as it did.
+// withMemoryEmbedder ranks memory recall by meaning as well as words. A nil embedder
+// keeps the store's lexical order, so an install with no embedding model is unchanged.
 func withMemoryEmbedder(e hybrid.Embedder) driveOption {
 	return func(c *driveConfig) { c.emb = e }
 }
 
-// withShellPolicy sets what the commands a run's tools execute are limited to and kept
-// away from: their memory and process count (see [sandbox.ResourceLimits] for the
-// per-platform enforcement), the network, and the data directory and credential
-// locations. Without it a run gets the zero [governed.ShellPolicy], which keeps all of them closed.
+// withShellPolicy limits the commands a run's tools execute: memory and process count
+// (see [sandbox.ResourceLimits] for per-platform enforcement), the network, and the
+// data directory and credential locations. The zero [governed.ShellPolicy] keeps all of
+// them closed.
 func withShellPolicy(p governed.ShellPolicy) driveOption {
 	return func(c *driveConfig) { c.shell = p }
 }
 
-// withPlanning turns the planning phase on for the run: before the first build step the
-// goal expands its objective into a visible ledger, each item carrying how it would be
-// checked. It is opt-in per entry point rather than always-on because it changes what a
-// run does first — a plan model call, then the ledger gate — so a command adopts it
-// deliberately once its flow expects it. The `goal` command sets it; the other native
-// paths run unplanned until they adopt it in turn.
+// withPlanning has the goal expand its objective into a visible ledger before the first
+// build step, each item carrying how it would be checked. It is opt-in per entry point
+// because it changes what a run does first (a plan model call, then the ledger gate).
+// The `goal` command sets it.
 func withPlanning() driveOption {
 	return func(c *driveConfig) { c.planning = true }
 }
 
-// withLedgerProof makes the run's plan binding: each item's declared check is run and the
-// goal will not report success over an item the record cannot show proof for.
+// withLedgerProof makes the plan binding: each item's declared check runs, and the goal
+// will not report success over an item the record cannot prove.
 //
-// It is separate from withPlanning because the two carry different risk. Planning always
-// runs the producer, so a run's items visibly flip to proven and a run's report can say
-// how many were proven by execution; this adds the refusal on top, which is the part that
-// can stop a run whose plan wrote checks no machine can run. Without it an item whose
-// check keeps failing is left unproven and the run moves on (see goal.LedgerState). It is staged, not optional:
-// the refusal is the point of keeping a ledger, and a build that never turns it on has a
-// plan that decides nothing.
+// It is separate from withPlanning because the risk differs. Planning always runs the
+// producer, so items flip to proven and the report counts them; this adds the refusal,
+// which can stop a run whose plan wrote checks no machine can run. Without it a failing
+// item stays unproven and the run moves on (see goal.LedgerState).
 func withLedgerProof() driveOption {
 	return func(c *driveConfig) { c.proof = true }
 }
 
-// withExternalAgent drives the run through an external agent CLI backend (its own
-// harness runs the loop) instead of a native model conversation. The model llm.Model
-// passed to drive is unused in this mode: the external CLI drives its own model,
-// selected by the agent's model string. Every tool call the CLI makes still comes back
-// through the same dispatch waist, so governance is unchanged.
+// withExternalAgent drives the run through an external agent CLI, whose harness runs
+// the loop and its own model; drive's llm.Model is unused. Every tool call still crosses
+// the dispatch waist, so governance is unchanged.
 func withExternalAgent(ea *externAgent) driveOption {
 	return func(c *driveConfig) { c.extAgent = ea }
 }
 
-// withToolset drives the run over a caller-supplied toolset and grant instead of
-// the sandboxed working-tree tools. This is how a specialised run (a pull-request
-// review) holds exactly the authority its archetype declares: the toolset carries
-// no shell and no filesystem, and the grant it comes with is the complete list of
-// what the waist admits. The working directory is untouched; a toolset run never
-// reads or writes the tree.
+// withToolset drives the run over a caller-supplied toolset and grant in place of the
+// sandboxed working-tree tools. A pull-request review uses it to hold exactly its
+// archetype's authority: no shell, no filesystem, and a grant that is the complete list
+// the waist admits. A toolset run never reads or writes the tree.
 func withToolset(t *boundToolset) driveOption {
 	return func(c *driveConfig) { c.toolset = t }
 }
 
-// withEventObserver invokes fn on every session event as the run streams, in
-// addition to rendering. A caller uses it to read an outcome off the run's own
-// recorded events (a submitted review verdict, say) rather than re-deriving it
-// out of band, so what the caller acts on and what the record says cannot differ.
+// withEventObserver calls fn on every session event as the run streams. A caller reads
+// an outcome (a submitted review verdict) off the recorded events, so what it acts on
+// and what the record says cannot differ.
 func withEventObserver(fn func(session.Event)) driveOption {
 	return func(c *driveConfig) { c.observe = fn }
 }
 
-// withSkills gives the run the skill toolset, which is what serves a skill's
-// procedure: recall offers a skill by name and description, and the model calls
-// skill_read to get the body. Without it a run is offered nothing and can read
-// nothing, so a caller that recalls skills into the prompt must pass a toolset over
-// the same store it recalled from, or the offer names a tool that is not there.
+// withSkills gives the run the skill toolset: recall offers a skill by name and
+// description, and the model calls skill_read for the body. A caller that recalls skills
+// into the prompt must pass a toolset over the same store, or the offer names a missing
+// tool.
 //
-// The toolset rather than the store, because the caller wants it back afterwards:
-// it holds the list of skills the run actually loaded, which is what the run's
-// outcome is credited to.
+// It takes the toolset because the caller reads back the skills the run loaded, which
+// the outcome is credited to.
 func withSkills(s *skilltool.Set) driveOption {
 	return func(c *driveConfig) { c.skills = s }
 }
 
-// withApproval requires a person to authorize each of the named actions before the run
-// takes it, and resolves that pause through prompter. It is opt-in per action rather than
-// on by default: a run's standing controls are its capability grant and its sandbox, and
-// approval is the second gate an operator adds above them for the actions they want to
-// see before they happen.
+// withApproval requires a person to authorize each named action before the run takes
+// it, resolving the pause through prompter. It is an operator's second gate above the
+// capability grant and sandbox.
 //
-// A nil prompter is the non-interactive case and it is fail-closed: with nobody to ask,
-// the listed action is refused rather than taken. Naming no actions leaves the run
-// ungated, which is the default.
+// A nil prompter is the non-interactive case and fails closed: the listed action is
+// refused. Naming no actions leaves the run ungated.
 func withApproval(actions []string, prompter mission.ApprovalPrompter) driveOption {
 	return func(c *driveConfig) {
 		c.gates.approve, c.gates.prompter = actions, prompter
 	}
 }
 
-// withAllowance marks the actions that reach outside the workspace and cannot be undone,
-// and declares which of them this run may take. A marked action the run did not declare is
-// refused at the waist and the goal is paused with the ask, so the decision lands with the
-// person who wrote the objective rather than with the run that read it.
+// withAllowance marks the irreversible actions that reach outside the workspace and
+// declares which this run may take. An undeclared marked action is refused at the waist
+// and the goal pauses with the ask, so the person who wrote the objective decides.
 //
-// The two lists are set together because neither means anything alone: marking with nothing
-// declared is a run that stops the first time it reaches one, and declaring an action
-// nothing marked authorizes what was never gated. Marking nothing is the default and leaves
-// the run exactly as it was.
-//
-// The declarations are already structured because a goal spec file can narrow one to a
-// target, which --allow cannot express; declaredAllowances turns the flag's action names
-// into the same form.
+// The lists are set together: marking with nothing declared stops at the first marked
+// action, and declaring an unmarked action authorizes nothing gated. A goal spec file can
+// narrow a declaration to a target, which --allow cannot; declaredAllowances converts the
+// flag's names.
 func withAllowance(outside []string, declared []goal.Allowance) driveOption {
 	return func(c *driveConfig) {
 		c.gates.outside = outside
@@ -170,15 +144,13 @@ func withAllowance(outside []string, declared []goal.Allowance) driveOption {
 	}
 }
 
-// withGoalSpec states the run's terms and, where the file gives one, its stop condition.
-// The terms are what the run may not trade away to finish: they are audited before the
-// stop condition is consulted on every reconcile, and a breach settles the goal whatever
-// the run was about to claim.
+// withGoalSpec states the run's terms and, if the file gives one, its stop condition.
+// The terms are audited before the stop condition on every reconcile, and a breach
+// settles the goal whatever the run was about to claim.
 //
-// It is one option rather than two because the two halves of a spec file arrive together
-// and a caller that set the terms while dropping the operator's stop condition would run
-// a goal against a definition of done nobody wrote. An allowance from the same file is
-// folded in through withAllowance, which owns that list.
+// It is one option because a caller that set the terms but dropped the stop condition
+// would run against a definition of done nobody wrote. An allowance from the file goes
+// through withAllowance.
 func withGoalSpec(spec goalSpecFile) driveOption {
 	return func(c *driveConfig) {
 		c.terms = spec.Invariants
@@ -186,10 +158,8 @@ func withGoalSpec(spec goalSpecFile) driveOption {
 	}
 }
 
-// boundToolset is a toolset paired with the grant that bounds it. They travel
-// together so a caller cannot hand drive a toolset while forgetting the authority
-// that is supposed to confine it: the default-permissive trap this pairing exists
-// to avoid.
+// boundToolset pairs a toolset with the grant that bounds it, so drive never receives a
+// toolset without its confining authority.
 type boundToolset struct {
 	tools []mission.Tool
 	grant capability.Grant
