@@ -18,24 +18,18 @@ import (
 	"github.com/ionalpha/flynn/internal/bindguard"
 )
 
-// Control variables passed to the re-executed launcher child for the inbound forward (see
-// attachLoopbackForward and serveForwardFromNetns). They tell the launcher to create the
-// forward's listening socket inside its network namespace and which inherited descriptor
-// to hand it back on. The launcher strips them before running the command.
+// The inbound forward's launcher variables: create the listener in the namespace,
+// and the descriptor to return it on. The launcher strips them before the command.
 const (
 	envForward   = "FLYNN_SANDBOX_FORWARD"
 	envForwardFD = "FLYNN_SANDBOX_FORWARD_FD"
 )
 
-// netnsBridgePort is the fixed loopback port the inbound forward listens on inside a
-// confined child's network namespace. The namespace is private to the one child and starts
-// empty, so a fixed port never collides with anything; using a fixed one means the
-// child-facing address is known before the child launches, so it can be baked into the
-// command's configuration rather than discovered at run time.
+// netnsBridgePort is fixed so the child's address is known before launch. The
+// namespace is private and empty, so it never collides.
 const netnsBridgePort = 8231
 
-// addChild registers the teardown for a forwarder serving one child, under a key its owner
-// can drop it by.
+// addChild registers one child's forwarder teardown under key.
 func (f *forwardConfig) addChild(key any, release func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -52,21 +46,17 @@ func (f *forwardConfig) dropChild(key any) {
 	delete(f.perChild, key)
 }
 
-// liveChildren counts the per-child forwarders still registered. It exists for the test
-// that a finished command does not leave one behind.
+// liveChildren counts registered forwarders, so a test can see one was not leaked.
 func (f *forwardConfig) liveChildren() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.perChild)
 }
 
-// ForwardBridge reports how a confined child reaches a bridge listening on the host
-// loopback at hostURL: the URL to hand the child, and the host address the sandbox must
-// forward it to. On Linux the child runs in its own network namespace and cannot reach the
-// host loopback at all, so it is given a fixed in-namespace address and the sandbox
-// forwards that to the host one. A hostURL that does not parse is returned unchanged with
-// no forward, so a caller that passed something unexpected fails loudly downstream rather
-// than silently rewriting it.
+// ForwardBridge returns the URL a confined child uses for a host-loopback bridge
+// and the host address to forward it to. The Linux child cannot reach the host
+// loopback, so it gets a fixed in-namespace address. An unparseable hostURL is
+// returned unchanged with no forward, so the mistake fails downstream.
 func ForwardBridge(hostURL string) (childURL, forwardTo string) {
 	u, err := url.Parse(hostURL)
 	if err != nil || u.Host == "" {
@@ -77,19 +67,11 @@ func ForwardBridge(hostURL string) (childURL, forwardTo string) {
 	return u.String(), forwardTo
 }
 
-// attachLoopbackForward is the host half of the inbound forward, mirroring attachEgress. It
-// hands the launcher one end of a unix socketpair and reads back, as an SCM_RIGHTS
-// descriptor, the listening socket the launcher created inside the child's network
-// namespace. A socket keeps the namespace it was created in for its whole life, so
-// accepting on that descriptor here, in the host namespace, still accepts the connections
-// the child makes to its own loopback. Each accepted connection is piped to the one host
-// address configured, whose dial runs in this process's host namespace and reaches the
-// real bridge. So the child reaches exactly that one host service and nothing else on the
-// host loopback.
-//
-// The returned release ends the forwarder and is called when the child exits; it is also
-// registered on the forward config, so a launch that dies before it can release is still
-// cleaned up when the sandbox closes.
+// attachLoopbackForward receives over SCM_RIGHTS the listener the launcher made in
+// the child's namespace. A socket keeps its namespace for life, so accepting here
+// takes the child's loopback connections, and each is piped to the one host
+// address. The release is also registered on the forward config, so a launch that
+// dies first is cleaned up when the sandbox closes.
 func (l *Local) attachLoopbackForward(c *exec.Cmd) (func(), error) {
 	parent, child, err := openHandoff(c, "forward", envForward, envForwardFD)
 	if err != nil {
@@ -102,8 +84,7 @@ func (l *Local) attachLoopbackForward(c *exec.Cmd) (func(), error) {
 	return h.release, nil
 }
 
-// forwardHandoff owns one child's inbound forward: the socketpair the launcher hands its
-// listening socket back on, the accept loop serving that socket, and the teardown of both.
+// forwardHandoff owns one child's handoff socketpair, accept loop and teardown.
 type forwardHandoff struct {
 	parent   *net.UnixConn // this end of the handoff socketpair
 	child    *os.File      // the launcher's end; owned by the exec.Cmd, closed only by release
@@ -116,11 +97,9 @@ type forwardHandoff struct {
 	stop context.CancelFunc
 }
 
-// serve waits for the launcher to hand back the socket it created inside the network
-// namespace, then accepts on it and pipes each connection to the host address until
-// release. A launcher that dies before sending leaves the receive blocked until release,
-// and the launch fails on its own error; the child would be in a namespace it cannot reach
-// the bridge from, so the failure is closed either way.
+// serve accepts on the handed-back listener until release. A launcher that dies
+// before sending leaves serve blocked until release; the child cannot reach the
+// bridge, so the failure is closed.
 func (h *forwardHandoff) serve() {
 	fd, err := recvListener(h.parent)
 	if err != nil {
@@ -147,16 +126,12 @@ func (h *forwardHandoff) serve() {
 	}
 }
 
-// pipe joins one child connection to a fresh dial of the host address, copying in both
-// directions until either side ends or the forwarder is released. The dial runs in the
-// host namespace, so it reaches the real bridge; nothing else on the host loopback is
-// reachable because nothing else is ever dialled.
+// pipe joins a child connection to a fresh dial of the host address. Nothing else
+// on the host loopback is reachable, because nothing else is dialled.
 func (h *forwardHandoff) pipe(ctx context.Context, child net.Conn) {
 	defer func() { _ = child.Close() }()
-	// This is not the agent's governed egress: it dials only the one host-loopback address
-	// the caller named (the run's own MCP bridge), in the host namespace. netguard denies
-	// loopback by design, which is correct for agent egress and wrong here, so the forward's
-	// single fixed-target dial is a raw one on purpose.
+	// A raw dial, because netguard denies loopback and this target is the run's
+	// own MCP bridge.
 	var d net.Dialer //nolint:forbidigo // dials only the run's own loopback bridge, not governed agent egress
 	host, err := d.DialContext(ctx, "tcp", h.hostAddr)
 	if err != nil {
@@ -175,16 +150,15 @@ func (h *forwardHandoff) pipe(ctx context.Context, child net.Conn) {
 	go copyOneWay(host, child)
 	go copyOneWay(child, host)
 
-	// Return when either direction ends or the forwarder is released; the deferred closes
-	// then unblock the other copy, which finishes into the buffered channel without leaking.
+	// The deferred closes unblock the other copy, which sends into the buffered
+	// channel and exits.
 	select {
 	case <-ctx.Done():
 	case <-done:
 	}
 }
 
-// release tears the forwarder and its accept loop down. It is idempotent, and unblocks a
-// serve still waiting on a launcher that never sent.
+// release is idempotent, and unblocks a serve still waiting on the launcher.
 func (h *forwardHandoff) release() {
 	h.once.Do(func() {
 		h.owner.dropChild(h)
@@ -202,13 +176,8 @@ func (h *forwardHandoff) release() {
 	})
 }
 
-// serveForwardFromNetns is the launcher's half of the inbound forward, run inside the
-// child's fresh network namespace after the clone and before the command. It binds the
-// fixed forward port on the namespace's loopback and hands that listening socket out to the
-// sandbox, which accepts on it from the host namespace and pipes each connection to the one
-// host bridge address. A fixed port is safe because this namespace is private to the one
-// child and holds nothing else; using a fixed one lets the child-facing address be known
-// before launch so it can be baked into the command's configuration.
+// serveForwardFromNetns runs in the child's namespace before the command, binds
+// [netnsBridgePort] on its loopback and sends the listener to the sandbox.
 func serveForwardFromNetns() error {
 	handoff, err := forwardHandoffFile()
 	if err != nil {
@@ -216,8 +185,8 @@ func serveForwardFromNetns() error {
 	}
 	defer func() { _ = handoff.Close() }()
 
-	// Idempotent: the egress leg brings loopback up too, and for an external agent both run,
-	// but the forward must not depend on the ordering, so it ensures loopback is up itself.
+	// The egress leg also brings loopback up; doing it here too removes the
+	// ordering dependency.
 	if err := bringLoopbackUp(); err != nil {
 		return err
 	}
@@ -226,9 +195,8 @@ func serveForwardFromNetns() error {
 	if err != nil {
 		return fmt.Errorf("forward: listen in network namespace: %w", err)
 	}
-	// Closed here after its descriptor has been sent: the descriptor in flight over the
-	// socketpair holds the socket open, so the sandbox's copy stays valid, and the command
-	// does not inherit a listening socket it has no business holding.
+	// The sent descriptor keeps the socket open, so closing here only keeps the
+	// command from inheriting a listener.
 	defer func() { _ = ln.Close() }()
 
 	tcp, ok := ln.(*net.TCPListener)
@@ -247,8 +215,7 @@ func serveForwardFromNetns() error {
 	return nil
 }
 
-// forwardHandoffFile recovers the inherited forward-handoff descriptor the sandbox passed
-// to this launcher, named by number in the environment.
+// forwardHandoffFile opens the inherited descriptor named in envForwardFD.
 func forwardHandoffFile() (*os.File, error) {
 	raw := os.Getenv(envForwardFD)
 	fd, err := strconv.Atoi(raw)

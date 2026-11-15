@@ -15,7 +15,7 @@ import (
 )
 
 // maxGrepMatches caps grep output so a broad pattern cannot flood the model's
-// context; the result notes when it was truncated.
+// context.
 const maxGrepMatches = 500
 
 // --- read -------------------------------------------------------------------
@@ -239,11 +239,9 @@ func (t grepTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		if err != nil || isBinary(b) {
 			continue
 		}
-		// Scan line by line rather than splitting the whole file into a []string:
-		// the scanner reuses one buffer, so only matching lines allocate, and the
-		// per-file match loop can stop the moment the cap is hit. The buffer ceiling
-		// is the file size, so a single long line (minified JS, JSONL) never trips
-		// bufio.ErrTooLong the way the default 64KB token limit would.
+		// The scanner reuses one buffer, so only matching lines allocate. Its
+		// ceiling is the file size, so a long line (minified JS, JSONL) cannot hit
+		// bufio.ErrTooLong at the default 64KB limit.
 		sc := bufio.NewScanner(bytes.NewReader(b))
 		sc.Buffer(make([]byte, 0, 64*1024), len(b)+1)
 		for i := 1; sc.Scan(); i++ {
@@ -269,8 +267,7 @@ func (t grepTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	return out, nil
 }
 
-// isBinary reports whether b looks like a binary file (a NUL byte in the first
-// chunk), so grep skips it rather than emitting garbage.
+// isBinary reports a NUL byte in the first chunk, so grep skips binary files.
 func isBinary(b []byte) bool {
 	n := len(b)
 	if n > 8000 {

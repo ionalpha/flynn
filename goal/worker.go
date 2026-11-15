@@ -15,83 +15,54 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// StepQueue is the job queue goal steps are dispatched on, so a step worker claims
-// only goal steps and not unrelated jobs.
+// StepQueue holds only goal steps, so a step worker claims nothing else.
 const StepQueue = "goal-steps"
 
-// StepSubject is the bus subject a worker publishes on when a step completes, so
-// the reconciler is woken to re-evaluate promptly (the resync is the fallback).
+// StepSubject wakes the reconciler on step completion; the resync is the fallback.
 const StepSubject = "goal.step.done"
 
-// DefaultLease is how long a claimed step is leased before, if the worker has not
-// completed or renewed it, the queue treats the worker as crashed and re-leases
-// the step to another worker. That re-lease is the crash-recovery path.
+// DefaultLease is how long a silent worker holds a step before it is re-leased, which is
+// the crash-recovery path.
 const DefaultLease = 5 * time.Minute
 
-// DefaultRetryBase and DefaultRetryCeiling bound the exponential backoff a worker
-// applies when a step fails: the first retry waits DefaultRetryBase, each later
-// retry doubles, capped at DefaultRetryCeiling. Backing off matters because a step
-// calls the model and external tools; retrying a persistently failing step with no
-// delay would burn the attempt budget in microseconds and hammer those services.
+// DefaultRetryBase doubles per retry up to DefaultRetryCeiling, because retrying with no
+// delay would spend the attempt budget in microseconds against the model and tools.
 const (
 	DefaultRetryBase    = 2 * time.Second
 	DefaultRetryCeiling = 5 * time.Minute
 )
 
-// StepExecutor performs one step of work toward a goal: it is where the model is
-// called, tools are run, and sub-goals are planned. It is handed the goal resource
-// (whose status carries the last Checkpoint) and returns a new checkpoint to
-// persist. It MUST be safe to re-run after a crash: a re-leased step calls Execute
-// again with the persisted checkpoint, so the executor resumes from it rather than
-// repeating finished work. The real executor is wired in with the conversation
-// loop; the foundation here is provider-agnostic.
+// StepExecutor runs one step and returns the checkpoint to persist. It must be safe to
+// re-run, because a re-leased step calls Execute again with the last checkpoint.
 type StepExecutor interface {
 	Execute(ctx context.Context, goal resource.Resource) (checkpoint json.RawMessage, err error)
 }
 
-// Planner expands a goal's objective into the ledger of work that objective
-// implies, each item carrying its own declared way to verify it. It runs once,
-// before any building, and it is a genuinely different prompt from a build step
-// rather than the build prompt with a plan instruction attached: the whole first
-// context window goes on working out what the objective actually requires, which is
-// not something a step also trying to make progress will do well.
-//
-// A planner that returns no items is not an error here. It is recorded as planned
-// with an empty ledger, and the reconciler stalls the goal, so "the objective could
-// not be expanded" surfaces as a settled goal with a reason rather than a retry
-// loop.
+// Planner runs once before building, as its own prompt, because a step also trying to
+// make progress plans badly. No items is recorded as planned and the goal stalls with a
+// reason, instead of retrying.
 type Planner interface {
 	Plan(ctx context.Context, goal resource.Resource) ([]LedgerItem, error)
 }
 
-// ErrWaiting is returned by a StepExecutor whose step made no progress because it
-// is waiting on external state, such as a fan-out whose children are still
-// running. The worker completes the job without persisting a checkpoint and stamps
-// Status.WaitingSince, and the reconciler then parks the goal: no step is counted
-// against the budget and no re-check job is dispatched until a child settles (the
-// wake) or the recheck fallback fires. Without this, a wait is a full durable step
-// per poll cycle, and a long enough wait exhausts the step budget and false-stalls
-// the goal.
+// ErrWaiting parks the goal without counting a step, because otherwise a long wait on
+// children spends the step budget and false-stalls it.
 var ErrWaiting = errors.New("goal: step waiting on external state")
 
-// Worker claims dispatched goal steps and runs them through a StepExecutor. It is
-// the execution half of the goal reconciler's dispatch-and-observe loop: the
-// reconciler decides a step is needed and enqueues it; the worker performs it,
-// persists progress, and signals completion so the reconciler observes the result.
+// Worker runs the steps the [Reconciler] dispatches and signals their completion.
 type Worker struct {
 	store     resource.Store
 	jobs      jobs.Queue
 	exec      StepExecutor
-	planner   Planner // optional; nil means a plan job is refused rather than guessed at
+	planner   Planner // nil refuses a plan job
 	verifier  ItemVerifier
-	evidence  Evidence // optional; nil means a verify job is refused rather than faked
+	evidence  Evidence // nil refuses a verify job
 	clk       clock.Timing
-	bus       bus.Bus // optional; nil disables completion signals
+	bus       bus.Bus
 	lease     time.Duration
 	retryBase time.Duration
 	retryCeil time.Duration
-	// checkDir is the workspace a check runs in, searched for a file standing in for the
-	// check's command (see ShadowedCommands). Empty disables the search.
+	// checkDir empty disables the [ShadowedCommands] search.
 	checkDir string
 }
 
@@ -101,16 +72,11 @@ type WorkerOption func(*Worker)
 // WithBus sets the bus a worker publishes step-completion signals on.
 func WithBus(b bus.Bus) WorkerOption { return func(w *Worker) { w.bus = b } }
 
-// WithPlanner sets the planner that runs a goal's planning step. It pairs with the
-// reconciler's WithPlanning, which is what makes a goal plan before it builds.
+// WithPlanner pairs with the reconciler's [WithPlanning].
 func WithPlanner(p Planner) WorkerOption { return func(w *Worker) { w.planner = p } }
 
-// WithItemVerification sets the verifier that runs a ledger item's declared check and the
-// record its verdict is written to. They are one option because they are one capability:
-// a verifier with nowhere to record produces evidence no gate will ever see, and a record
-// with no verifier is a producer that never produces. It pairs with the reconciler's
-// WithLedgerGate, which is what makes the run alternate build and verify and refuses to
-// converge on an unsettled ledger.
+// WithItemVerification takes both halves in one option, because either alone produces no
+// evidence a gate sees. It pairs with the reconciler's [WithLedgerGate].
 func WithItemVerification(v ItemVerifier, e Evidence) WorkerOption {
 	return func(w *Worker) {
 		w.verifier = v
@@ -118,9 +84,9 @@ func WithItemVerification(v ItemVerifier, e Evidence) WorkerOption {
 	}
 }
 
-// WithCheckDir names the workspace a ledger check runs in. A check whose command is
-// answered by a file in it, such as a test.bat beside a check that runs `test`, is refused
-// without being run: the file is the agent's, and a check it can write measures nothing.
+// WithCheckDir names the check workspace. A check whose command a file there answers
+// (test.bat for `test`) is refused unrun, because a check the agent can write measures
+// nothing.
 func WithCheckDir(dir string) WorkerOption { return func(w *Worker) { w.checkDir = dir } }
 
 // WithLease overrides the step lease duration.
@@ -144,9 +110,7 @@ func WithBackoff(base, ceiling time.Duration) WorkerOption {
 	}
 }
 
-// NewWorker builds a goal-step worker over the store, queue and executor. The
-// clock is used to schedule retry backoff and must be the same clock the queue
-// uses, so a failed step's RunAt is comparable to the queue's claim time.
+// NewWorker needs the queue's clock, so a failed step's RunAt compares with claim time.
 func NewWorker(store resource.Store, q jobs.Queue, clk clock.Timing, exec StepExecutor, opts ...WorkerOption) *Worker {
 	w := &Worker{
 		store:     store,
@@ -163,9 +127,7 @@ func NewWorker(store resource.Store, q jobs.Queue, clk clock.Timing, exec StepEx
 	return w
 }
 
-// ProcessOnce claims at most one ready step and runs it, reporting whether a step
-// was processed. It is the unit of work a Run loop repeats and the entry point tests
-// drive deterministically.
+// ProcessOnce runs at most one step and reports whether it did.
 func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	claimed, err := w.jobs.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(w.lease)})
 	if err != nil {
@@ -177,20 +139,15 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	return true, w.runStep(ctx, claimed[0])
 }
 
-// Run processes steps until ctx is cancelled. When the queue implements
-// jobs.Waker, an idle worker wakes on the enqueue signal, so dispatch-to-claim
-// latency is signal delivery, not the poll interval. The poll remains the
-// always-correct floor: it is the only wake-up for scheduled RunAt arrivals,
-// expired leases, and enqueues from processes the queue cannot observe.
+// Run wakes on [jobs.Waker] when the queue has it. The poll stays, because it is the only
+// wake for scheduled RunAt, expired leases and enqueues from other processes.
 func (w *Worker) Run(ctx context.Context, poll time.Duration) {
-	var ready <-chan struct{} // nil (blocks forever in select) unless the queue signals
+	var ready <-chan struct{} // nil blocks forever
 	if wk, ok := w.jobs.(jobs.Waker); ok {
 		ready = wk.Ready()
 	}
-	// One timer for the whole loop, re-armed each idle wait, instead of a fresh
-	// timer (and channel) per iteration from clk.After. Start it stopped; each idle
-	// branch Resets it, and the ctx/ready branches Stop-and-drain so the next Reset
-	// starts clean.
+	// One timer, started stopped; branches that skip it stop and drain it so the next
+	// Reset starts clean.
 	timer := w.clk.NewTimer(poll)
 	defer timer.Stop()
 	if !timer.Stop() {
@@ -219,20 +176,18 @@ func (w *Worker) Run(ctx context.Context, poll time.Duration) {
 	}
 }
 
-// runStep executes one claimed step: load the goal, run the executor, persist the
-// returned checkpoint (best effort), then complete the job and signal. A goal that
-// has vanished or is terminating completes the job without work, so a deleting
-// goal is not kept alive by a pending step.
+// runStep completes a vanished or terminating goal's job unrun, so a pending step does
+// not keep a deleting goal alive.
 func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	r, err := w.store.GetByID(ctx, string(job.Payload))
 	if errors.Is(err, resource.ErrNotFound) {
-		return w.jobs.Complete(ctx, job.ID) // goal gone; nothing to do
+		return w.jobs.Complete(ctx, job.ID)
 	}
 	if err != nil {
 		return w.fail(ctx, job, err)
 	}
 	if r.DeletionTimestamp != nil {
-		return w.jobs.Complete(ctx, job.ID) // terminating; stop working on it
+		return w.jobs.Complete(ctx, job.ID)
 	}
 	switch job.Kind {
 	case PlanJobKind:
@@ -254,28 +209,20 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 		return w.fail(ctx, job, err)
 	}
 	if len(checkpoint) > 0 {
-		w.persistCheckpoint(ctx, r, checkpoint) // best effort; never blocks completion
+		w.persistCheckpoint(ctx, r, checkpoint) // best effort
 	}
 	if err := w.jobs.Complete(ctx, job.ID); err != nil {
-		return err // crashed before completing: the lease lapses and the step re-runs
+		return err // the lease lapses and the step re-runs
 	}
 	w.signal(ctx, r)
 	return nil
 }
 
-// runPlan executes a goal's planning step: expand the objective into a ledger and
-// record it on the goal before any building is dispatched.
-//
-// The ledger write is not best-effort the way a checkpoint is. A checkpoint that
-// fails to land costs one repeated turn; a ledger that fails to land leaves the goal
-// unplanned, and the reconciler would dispatch planning again on the next pass,
-// forever. So a failed write fails the job instead, which puts it on the retry
-// ladder and, if it keeps failing, stalls the goal with the cause attached.
+// runPlan fails the job on a failed ledger write, because an unplanned goal is
+// re-planned forever; failing puts it on the retry ladder toward a stall.
 func (w *Worker) runPlan(ctx context.Context, job jobs.Job, r resource.Resource) error {
 	if w.planner == nil {
-		// A goal was gated on planning by a reconciler wired to a worker that cannot
-		// plan. No number of retries fixes a missing port, and the goal would
-		// otherwise sit unplanned and undispatched with nothing saying why.
+		// Terminal, because no retry supplies a missing planner.
 		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_no_planner", errors.New("goal: plan step dispatched to a worker with no planner")))
 	}
 	items, err := w.planner.Plan(ctx, r)
@@ -286,30 +233,18 @@ func (w *Worker) runPlan(ctx context.Context, job jobs.Job, r resource.Resource)
 		return w.fail(ctx, job, err)
 	}
 	if err := w.jobs.Complete(ctx, job.ID); err != nil {
-		return err // crashed before completing: the lease lapses and planning re-runs
+		return err // the lease lapses and planning re-runs
 	}
 	w.signal(ctx, r)
 	return nil
 }
 
-// runVerify executes a goal's item-verification step: run the current ledger item's
-// declared check and write the verdict onto the run's durable record.
-//
-// It stops there on purpose. Nothing here marks the item proven; the reconciler does
-// that, by folding the record back through the evidence gate. So the producer has no path
-// to a completion it did not earn, a crash between the recording and the proving costs
-// nothing (the event is durable and the next reconcile settles it), and the item's state
-// stays a projection of the spine rather than a second opinion about it.
-//
-// Like the ledger write, the evidence write is not best-effort. A verdict that fails to
-// land is a check that ran for nothing: the item stays unproven with no record of why, and
-// the run repeats the work. So a failed write fails the job, which puts it on the retry
-// ladder and eventually stalls the goal with the cause attached.
+// runVerify records the verdict and never marks the item proven, so the producer has no
+// path around the evidence gate. A failed evidence write fails the job, because a lost
+// verdict is a check run for nothing.
 func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resource) error {
 	if w.verifier == nil || w.evidence == nil {
-		// A goal was gated on its ledger by a reconciler wired to a worker that cannot
-		// produce evidence. Every item would stay unproven and the goal would refuse to
-		// converge forever, with nothing on the record saying why, so this fails loudly.
+		// Terminal, because otherwise the goal never converges and nothing says why.
 		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_no_verifier",
 			errors.New("goal: verify step dispatched to a worker with no item verifier")))
 	}
@@ -323,9 +258,7 @@ func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resourc
 	}
 	item, ok := status.CurrentItem(spec.Ledger)
 	if !ok {
-		// Every item is already proven, or the goal carries no ledger. The verification
-		// has nothing to run against; that is not a failure, it is a job that arrived
-		// after the thing it was for was settled.
+		// The ledger settled before this job ran.
 		return w.jobs.Complete(ctx, job.ID)
 	}
 
@@ -339,15 +272,13 @@ func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resourc
 	w.markItemFeedback(ctx, r, verdict)
 
 	if err := w.jobs.Complete(ctx, job.ID); err != nil {
-		return err // crashed before completing: the lease lapses and the check re-runs
+		return err // the lease lapses and the check re-runs
 	}
 	w.signal(ctx, r)
 	return nil
 }
 
-// verifyItem runs the item's check and classifies how it ended. A check whose command a
-// workspace file stands in for is not run at all. One that ran and found its program
-// missing is reported as not run, so the host's lack of a program is never counted as the
+// verifyItem reports a missing program as not run, so the host's gap never counts as the
 // work failing.
 func (w *Worker) verifyItem(ctx context.Context, r resource.Resource, item LedgerItem) (ItemVerdict, error) {
 	if shadowed := ShadowedCommands(item.Verify, w.checkDir); len(shadowed) > 0 {
@@ -362,11 +293,8 @@ func (w *Worker) verifyItem(ctx context.Context, r resource.Resource, item Ledge
 	return classifyUnrunnable(item.Verify, verdict), nil
 }
 
-// markItemFeedback records what a check that did not pass reported, so the next build step
-// is handed its own declared check's output instead of being left to work out why the item
-// is still open. A passing verdict clears it, so stale feedback cannot outlive the failure
-// it described. Best effort like the checkpoint: losing it costs the agent a hint, never
-// correctness, and the verdict itself is already durable on the spine.
+// markItemFeedback hands the next build step its check's output; a pass clears it. It is
+// best effort, because the verdict is already durable on the spine.
 func (w *Worker) markItemFeedback(ctx context.Context, r resource.Resource, v ItemVerdict) {
 	_, _ = resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
 		status, err := DecodeStatus(*fresh)
@@ -388,14 +316,8 @@ func (w *Worker) markItemFeedback(ctx context.Context, r resource.Resource, v It
 	})
 }
 
-// recordPlan writes the planned items onto the goal's spec and marks the goal
-// planned, against a fresh read under the shared conflict-retry policy. The append
-// rule is enforced here at the point of the write (PlanExtension): the planner's items
-// are appended to whatever ledger the goal already carries, so re-running a planning
-// step after a crash adds to the record rather than replacing it. A re-run planner that
-// re-proposes an item verbatim is a no-op rather than a failure, so a crash between the
-// ledger write and the job completing resumes cleanly instead of stalling the goal; an
-// item the planner rewords into new content is still appended as the new item it is.
+// recordPlan appends through [PlanExtension] on a fresh read, so a re-run after a crash
+// adds to the ledger and a verbatim re-proposal is a no-op.
 func (w *Worker) recordPlan(ctx context.Context, r resource.Resource, items []LedgerItem) error {
 	_, err := resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
 		spec, err := DecodeSpec(*fresh)
@@ -431,16 +353,9 @@ func (w *Worker) recordPlan(ctx context.Context, r resource.Resource, items []Le
 	return err
 }
 
-// persistCheckpoint records the step's progress on the goal's status so the next
-// step resumes from it. A version conflict does NOT mean the checkpoint may be
-// dropped: the reconciler dispatches the job before it persists the in-flight
-// status, so a worker on a tight poll can read the goal one version behind and
-// conflict here even though nothing about the conversation moved. Dropping the
-// write would lose the whole turn this step just took (the next step would rerun
-// it), so the store's shared conflict-retry policy reapplies it against a fresh
-// read. Only a goal that vanished or a corrupt status ends the attempt early;
-// those leave the previous checkpoint in place, which the executor is documented
-// to tolerate (crash-resume path).
+// persistCheckpoint retries a conflict on a fresh read, because the reconciler writes
+// in-flight status after dispatch and dropping the write loses the turn. A vanished goal
+// or corrupt status leaves the previous checkpoint, which the executor tolerates.
 func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, checkpoint json.RawMessage) {
 	_, _ = resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
 		status, err := DecodeStatus(*fresh)
@@ -457,15 +372,8 @@ func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, che
 	})
 }
 
-// markWaiting stamps the goal's status with when its step reported it is waiting,
-// so the reconciler parks the goal instead of counting the step and dispatching
-// another. Like persistCheckpoint it applies the mark against a fresh read under
-// the shared conflict-retry policy rather than blind-writing the claim-time record:
-// the reconciler records the step's in-flight reservation on its own version around
-// the same time (the job is enqueued before that write lands), so a blind Put here
-// would lose that race, drop the wait mark, and let the reconciler count the wait as
-// a spent step, which is the false-stall this mark exists to prevent. Only the
-// waiting field is written; every reconciler-owned field is carried over from fresh.
+// markWaiting writes only WaitingSince on a fresh read, because a blind Put would race
+// the reconciler's in-flight write, lose the mark and count the wait as a step.
 func (w *Worker) markWaiting(ctx context.Context, r resource.Resource) {
 	now := w.clk.Now()
 	_, _ = resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
@@ -483,12 +391,8 @@ func (w *Worker) markWaiting(ctx context.Context, r resource.Resource) {
 	})
 }
 
-// fail records a failed attempt. A transient cause is retried after an exponential
-// backoff (the worker owns that policy, since the queue does not back off on its
-// own); any other class (terminal, forbidden, budget, cancelled) is not retryable,
-// so the step fails permanently at once rather than burning its whole attempt
-// budget on a call that cannot succeed. That is what makes a down model or a bad
-// API key surface as a stalled goal in seconds instead of after every retry.
+// fail backs off only a transient cause, because the queue does not. Any other class
+// fails at once, so a bad API key stalls the goal in seconds.
 func (w *Worker) fail(ctx context.Context, job jobs.Job, cause error) error {
 	if fault.Classify(cause) != fault.Transient {
 		return w.jobs.Fail(ctx, job.ID, cause.Error(), -1)

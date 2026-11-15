@@ -9,18 +9,13 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// StateStream is the spine stream every state mutation is recorded on. A single
-// ordered stream for sessions, skills, and memory means a Replay folds one log
-// to reconstruct the whole provider. It is exported so a host can observe or
-// audit the state stream directly.
+// StateStream is the one spine stream every state mutation is recorded on, so
+// [Replay] folds one log to rebuild the whole provider.
 const StateStream = "state"
 
-// State event types: the vocabulary of the state stream. Each event is the
-// post-image of the affected record(s): the Stamper computes the canonical record
-// (IDs, Seq, HLC, version, timestamps all assigned) and it is written as the event
-// payload, so replaying the events in Seq order reproduces identical state without
-// re-running any clock or RNG. Exported so durable backends project the same
-// vocabulary rather than redeclaring the strings.
+// State event types. Each payload is the post-image the [Stamper] computed,
+// with every ID, HLC and timestamp assigned, so replay in Seq order
+// reproduces identical state without re-running a clock or RNG.
 const (
 	EvSessionCreated = "session.created"
 	EvTurnAppended   = "session.turn_appended"
@@ -44,14 +39,10 @@ const (
 	keyPromo   = "promotion"
 )
 
-// core is the in-memory read model behind the command path. Every mutation
-// appends an event to the log and then projects it onto these maps under mu, so
-// the log and the projection never diverge; reads take mu and read the maps.
-//
-// The invariant that keeps full event-sourcing reachable: no state mutation
-// bypasses the log. apply is the only function that mutates the maps, and it is
-// reached only from record (the live write path) and Replay (reconstruction) -
-// there are no raw map writes in the store methods.
+// core is the in-memory read model. Every mutation appends to the log and then
+// projects onto these maps under mu, so the two never diverge. No mutation
+// bypasses the log: apart from restoring a snapshot of it, only projectRecords
+// writes the maps, reached from record and from Replay.
 type core struct {
 	st  *Stamper
 	log spine.Log
@@ -67,9 +58,8 @@ type core struct {
 	memUsage   map[string]MemoryUsage     // usageKey(memoryID, instanceID) -> usage row
 	memPromo   map[string]MemoryPromotion // memoryID -> the current push decision
 
-	// snapCodec seals a snapshot before it is saved and verifies it before restore;
-	// snapEvery/snapPending drive the automatic snapshot cadence. They are set from the
-	// provider's options after the core is built, and read only under mu.
+	// snapCodec seals and verifies snapshots; snapEvery and snapPending drive
+	// the automatic cadence. Set after construction, read under mu.
 	snapCodec   spine.SnapshotCodec
 	snapEvery   int
 	snapPending int
@@ -88,16 +78,12 @@ func newCore(st *Stamper, log spine.Log) *core {
 	}
 }
 
-// usageKey is the projection key for a usage row: one row per item per instance.
+// usageKey keys one usage row per item per instance.
 func usageKey(memoryID, instanceID string) string { return memoryID + "\x00" + instanceID }
 
-// record appends a stamped event and projects it. The caller holds mu and has
-// already produced the event via the Stamper. Append-then-project is the in-memory
-// analogue of the one-transaction append+project the durable provider performs;
-// here mu is the boundary that makes the pair atomic. It projects from the raw
-// payload the Stamper already serialized (one Unmarshal of the same bytes the
-// event carries), so the live projection is identical to a replayed one without
-// the event round-trip apply pays.
+// record appends a stamped event and projects it; holding mu makes the pair
+// atomic, as one transaction does in the durable provider. It projects from
+// the raw payload the event carries, so it matches a replayed projection.
 func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 	e, err := c.log.Append(ctx, in)
 	if err != nil {
@@ -115,9 +101,8 @@ func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 	return nil
 }
 
-// snapshot checkpoints the current projection onto the log. It builds the payload under
-// mu, then seals and saves outside it so the store lock is not held across the signing
-// and log write.
+// snapshot builds the payload under mu, then seals and saves outside it so the
+// lock is not held across signing and the log write.
 func (c *core) snapshot(ctx context.Context) error {
 	c.mu.Lock()
 	snap := c.snapshotLocked()
@@ -125,9 +110,7 @@ func (c *core) snapshot(ctx context.Context) error {
 	return c.saveSnapshot(ctx, snap)
 }
 
-// saveSnapshot seals a snapshot with the configured codec (if any) and writes it to the
-// log on the state stream. It touches no core state, so it is safe to call with or
-// without mu held.
+// saveSnapshot touches no core state, so mu may or may not be held.
 func (c *core) saveSnapshot(ctx context.Context, snap Snapshot) error {
 	payload, err := MarshalSnapshot(snap)
 	if err != nil {
@@ -142,10 +125,9 @@ func (c *core) saveSnapshot(ctx context.Context, snap Snapshot) error {
 	return c.log.SaveSnapshot(ctx, s)
 }
 
-// maybeSnapshotLocked counts one mutation toward the automatic cadence and checkpoints
-// when it is reached. The caller holds mu; the snapshot is built and saved under it,
-// which keeps the projection and its checkpoint consistent. It is best effort: a snapshot
-// failure never fails the mutation that triggered it.
+// maybeSnapshotLocked counts a mutation toward the cadence and checkpoints
+// under mu, so projection and checkpoint agree. A snapshot failure never fails
+// the mutation.
 func (c *core) maybeSnapshotLocked(ctx context.Context) {
 	if c.snapEvery <= 0 {
 		return
@@ -158,28 +140,23 @@ func (c *core) maybeSnapshotLocked(ctx context.Context) {
 	_ = c.saveSnapshot(ctx, c.snapshotLocked())
 }
 
-// payloadRecords is the decoded form of a state event payload: each key that a
-// given event type carries is non-nil.
+// payloadRecords is a decoded state payload; each key its event type carries
+// is non-nil.
 type payloadRecords struct {
 	Session *Session    `json:"session"`
 	Turn    *Turn       `json:"turn"`
 	Skill   *Skill      `json:"skill"`
 	Item    *MemoryItem `json:"item"`
-	// Usage is a list because one push event records the whole digest: the set
-	// went in front of the reader together, so it is counted together or not at
-	// all. A single use carries a one-element list through the same path rather
-	// than a second payload shape.
+	// Usage is a list because a push records a whole digest atomically; a use
+	// carries one element.
 	Usage []MemoryUsage `json:"usage"`
-	// Promotion is singular where Usage is a list: a reviewer decides about one
-	// item at a time, and a bulk approval is that decision repeated, not a
-	// different kind of event.
+	// Promotion is singular: a bulk approval is one decision repeated.
 	Promotion *MemoryPromotion `json:"promotion"`
 }
 
-// projectRecords projects one event's post-image record(s) onto the read model.
-// It is the single source of the projection logic, shared by the live write path
-// (record) and reconstruction (apply, via Replay), so a rebuilt-from-log provider
-// is byte-for-byte identical to a live one. Callers hold mu.
+// projectRecords is the only projection logic, shared by record and Replay,
+// so a provider rebuilt from the log is identical to a live one. Callers hold
+// mu.
 func (c *core) projectRecords(evType string, w payloadRecords) error {
 	missing := func(key string) error {
 		return fmt.Errorf("state: event %q payload is missing %q", evType, key)
@@ -243,9 +220,7 @@ func (c *core) projectRecords(evType string, w payloadRecords) error {
 	return nil
 }
 
-// apply projects one event onto the read model during Replay; the live write
-// path (record) projects the same post-images from the raw payload instead.
-// Callers hold mu.
+// apply projects one event during Replay. Callers hold mu.
 func (c *core) apply(e spine.Event) error {
 	var w payloadRecords
 	if s, ok := e.Payload[keySession]; ok {
@@ -293,7 +268,6 @@ func (c *core) apply(e spine.Event) error {
 	return c.projectRecords(e.Type, w)
 }
 
-// decodeAs reconstructs one typed record from its decoded payload value.
 func decodeAs[T any](v any) (T, error) {
 	var out T
 	b, err := json.Marshal(v)
@@ -304,19 +278,15 @@ func decodeAs[T any](v any) (T, error) {
 	return out, err
 }
 
-// Replay reconstructs an in-memory Provider purely by folding a log's "state"
-// stream: the running proof that state is a projection of the spine. The
-// returned Provider is backed by the same log, with its projection caught up to
-// the last recorded event, so subsequent writes continue the stream.
+// Replay rebuilds an in-memory Provider by folding the log's state stream.
+// The Provider writes to the same log, continuing the stream.
 func Replay(ctx context.Context, log spine.Log, opts ...Option) (Provider, error) {
 	p := NewMemory(append(opts, WithEventLog(log))...).(*memProvider)
 	p.core.mu.Lock()
 	defer p.core.mu.Unlock()
 
-	// Resume from the latest verified snapshot when one exists, folding only the events
-	// after it. A codec makes restore fail closed: a snapshot it cannot open (tampered,
-	// unsigned, unknown key) or one that does not decode is skipped and the stream folds
-	// from the start - a snapshot is a cache, so this is only slower, never wrong.
+	// Resume from the latest verified snapshot. One the codec cannot open, or
+	// that does not decode, is skipped and the stream folds from the start.
 	snap, found, err := log.LatestSnapshot(ctx, StateStream, 0)
 	if err != nil {
 		return nil, err
@@ -348,38 +318,37 @@ func Replay(ctx context.Context, log spine.Log, opts ...Option) (Provider, error
 	return p, nil
 }
 
-// DecodeSession extracts the Session post-image from a state event payload.
-// Durable backends use it to project the same records the in-memory core does.
+// DecodeSession extracts the Session post-image from a state payload, so a
+// durable backend projects what the in-memory core does.
 func DecodeSession(payload map[string]any) (Session, error) {
 	var s Session
 	err := decodeRecord(payload, keySession, &s)
 	return s, err
 }
 
-// DecodeTurn extracts the Turn post-image from a state event payload.
+// DecodeTurn extracts the Turn post-image.
 func DecodeTurn(payload map[string]any) (Turn, error) {
 	var t Turn
 	err := decodeRecord(payload, keyTurn, &t)
 	return t, err
 }
 
-// DecodeSkill extracts the Skill post-image from a state event payload.
+// DecodeSkill extracts the Skill post-image.
 func DecodeSkill(payload map[string]any) (Skill, error) {
 	var sk Skill
 	err := decodeRecord(payload, keySkill, &sk)
 	return sk, err
 }
 
-// DecodeMemoryItem extracts the MemoryItem post-image from a state event payload.
+// DecodeMemoryItem extracts the MemoryItem post-image.
 func DecodeMemoryItem(payload map[string]any) (MemoryItem, error) {
 	var it MemoryItem
 	err := decodeRecord(payload, keyItem, &it)
 	return it, err
 }
 
-// DecodeMemoryUsage extracts the usage post-images from a state event payload.
-// It is a list because a push event records a whole digest at once; a use event
-// carries exactly one.
+// DecodeMemoryUsage extracts the usage rows: a whole digest for a push, one
+// row for a use.
 func DecodeMemoryUsage(payload map[string]any) ([]MemoryUsage, error) {
 	var u []MemoryUsage
 	if err := decodeRecord(payload, keyUsage, &u); err != nil {
@@ -391,29 +360,22 @@ func DecodeMemoryUsage(payload map[string]any) ([]MemoryUsage, error) {
 	return u, nil
 }
 
-// DecodeMemoryPromotion extracts the promotion post-image from a state event
-// payload.
+// DecodeMemoryPromotion extracts the promotion post-image.
 func DecodeMemoryPromotion(payload map[string]any) (MemoryPromotion, error) {
 	var p MemoryPromotion
 	err := decodeRecord(payload, keyPromo, &p)
 	return p, err
 }
 
-// encodePayload serialises an event's post-image record(s) to the raw JSON
-// payload with a single Marshal. The spine stores these bytes verbatim
-// (spine.AppendInput.RawPayload), so a write serialises its records exactly once
-// instead of Marshal-Unmarshal-Marshal through a generic tree.
+// encodePayload marshals the records once; the spine stores the bytes
+// verbatim as RawPayload.
 func encodePayload(records map[string]any) (json.RawMessage, error) {
 	return json.Marshal(records)
 }
 
-// decodeRecord reconstructs a typed record from the payload value at key.
 func decodeRecord(payload map[string]any, key string, dst any) error {
-	// An absent key, or one explicitly set to null, marshals to "null", which
-	// json.Unmarshal accepts as a no-op and leaves dst zeroed. Reject it instead:
-	// the in-memory core treats a missing record as an error, and a durable
-	// backend projecting a zero-valued record from the same event would diverge
-	// from it.
+	// A missing or null key would decode to a zero record; the in-memory core
+	// rejects it, so a durable backend must too or the two diverge.
 	raw, ok := payload[key]
 	if !ok || raw == nil {
 		return fmt.Errorf("state: event payload is missing %q", key)

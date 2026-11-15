@@ -17,14 +17,12 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// logHasher is the RFC 6962 hashing the Rekor Merkle tree is built with. It is the
-// same hasher flynn's own recording log uses, so the proof arithmetic here is the
-// arithmetic the project already relies on and already tests.
+// logHasher is the RFC 6962 hashing Rekor's Merkle tree uses, the same hasher flynn's
+// recording log uses and tests.
 var logHasher = rfc6962.DefaultHasher
 
-// loggedEntry is the record Rekor stored, as it stored it. The verifier reads it to
-// answer a question the inclusion proof alone cannot: the proof shows that *some*
-// entry is in the log, and this shows that the entry is *ours*.
+// loggedEntry is the record Rekor stored, as stored. The inclusion proof shows that
+// some entry is in the log; this shows the entry is ours.
 type loggedEntry struct {
 	Spec struct {
 		PayloadHash struct {
@@ -38,19 +36,15 @@ type loggedEntry struct {
 	} `json:"spec"`
 }
 
-// verifyInclusion proves that this exact envelope, signed by this exact certificate,
-// is recorded in the transparency log this binary pins.
-//
-// The chain of reasoning, and it only holds if every link does: the logged entry
-// commits to our payload digest, our signature, and our certificate; the entry hashes
-// to a leaf; the leaf's inclusion proof reconstructs a root; and the log operator
-// signed a checkpoint over that same root. An attacker who steals a Fulcio identity
-// still has to get the forgery published in a log that the whole world monitors,
-// which is the difference between a secret compromise and a loud one.
+// verifyInclusion proves that this envelope, signed by this certificate, is recorded
+// in the transparency log this binary pins. Every link must hold: the logged entry
+// commits to our payload digest, signature and certificate; the entry hashes to a
+// leaf; the leaf's proof reconstructs a root; and the log operator signed a checkpoint
+// over that root. An attacker with a stolen Fulcio identity must still publish the
+// forgery in a publicly monitored log, so a compromise is loud.
 func (r *trustRoot) verifyInclusion(e tlogEntry, b *bundle, checkpointName string) error {
-	// The bundle names the log it claims to have been recorded in. Believing that name
-	// would be circular, so it is compared against the id derived from the pinned key:
-	// an entry from any other log is not evidence about this one.
+	// Believing the log the bundle names would be circular, so the entry's key id is
+	// compared with the one derived from the pinned key.
 	if !bytes.Equal(e.keyID, r.logKeyID) {
 		return fault.New(fault.Terminal, CodeTransparency,
 			"the release was logged in a transparency log this binary does not trust")
@@ -78,18 +72,14 @@ func (r *trustRoot) verifyInclusion(e tlogEntry, b *bundle, checkpointName strin
 	return r.verifyCheckpoint(e.checkpoint, e.rootHash, e.treeSize, checkpointName)
 }
 
-// verifyEntryTimestamp checks the log's own signature over the entry, which is what
-// makes the integration time trustworthy.
-//
-// This matters more than it looks. The signing certificate is only valid for ten
-// minutes, so the certificate chain has to be checked as of the moment the entry was
-// logged, and that moment is a number that arrives inside the bundle. Left
-// unauthenticated it would be an attacker-chosen input to the one check that decides
-// whether an expired certificate is acceptable. The log signs it, so it is not.
+// verifyEntryTimestamp checks the log's signature over the entry, which makes the
+// integration time trustworthy. The signing certificate is valid for ten minutes, so
+// the chain is checked as of the moment the entry was logged, and that moment arrives
+// inside the bundle. Unsigned, it would be an attacker-chosen input to the check that
+// decides whether an expired certificate is acceptable.
 func (r *trustRoot) verifyEntryTimestamp(e tlogEntry) error {
-	// Rekor signs the canonical JSON of the entry's identity: its body, when it was
-	// integrated, which log it went into, and where in that log it sits. The key order
-	// is the canonical one (alphabetical), and the fields are exactly these four.
+	// Rekor signs the canonical JSON of the entry's identity: body, integration time,
+	// log id and log index, exactly these four, keys in alphabetical order.
 	signed, err := json.Marshal(struct {
 		Body           string `json:"body"`
 		IntegratedTime int64  `json:"integratedTime"`
@@ -166,9 +156,8 @@ func (r *trustRoot) verifyCheckpoint(envelope string, wantRoot []byte, wantSize 
 	if len(lines) < 3 {
 		return fault.New(fault.Terminal, CodeTransparency, "the log checkpoint is missing its origin, size, or root")
 	}
-	// The origin names the log and its tree. Pinning the log's name here stops a
-	// checkpoint from a different (even a genuinely signed) log being replayed into
-	// this position.
+	// The origin names the log and its tree. Pinning it stops a checkpoint from another
+	// log, even a genuinely signed one, being replayed here.
 	origin, _, _ := strings.Cut(lines[0], " ")
 	if origin != name {
 		return fault.New(fault.Terminal, CodeTransparency,
@@ -182,8 +171,8 @@ func (r *trustRoot) verifyCheckpoint(envelope string, wantRoot []byte, wantSize 
 	if err != nil {
 		return fault.Wrap(fault.Terminal, CodeTransparency, fmt.Errorf("reading the checkpoint's root hash: %w", err))
 	}
-	// The signed checkpoint has to be a statement about the very tree the inclusion
-	// proof was computed against, or the two halves prove nothing together.
+	// The checkpoint must be about the tree the inclusion proof was computed against,
+	// or the two prove nothing together.
 	if size != wantSize || !bytes.Equal(root, wantRoot) {
 		return fault.New(fault.Terminal, CodeTransparency,
 			"the signed checkpoint describes a different tree than the inclusion proof")
@@ -194,9 +183,9 @@ func (r *trustRoot) verifyCheckpoint(envelope string, wantRoot []byte, wantSize 
 		if !ok || signer != name {
 			continue
 		}
-		// The key hint is the first four bytes of the log's key id. It selects a key; it
-		// does not authenticate anything, so the signature is still checked against the
-		// key this binary pinned.
+		// The key hint, the first four bytes of the log's key id, selects a key and
+		// authenticates nothing, so the signature is still checked against the pinned
+		// key.
 		if len(blob) <= 4 || !bytes.Equal(blob[:4], r.logKeyID[:4]) {
 			continue
 		}

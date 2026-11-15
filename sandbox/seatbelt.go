@@ -5,20 +5,14 @@ import (
 	"strings"
 )
 
-// seatbeltProfile builds the sandbox profile (SBPL) the macOS adapter applies to a command,
-// the counterpart of the network namespace, read-only mount view, and syscall filter on
-// Linux: it denies the network, makes the host read-only except the working directory and a
-// scratch area, and refuses privileged file operations a command in its own tree never needs.
+// seatbeltProfile builds the macOS SBPL equivalent of the Linux namespaces,
+// read-only mounts and syscall filter.
 //
-// The profile starts from allow-default and removes capabilities. A deny-default profile
-// would have to enumerate every operation an ordinary shell and its tools make (process
-// spawn, dynamic linking, sysctl reads, mach lookups), that set shifts between OS releases,
-// and missing one turns a benign command into a confinement failure. Rules are
-// last-match-wins, so the blanket write denial comes first and the re-grants follow it.
-//
-// When proxyAddr is non-empty all network is denied except an outbound connection to the
-// loopback proxy at proxyAddr: the macOS leg of governed egress. The trailing writable paths
-// are the WithWritableDir directories, each writable alongside the working tree.
+// It starts from allow-default because a deny-default profile must list every
+// operation a shell makes (spawn, linking, sysctl, mach lookups), and that set
+// changes between releases. Rules are last-match-wins, so the write denial comes
+// before the re-grants. A non-empty proxyAddr permits only the loopback proxy;
+// writable holds the WithWritableDir directories.
 func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, proxyAddr string, writable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -26,28 +20,20 @@ func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, 
 
 	switch {
 	case proxyAddr != "":
-		// Deny all network, then allow only an outbound connection to the loopback proxy
-		// port (last-match-wins). The child therefore cannot reach any host or port but
-		// the proxy, which enforces the egress policy; it cannot bypass the proxy by
-		// dialing directly, because the kernel refuses every other outbound connection.
+		// The kernel refuses every other outbound connection, so the child cannot
+		// bypass the proxy.
 		b.WriteString("(deny network*)\n")
 		if _, port, err := net.SplitHostPort(proxyAddr); err == nil && port != "" {
 			b.WriteString("(allow network-outbound (remote ip " + sbplString("localhost:"+port) + "))\n")
 		}
 	case denyNetwork:
-		// No outbound or inbound socket: the command cannot exfiltrate, phone home, or
-		// accept a connection, the macOS counterpart of the empty network namespace.
+		// No socket either way, like an empty network namespace.
 		b.WriteString("(deny network*)\n")
 	}
 
 	if readonlyFS {
-		// Every write is denied first, then re-granted only for the working tree and a
-		// small set of device files, so the command cannot modify any host file outside
-		// the directory it was given. Reads stay allowed (allow-default), matching the
-		// Linux read-only host view where the whole filesystem is readable but only the
-		// working tree is writable. The host temp directories are deliberately not
-		// granted: a command that needs scratch space writes it inside the working tree,
-		// and the rest of the host, including the shared temp area, stays read-only.
+		// Writes are re-granted only for the working tree and a few device files.
+		// The host temp directories stay read-only, so scratch goes in the tree.
 		b.WriteString("(deny file-write*)\n")
 		b.WriteString("(allow file-write*\n")
 		b.WriteString("    (subpath " + sbplString(root) + ")\n")
@@ -61,10 +47,7 @@ func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, 
 	}
 
 	if hardenSyscalls {
-		// The syscall-filter counterpart: refuse the privileged operations a command
-		// confined to its own directory has no honest need for and that would let it
-		// escalate privilege or tamper with the host. Ordinary file, process, and memory
-		// work is untouched, so normal commands run unaffected.
+		// The syscall filter's counterpart refuses privileged operations only.
 		b.WriteString("(deny file-write-setugid)\n")
 		b.WriteString("(deny system-acct)\n")
 		b.WriteString("(deny system-reboot)\n")
@@ -74,13 +57,9 @@ func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, 
 	return b.String()
 }
 
-// seatbeltHidden renders the profile rules that hide each path from the command: every read
-// and every write under it is denied. They are appended after the rest of the profile, and
-// rules are last-match-wins, so no write grant or allow-default read reaches a hidden path.
-// Where Linux covers a path with an empty one, macOS refuses the access, so the command sees
-// a permission error rather than an empty directory. A subpath rule matches a file as well as
-// a directory, and matches a path that does not exist yet, so a credential file created
-// while the command runs is hidden too.
+// seatbeltHidden rules go last, so no grant reaches a hidden path. The command
+// sees a permission error where Linux shows an empty directory. A subpath rule
+// also matches a file not yet created, such as a credential written mid-run.
 func seatbeltHidden(paths []string) string {
 	if len(paths) == 0 {
 		return ""
@@ -94,11 +73,8 @@ func seatbeltHidden(paths []string) string {
 	return b.String()
 }
 
-// seatbeltWritableDevices are the only host files outside the working tree a command
-// may write under the read-only host view: the standard device endpoints a shell and
-// its tools need to redirect output and read entropy. They are individual files, not
-// directories, so the grant opens no writable area on the real filesystem. The
-// working directory is granted separately as the one writable tree.
+// seatbeltWritableDevices are single files a shell needs for redirection and
+// entropy, so they open no writable directory.
 var seatbeltWritableDevices = []string{
 	"/dev/null",
 	"/dev/zero",
@@ -109,9 +85,8 @@ var seatbeltWritableDevices = []string{
 	"/dev/urandom",
 }
 
-// sbplString renders a path as an SBPL double-quoted string literal, escaping the
-// backslash and double-quote that would otherwise break the literal. A crafted path
-// can therefore not close the string early and inject profile rules.
+// sbplString escapes backslash and double quote, so a crafted path cannot inject
+// profile rules.
 func sbplString(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return `"` + r.Replace(s) + `"`

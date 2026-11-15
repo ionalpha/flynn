@@ -10,13 +10,9 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// SkillVerifier builds the check a captured skill must pass before it is kept: a sandbox
-// verifier that runs each check confined at dir, dispatched through the waist. Routing it
-// through dispatch admits a verification against the grant and traces it like a tool call,
-// where a side channel would execute a model-proposed command with no governance at all.
-//
-// Nothing binds a grant to this dispatcher, so its admitter is permissive; the confinement
-// of the sandbox it runs in is what limits a check.
+// SkillVerifier runs a captured skill's checks confined at dir, through the dispatch waist,
+// so a model-proposed command is traced like a tool call. No grant is bound, so the admitter
+// is permissive and the sandbox's confinement limits a check.
 func SkillVerifier(dir string) learn.Verifier {
 	inner := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
 		return sandbox.NewLocal(dir, sandbox.WithDefaultConfinement())
@@ -24,9 +20,8 @@ func SkillVerifier(dir string) learn.Verifier {
 	return learn.NewGovernedVerifier(inner, dispatch.WithAdmitter(capability.Admitter{}))
 }
 
-// Distiller wraps the model distiller so its model call runs through the dispatch waist,
-// like the run's own model calls and [SkillVerifier]'s checks. Nothing binds a grant to it,
-// so its admitter is permissive and it distills with the model's own limits.
+// Distiller routes the distilling model call through the dispatch waist. As with
+// [SkillVerifier], no grant is bound, so the admitter is permissive.
 func Distiller(model llm.Model) learn.Distiller {
 	return learn.NewGovernedDistiller(learn.NewModelDistiller(model), dispatch.WithAdmitter(capability.Admitter{}))
 }

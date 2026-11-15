@@ -1,16 +1,11 @@
-// Package runtime assembles the agent's goal control plane into one startable
-// unit: the resource store, the durable job queue, the message bus, the reconcile
-// manager, and the goal reconciler and step worker, wired together.
+// Package runtime wires the store, job queue, bus, reconcile manager, goal
+// reconciler and step worker into one startable unit.
 //
-// It owns composition, not behaviour. What a goal step does and how convergence is
-// judged are injected (a goal.StepExecutor and a goal.StopEvaluator), so the same
-// plumbing runs with a stub in tests and with a model-backed executor in
-// production. The result is something you can start, submit a goal to, and watch
-// drive itself to convergence: the reconciler dispatches a step, the worker runs
-// it and signals completion, the signal re-triggers the reconciler, and resync
-// guarantees progress even if a signal is lost. Because each step of progress is
-// recorded on the durable store and queue, a restart resumes mid-goal rather than
-// starting over.
+// Step execution and convergence are injected, so tests run a stub executor.
+// The reconciler dispatches a step, the worker runs it and signals completion,
+// and the signal re-triggers the reconciler; resync recovers a lost signal.
+// Progress is recorded on the durable store and queue, so a restart resumes
+// mid-goal.
 package runtime
 
 import (
@@ -29,175 +24,110 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// DefaultWorkerPoll is how often the step worker polls for work when idle. Both
-// bundled queues implement jobs.Waker, so a fresh dispatch wakes the worker at
-// once and this interval is only the fallback sweep for scheduled retries,
-// expired leases, and enqueues from other processes.
+// DefaultWorkerPoll is the idle poll interval. Both bundled queues implement
+// jobs.Waker, so this only sweeps for scheduled retries, expired leases and
+// enqueues from other processes.
 const DefaultWorkerPoll = 50 * time.Millisecond
 
-// Config assembles a Runtime. Executor and Stop are required: they are the agent's
-// behaviour, which the foundation does not supply. Everything else has a
-// standalone, in-process default.
+// Config assembles a Runtime. Executor and Stop are required; everything else
+// has an in-process default.
 type Config struct {
 	// Executor performs one goal step. Required.
 	Executor goal.StepExecutor
 	// Stop decides whether a goal has converged. Required.
 	Stop goal.StopEvaluator
-	// Planner expands a goal's objective into its ledger before any building starts.
-	// Setting it is what turns planning on: the runtime pairs it with the reconciler's
-	// planning gate in one place (WithPlanner on the worker, WithPlanning on the
-	// reconciler), so a goal can never be gated on a planning phase without a planner to
-	// run it — the misconfiguration that would leave every goal unplanned and stalled.
-	// Nil leaves planning off, so a goal runs exactly as before: no ledger, straight to
-	// building.
+	// Planner expands a goal's objective into its ledger before building, and
+	// setting it turns planning on. The runtime wires the worker's planner and
+	// the reconciler's planning gate together, so no goal is gated on a phase
+	// nothing runs. Nil goes straight to building with no ledger.
 	Planner goal.Planner
-	// Progress detects a goal that has stopped getting anywhere: after each build step the
-	// reconciler asks it for a fingerprint of the substantive work recorded so far, and
-	// stops the goal once that fingerprint has not changed for a few consecutive steps,
-	// with a no-progress reason rather than the budget reason a spinning loop would
-	// eventually reach. Nil leaves detection off, so a goal is bounded only by its step
-	// budget, exactly as before.
+	// Progress fingerprints the work recorded after each build step; a goal
+	// whose fingerprint is unchanged for a few steps stops with a no-progress
+	// reason. Nil bounds a goal only by its step budget.
 	Progress goal.ProgressProbe
-	// Units runs the units of a goal's declared plan as governed child goals, in
-	// dependency order. Setting it turns plan-driven fan-out on: a goal whose spec
-	// carries a unit graph admits ready units through this rather than building, and it
-	// converges only once every unit is proven.
-	//
-	// It is the plan-driven half of fan-out and it does not replace the model-driven
-	// half: the spawn tool on the executor is untouched, and a goal carrying no units
-	// runs exactly as before. Leaving it nil is not a way to ignore a plan, because a
-	// goal that carries a graph with nothing wired to run it stalls saying so; a graph
-	// admitted, validated and then quietly skipped is the failure that reads as a goal
-	// which simply never fanned out.
+	// Units runs a goal's declared unit graph as child goals in dependency
+	// order, and the goal converges once every unit is proven. The executor's
+	// spawn tool is unaffected. A goal with a graph and no Units stalls saying
+	// so, because a skipped graph would look like a goal that never fanned out.
 	Units goal.UnitSpawner
-	// Auditor rules on the terms a goal states beside its stop condition: after each
-	// completed step the reconciler asks it whether any invariant has been broken, and a
-	// breach stops the goal before the stop evaluator is consulted.
-	//
-	// Leaving it nil is not a way to run a goal's terms unchecked, because a goal that
-	// states terms with no auditor wired stalls saying so. That is the same rule Units
-	// follows, and the case for it is stronger: a fan-out that never happens is visible,
-	// while a run that was never audited finishes looking exactly like one whose terms
-	// held. A goal that states no terms is unaffected either way.
+	// Auditor checks a goal's invariants after each step; a breach stops the
+	// goal before the stop evaluator runs. A goal that states terms with no
+	// Auditor stalls saying so, because an unaudited run finishes looking like
+	// one whose terms held.
 	Auditor goal.InvariantAuditor
-	// SteerJudge rules on whether a run's account of finishing addresses the redirects an
-	// operator issued it while it worked. A redirect it does not address refuses the
-	// completion and stops the goal.
-	//
-	// Leaving it nil is not a way to run redirects unchecked either: a goal that is
-	// steered with no judge wired stalls saying so, which is the same rule Auditor
-	// follows. A goal nobody steers is unaffected, and that is every goal on a host that
-	// has not wired the operator surface.
+	// SteerJudge decides whether a run's account of finishing addresses the
+	// operator's redirects; an unaddressed one refuses the completion and stops
+	// the goal. A steered goal with no SteerJudge stalls saying so.
 	SteerJudge goal.SteerJudge
-	// Halt is the run-level halt an operator's kill engages, so a kill reaches the
-	// dispatch waist inside the step that is running rather than at its boundary. Give it
-	// the same brake the executor dispatches under: a halt bound to a second brake that
-	// no waist consults is a kill that records itself and stops nothing.
-	//
-	// It is proved before it is wired. New asks it to demonstrate, against its own
-	// enforcement path, that a run it has halted is refused, and refuses to build a
-	// runtime over one that cannot. That is the evidence gate's rule applied to the other
-	// gate that fails silently, and it is here because this is where a broken one can
-	// still stop a process from starting.
-	//
-	// Leaving it nil is a supported composition and not a way to run unkillable goals: a
-	// kill still settles the goal and no further step is dispatched. What is lost is the
-	// promptness, which is the reason an operator reached for a kill instead of waiting.
+	// Halt lets an operator's kill stop the running step at dispatch, inside
+	// the step. It must be the brake the executor dispatches under; any other
+	// brake records the kill and stops nothing. New fails unless Halt proves a
+	// halted run is refused. With nil, a kill still settles the goal, but only
+	// at the next step boundary.
 	Halt goal.Halter
-	// Refusals reads the gates that refused this run, so a run that kept pushing on one
-	// is stopped naming what refused it rather than being judged on whether it finished.
-	//
-	// Nil leaves detection off. Refusals are still recorded on the spine either way, so
-	// this is a question of whether anything reads them as a verdict, not of whether the
-	// run's governance decisions are kept.
+	// Refusals reads the gates that refused this run, so a run that keeps
+	// pushing on one is stopped naming it. Nil turns this off; refusals are
+	// recorded on the spine either way.
 	Refusals goal.RefusalProbe
-	// Verifier runs a ledger item's declared check, and Evidence is the durable record
-	// its verdict is written to and read back from. Setting both closes the ledger loop:
-	// the run alternates building an item with running its check, and the verdicts on the
-	// record settle the ledger through a default-FAIL evidence gate, so an item flips to
-	// proven only from evidence the run actually produced. Whether an unsettled ledger
-	// then refuses a completion claim is RequireLedgerProof.
-	//
-	// They are paired here for the reason the planner is: the producer lives on the
-	// worker and the gate on the reconciler, and a goal gated on its ledger by a
-	// reconciler whose worker cannot produce evidence would refuse to converge forever.
-	// Wiring one side without the other is not a degraded mode, it is a hang, so it is
-	// made unrepresentable in the one place that knows about both. Leaving either nil
-	// leaves the loop open and a goal behaves exactly as it did before.
+	// Verifier runs a ledger item's check and Evidence stores the verdict.
+	// With both set, verdicts settle the ledger through a default-FAIL gate,
+	// so an item is proven only by evidence the run produced. They take effect
+	// only together: a reconciler gating on evidence its worker cannot produce
+	// would never converge. Either nil leaves the ledger unchecked.
 	Verifier goal.ItemVerifier
 	Evidence goal.Evidence
-	// RequireLedgerProof makes the settled ledger, not the model's final answer, decide
-	// whether a planned goal is done: a completion claim over unproven items settles the
-	// goal as stalled naming each one and why.
-	//
-	// It is staged behind the loop itself on purpose. Wiring Verifier and Evidence makes
-	// items visibly flip to proven on real runs; this is then turned on against that
-	// evidence rather than ahead of it, because a refusal switched on before anything
-	// produces verifications stalls every goal. Leaving it off indefinitely is not an
-	// option a composition has: a gate that is loaded and does nothing is the failure the
-	// gate's self-test exists to catch.
+	// RequireLedgerProof lets the settled ledger decide whether a planned goal
+	// is done: a completion claim over unproven items stalls the goal, naming
+	// each item. It is separate from Verifier so it can be enabled once runs
+	// show items being proven; enabled first, it stalls every goal.
 	RequireLedgerProof bool
-	// AllowAssertedEvidence lets an item be proven on a verification that was asserted
-	// rather than run. It is off by default: a closed loop ships with a producer that
-	// runs checks, which is exactly what makes requiring execution satisfiable, and an
-	// unrunnable verify clause should fail the item rather than quietly pass it. Set it
-	// only for a run whose checks genuinely cannot be executed, knowing that what the
-	// ledger then records is a claim rather than a result.
+	// AllowAssertedEvidence accepts a verification that was asserted instead
+	// of run. Off by default, so an unrunnable check fails its item. Set it
+	// only when checks cannot be executed; the ledger then records claims.
 	AllowAssertedEvidence bool
-	// CheckDir is the workspace the Verifier's checks run in. A check whose command is
-	// answered by a file there, such as a test.bat beside a check that runs `test`, is
-	// refused without being run, because the agent can write that file and the check would
-	// then measure what it wrote. It is the Verifier's own workspace that has to be named:
-	// a Verifier that runs somewhere else is not protected by the directory beside the
-	// process, so leave it empty then and the search is off. It has no effect without
-	// Verifier and Evidence.
+	// CheckDir is the directory the Verifier's checks run in. A check whose
+	// command resolves to a file there (a test.bat for `test`) is refused,
+	// because the agent could have written it. Name the Verifier's own
+	// directory or leave it empty. It needs Verifier and Evidence.
 	CheckDir string
 
-	// Store, Jobs, and Bus are the foundation ports. When Store is nil, an in-memory
-	// store, queue, and bus are built over Clock with a registry holding the core
-	// and Goal kinds. When Store is set, Jobs must be set too, and the registry the
-	// store admits against must already include the Goal kind (goal.RegisterKind).
+	// Store, Jobs and Bus default to in-memory ones over Clock, with the core
+	// and Goal kinds registered. A set Store needs Jobs too, and its registry
+	// must include the Goal kind (goal.RegisterKind).
 	Store resource.Store
 	Jobs  jobs.Queue
 	Bus   bus.Bus
 
-	// Clock is the shared time source (default clock.System). A clock.Manual makes
-	// resync and retry backoff deterministic in tests.
+	// Clock defaults to clock.System; a clock.Manual makes resync and backoff
+	// deterministic.
 	Clock clock.Timing
 
-	// Resync overrides the manager's safety-net interval. Non-positive values use
-	// the default: the safety net cannot be turned off, because it is what makes
-	// convergence a guarantee rather than a hope that no change hint is ever lost.
+	// Resync overrides the manager's resync interval. Non-positive uses the
+	// default; resync cannot be turned off, since it recovers lost change hints.
 	Resync time.Duration
-	// DriveSubmittedOnly narrows what the runtime drives to the goals it was given
-	// itself (via SubmitGoal or Resume, which is also how a fan-out's children
-	// arrive), so it never adopts a goal it merely finds in the store. A one-shot
-	// command sets this: starting a run must not silently resume a goal an earlier
-	// run left non-terminal, so each run keeps its own event stream and resuming a
-	// parked run stays an explicit act. It narrows the resync sweep, it does not
-	// disable it, so a lost change hint for the run's own goal is still recovered. A
-	// long-lived server leaves it false and drives every goal in the store, which is
-	// what resumes orphaned work after a crash.
+	// DriveSubmittedOnly limits the runtime to goals given through SubmitGoal
+	// or Resume, including fan-out children. A one-shot command sets it so a
+	// run never resumes a goal an earlier run left open. Resync still covers
+	// the run's own goals. A server leaves it false to resume orphaned work.
 	DriveSubmittedOnly bool
 	// WorkerPoll overrides how often the step worker polls when idle.
 	WorkerPoll time.Duration
 	// PollInterval overrides how often the reconciler re-checks an in-flight step
 	// absent a completion signal.
 	PollInterval time.Duration
-	// WorkerLease overrides how long a claimed step is leased. It bounds how long a
-	// crashed worker's in-flight step waits before another worker re-leases it (0
-	// uses the worker default).
+	// WorkerLease bounds how long a crashed worker's step waits before it is
+	// re-leased (0 uses the worker default).
 	WorkerLease time.Duration
-	// WorkerRetryBase and WorkerRetryCeiling bound the worker's exponential backoff
-	// between failed step attempts (0 uses the worker defaults).
+	// WorkerRetryBase and WorkerRetryCeiling bound the backoff between failed
+	// step attempts (0 uses the worker defaults).
 	WorkerRetryBase    time.Duration
 	WorkerRetryCeiling time.Duration
-	// StepMaxAttempts caps how many times a dispatched step is retried before it
-	// goes dead and stalls the goal (0 uses the queue default).
+	// StepMaxAttempts caps retries before a step goes dead and stalls the goal
+	// (0 uses the queue default).
 	StepMaxAttempts int
 }
 
-// Runtime is the assembled goal control plane.
+// Runtime is an assembled control plane; build it with [New].
 type Runtime struct {
 	store      resource.Store
 	jobs       jobs.Queue
@@ -209,11 +139,9 @@ type Runtime struct {
 	driven     *drivenSet
 }
 
-// drivenSet is the set of goals this process is responsible for: everything it
-// submitted or resumed itself, including the children a fan-out spawned. Under
-// DriveSubmittedOnly it is what the manager resyncs, so the safety net covers the
-// run's own work and nothing else. It is written from the goroutine that submits
-// and read from the resync loop, so it is guarded.
+// drivenSet holds the goals this process submitted or resumed; under
+// DriveSubmittedOnly it is the resync scope. The submitter writes it and the
+// resync loop reads it.
 type drivenSet struct {
 	mu   sync.Mutex
 	keys map[resource.Key]struct{}
@@ -238,8 +166,7 @@ func (d *drivenSet) list() []resource.Key {
 	return out
 }
 
-// New assembles a Runtime from cfg, building in-process foundation defaults for any
-// port left nil. It registers the Goal reconciler with the manager.
+// New assembles a Runtime from cfg.
 func New(cfg Config) (*Runtime, error) {
 	if cfg.Executor == nil || cfg.Stop == nil {
 		return nil, errors.New("runtime: Executor and Stop are required")
@@ -292,9 +219,6 @@ func New(cfg Config) (*Runtime, error) {
 	}, nil
 }
 
-// foundation returns the store and job queue the runtime drives: the configured pair,
-// or an in-memory pair with the core kinds and Goal registered when no store is set.
-// A configured store must come with its queue.
 func foundation(cfg Config, clk clock.Timing) (resource.Store, jobs.Queue, error) {
 	store, q := cfg.Store, cfg.Jobs
 	if store == nil {
@@ -311,11 +235,11 @@ func foundation(cfg Config, clk clock.Timing) (resource.Store, jobs.Queue, error
 	return store, q, nil
 }
 
-// reconcilerOptions wires the reconciler's tuning and every port that lives on the
-// reconcile path alone.
+// reconcilerOptions wires the ports only the reconciler uses: each judges the
+// record steps leave, between steps, which no step can do about itself.
 func reconcilerOptions(cfg Config, b bus.Bus) ([]goal.Option, error) {
-	// The wake bus lets a settling child re-check its parked fan-out parent
-	// promptly; the parent's recheck fallback covers a lost wake.
+	// A settling child wakes its parked parent; the parent's recheck covers a
+	// lost wake.
 	ropts := []goal.Option{goal.WithWakeBus(b)}
 	if cfg.PollInterval > 0 {
 		ropts = append(ropts, goal.WithPollInterval(cfg.PollInterval))
@@ -324,36 +248,24 @@ func reconcilerOptions(cfg Config, b bus.Bus) ([]goal.Option, error) {
 		ropts = append(ropts, goal.WithStepMaxAttempts(cfg.StepMaxAttempts))
 	}
 
-	// No-progress detection lives entirely on the reconciler (it folds each step's
-	// fingerprint into the goal's status and stops a stuck run), so unlike planning it is
-	// a single-sided wire: the probe reads the record the worker already writes.
 	if cfg.Progress != nil {
 		ropts = append(ropts, goal.WithProgressProbe(cfg.Progress))
 	}
 
-	// Plan-driven fan-out is a single-sided wire too: the reconciler admits the units and
-	// settles them from what their children recorded, and the worker has no part in it,
-	// because a parked parent is a goal that dispatches no step at all.
 	if cfg.Units != nil {
 		ropts = append(ropts, goal.WithUnitSpawner(cfg.Units))
 	}
 
-	// The terms of a run are audited on the reconcile path only, for the same reason:
-	// the audit is a judgement about the record the steps left, made between them.
 	if cfg.Auditor != nil {
 		ropts = append(ropts, goal.WithInvariantAudit(cfg.Auditor))
 	}
 
-	// Judging an acknowledgement belongs on the reconcile path for a further reason: the
-	// account it rules on is what the run gave for having finished, and the run is not the
-	// party to decide whether its own answer to the operator was good enough.
 	if cfg.SteerJudge != nil {
 		ropts = append(ropts, goal.WithSteerJudge(cfg.SteerJudge))
 	}
 
-	// The operator's kill, wired only once the halt has proved it halts. A kill switch
-	// that engages nothing is worse than none: the run keeps going with an operator
-	// watching it and believing they stopped it.
+	// A kill that engages nothing is worse than none: the operator believes the
+	// run stopped.
 	if cfg.Halt != nil {
 		if err := cfg.Halt.ProveHalts(); err != nil {
 			return nil, fmt.Errorf("runtime: kill switch: %w", err)
@@ -361,17 +273,12 @@ func reconcilerOptions(cfg Config, b bus.Bus) ([]goal.Option, error) {
 		ropts = append(ropts, goal.WithHalt(cfg.Halt))
 	}
 
-	// Reading the refusals is single-sided as well: the waist writes them from wherever a
-	// step runs, and the reconciler is where a whole run's worth of them can be read at
-	// once. A step cannot make this judgement about itself, because no step is the
-	// problem.
 	if cfg.Refusals != nil {
 		ropts = append(ropts, goal.WithRefusalProbe(cfg.Refusals))
 	}
 	return ropts, nil
 }
 
-// workerOptions wires the worker's lease and retry tuning.
 func workerOptions(cfg Config, b bus.Bus) []goal.WorkerOption {
 	wopts := []goal.WorkerOption{goal.WithBus(b)}
 	if cfg.WorkerLease > 0 {
@@ -383,26 +290,21 @@ func workerOptions(cfg Config, b bus.Bus) []goal.WorkerOption {
 	return wopts
 }
 
-// newEvidenceGate builds the ledger's evidence gate. It is a variable so a test can
-// stand in a gate that fails its self-test and see composition refuse it.
+// newEvidenceGate is a variable so a test can substitute a gate that fails its
+// self-test.
 var newEvidenceGate = goal.NewEvidenceGate
 
-// pairedOptions wires the two features that need both halves at once, so neither can
-// be left in the state where the reconciler gates on something the worker was never
-// given.
+// pairedOptions wires the features that need both the reconciler and the
+// worker, so the reconciler never gates on something the worker lacks.
 func pairedOptions(cfg Config, ropts []goal.Option, wopts []goal.WorkerOption) ([]goal.Option, []goal.WorkerOption, error) {
-	// Planning: the reconciler gates a goal on planning before it builds, and the worker
-	// is given the planner that runs that phase.
 	if cfg.Planner != nil {
 		ropts = append(ropts, goal.WithPlanning())
 		wopts = append(wopts, goal.WithPlanner(cfg.Planner))
 	}
 
-	// The ledger loop. The gate is constructed here rather than injected because
-	// constructing it IS the check: NewEvidenceGate refuses to return a gate that cannot
-	// demonstrate, against its own code, that it refuses a claim with no evidence and
-	// admits one with fresh evidence. A broken gate therefore fails composition, loudly,
-	// instead of being wired in and silently certifying every claim at runtime.
+	// The gate is built here instead of injected because NewEvidenceGate runs
+	// its self-test, so a broken gate fails composition instead of certifying
+	// every claim.
 	if cfg.Verifier != nil && cfg.Evidence != nil {
 		var gopts []goal.GateOption
 		if !cfg.AllowAssertedEvidence {
@@ -424,28 +326,22 @@ func pairedOptions(cfg Config, ropts []goal.Option, wopts []goal.WorkerOption) (
 	return ropts, wopts, nil
 }
 
-// managerOptions configures the reconcile manager's clock and resync safety net.
 func managerOptions(cfg Config, clk clock.Timing, driven *drivenSet) []reconcile.ManagerOption {
 	mopts := []reconcile.ManagerOption{reconcile.WithClock(clk)}
 	if cfg.Resync > 0 {
 		mopts = append(mopts, reconcile.WithResync(cfg.Resync))
 	}
 	if cfg.DriveSubmittedOnly {
-		// Scope the safety net to this process's own goals rather than switching it
-		// off: no pre-existing goal is adopted, but a lost change hint for a goal this
-		// run submitted is still recovered on the next resync tick.
 		mopts = append(mopts, reconcile.WithResyncScope(driven.list))
 	}
 	return mopts
 }
 
-// Store returns the resource store the runtime drives, so callers can read goal
-// status and submit related resources through the same foundation.
+// Store returns the store the runtime drives.
 func (rt *Runtime) Store() resource.Store { return rt.store }
 
-// SubmitGoal records a new Goal and enqueues it for reconciliation. An empty name
-// gets a server-assigned one. The returned resource carries the assigned name and
-// identity; reconciliation proceeds asynchronously once Start is running.
+// SubmitGoal stores a new Goal and enqueues it; an empty name is generated.
+// Reconciliation runs once Start is running.
 func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) (resource.Resource, error) {
 	raw, err := json.Marshal(spec)
 	if err != nil {
@@ -466,12 +362,8 @@ func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) 
 	return saved, nil
 }
 
-// Resume re-drives an existing goal by name: it loads the goal and enqueues it for
-// reconciliation, so a run left non-terminal (parked or interrupted) is driven on
-// toward completion. Unlike SubmitGoal it neither creates nor overwrites the goal,
-// so the goal's recorded progress is preserved and the continuation lands on the
-// same run. It returns the goal, or a store error (resource.ErrNotFound) if no goal
-// of that name exists.
+// Resume enqueues an existing goal without rewriting it, so its recorded
+// progress continues on the same run. A missing goal is resource.ErrNotFound.
 func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, error) {
 	r, err := rt.store.Get(ctx, goal.Kind, resource.Scope{}, name)
 	if err != nil {
@@ -482,24 +374,18 @@ func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, 
 	return r, nil
 }
 
-// Start runs the control plane until ctx is cancelled: it subscribes to step
-// completion signals (waking the reconciler promptly), then runs the manager and
-// the step worker concurrently, blocking until both have stopped. It returns
-// ctx.Err() on shutdown.
+// Start runs the manager and worker until ctx is cancelled and both stop, and
+// returns ctx.Err().
 func (rt *Runtime) Start(ctx context.Context) error {
-	// Crash recovery: a previous process may have died mid-step, leaving its step job
-	// leased but never completed. Under the single-instance lock no other worker is
-	// live, so make any such orphan immediately claimable rather than waiting out its
-	// lease. This is what lets a resumed run continue at once instead of stalling until
-	// the lease lapses.
+	// A crashed process may have left a step leased. Under the single-instance
+	// lock no other worker is live, so release it now instead of waiting out
+	// the lease.
 	if _, err := rt.jobs.Recover(ctx); err != nil {
 		return fmt.Errorf("runtime: recover orphaned jobs: %w", err)
 	}
 
 	sub, err := rt.bus.Subscribe(ctx, goal.StepSubject, func(ctx context.Context, m bus.Message) error {
-		// The signal payload is the goal's resource ID. Resolve it to a key and
-		// enqueue a reconcile. A goal that has since vanished needs none; any other
-		// store error is returned so the bus can surface it.
+		// The payload is the goal's resource ID. A deleted goal needs nothing.
 		r, err := rt.store.GetByID(ctx, string(m.Payload))
 		if errors.Is(err, resource.ErrNotFound) {
 			return nil

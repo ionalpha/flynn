@@ -8,22 +8,21 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Source is a harness.ProfileSource backed by profiles in the resource store. It loads a snapshot
-// once at construction and answers every lookup from memory, so the dispatch waist consults a
-// model's capability without touching the store on the hot path. A model never measured is simply
-// absent, which the harness treats as unknown and scaffolds most conservatively.
+// Source is a harness.ProfileSource over profiles in the resource store. It loads a
+// snapshot at construction and answers from memory, so dispatch never touches the
+// store on the hot path. An unmeasured model is absent, which the harness treats as
+// unknown and scaffolds most conservatively.
 type Source struct {
 	byModel map[string]harness.ModelProfile
 }
 
 var _ harness.ProfileSource = Source{}
 
-// NewSource loads every stored profile and indexes it by model id. When a model has more than one
-// profile, for instance several quantizations, the indexed profile is the element-wise minimum
-// across them: the lookup does not know which quant will be served, so it reports the least
-// capable, and the harness never under-scaffolds a model on the strength of a more capable build
-// it might not be running. A store read error is returned; an empty store yields an empty source
-// that reports every model as unknown.
+// NewSource loads every stored profile, indexed by model id. A model with several
+// profiles (quantizations) gets their element-wise minimum: the lookup cannot know
+// which quant is served, so it reports the least capable and the harness never
+// under-scaffolds. A store read error is returned; an empty store yields a source that
+// reports every model unknown.
 func NewSource(ctx context.Context, rs resource.Store) (Source, error) {
 	all, err := rs.ListAll(ctx, Kind, nil)
 	if err != nil {
@@ -53,9 +52,8 @@ func (s Source) Profile(model string) (harness.ModelProfile, bool) {
 	return p, ok
 }
 
-// mostConservative folds two profiles of one model into the least capable on every dimension, so
-// a model with several measured builds is treated as no better than its weakest. A zero (unknown)
-// effective context on either side stays unknown, the conservative reading.
+// mostConservative folds two profiles of one model into the least capable on every
+// dimension. A zero (unknown) effective context on either side stays unknown.
 func mostConservative(a, b harness.ModelProfile) harness.ModelProfile {
 	return harness.ModelProfile{
 		ToolCallReliability:  min(a.ToolCallReliability, b.ToolCallReliability),

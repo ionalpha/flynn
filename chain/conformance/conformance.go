@@ -1,18 +1,14 @@
 // Package conformance defines the Provetrail conformance vector suite: a fixed set
 // of artifacts a conforming verifier must accept, and malformed ones it must reject
-// with a specific failure code. The vectors are the language-neutral canon other
-// implementations test themselves against. They are built deterministically (no wall
-// clock, no randomness), so the committed fixture files are reproducible byte for
-// byte and a verifier in any language can be checked against the same evidence.
+// with a specific failure code. The vectors are language-neutral and built without
+// clock or randomness, so the fixtures are byte-reproducible.
 //
-// This file covers the L1 structural tier: well-formedness, canonical form, and
-// ordering. The cryptographic tiers (signed checkpoints, single-event inclusion
-// proofs, full signed run records) are defined alongside it in crypto.go as L2 and
-// L3.
+// This file is the L1 structural tier: well-formedness, canonical form and
+// ordering. The signed tiers are in crypto.go.
 //
-// This package is the single source of truth for the vectors. The provetrail repo's
-// vectors/ directory is a downstream copy of testdata/{vectors,crypto}; regenerate
-// with `go test ./chain/conformance -update` and copy outward, never the reverse. See
+// This package is the source of truth. The provetrail repo's vectors/ directory
+// copies testdata/{vectors,crypto}; regenerate with
+// `go test ./chain/conformance -update` and copy outward, never the reverse. See
 // TESTING.md ("Conformance vectors") for the change ordering.
 package conformance
 
@@ -27,7 +23,7 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// SuiteVersion identifies the vector set; it is bumped when the canon changes.
+// SuiteVersion identifies the vector set.
 const SuiteVersion = "0.1.0"
 
 // Tier is the conformance tier this suite exercises.
@@ -43,8 +39,7 @@ const (
 	Reject Verdict = "reject"
 )
 
-// Vector is one conformance case: a sequence of canonical event byte blobs forming
-// a single stream, and the verdict a conforming verifier must reach over them.
+// Vector is one stream of event byte blobs and the verdict a verifier must reach.
 type Vector struct {
 	ID          string
 	Expect      Verdict
@@ -54,8 +49,7 @@ type Vector struct {
 	Events      [][]byte
 }
 
-// fixedTime is the single timestamp every generated event uses, so the suite is
-// reproducible byte for byte. It is an arbitrary fixed instant, never the wall clock.
+// fixedTime is an arbitrary fixed instant, never the wall clock.
 var fixedTime = time.Unix(0, 1_700_000_000_000_000_000).UTC()
 
 func baseEvent() spine.Event {
@@ -73,16 +67,14 @@ func baseEvent() spine.Event {
 func mustCanonical(e spine.Event) []byte {
 	b, err := chain.CanonicalBytes(e)
 	if err != nil {
-		// The generator's events are static and valid, so this is a programming
-		// error in the generator, not a runtime condition.
+		// The events are static, so an error is a generator bug.
 		panic("conformance: base event must encode: " + err.Error())
 	}
 	return b
 }
 
-// nonSortEnc encodes without sorting map keys, so a struct serializes in field
-// declaration order. It exists only to produce a deliberately non-canonical
-// encoding of an otherwise valid event for the corresponding reject vector.
+// nonSortEnc serializes in field declaration order, to produce a non-canonical
+// encoding of a valid event for a reject vector.
 var nonSortEnc = func() cbor.EncMode {
 	em, err := cbor.EncOptions{Sort: cbor.SortNone}.EncMode()
 	if err != nil {
@@ -91,9 +83,8 @@ var nonSortEnc = func() cbor.EncMode {
 	return em
 }()
 
-// unsortedWire mirrors the canonical event keys but in a deliberately non-sorted
-// field order, so encoding it without key sorting yields valid CBOR that decodes to
-// a real event yet is not in canonical form.
+// unsortedWire has the canonical keys in unsorted order: valid CBOR that
+// decodes to an event but is not canonical.
 type unsortedWire struct {
 	Type          string         `cbor:"type"`
 	Stream        string         `cbor:"stream"`
@@ -136,9 +127,8 @@ func trailingBytes() []byte {
 	return append(append([]byte{}, b...), 0x00)
 }
 
-// envelopeMap is the base event as a raw map, the starting point for the schema
-// defect vectors: deleting, retyping, or adding a key produces exactly one deviation
-// from the canonical envelope, encoded canonically so the deviation is the only fault.
+// envelopeMap is the base for schema defect vectors: deleting, retyping or
+// adding one key, encoded canonically, leaves that as the only fault.
 func envelopeMap() map[string]any {
 	e := baseEvent()
 	return map[string]any{
@@ -160,8 +150,7 @@ func mustEncodeMap(m map[string]any) []byte {
 	return b
 }
 
-// patchBytes replaces the first occurrence of old in a copy of b, panicking if old
-// is absent: a surgical byte mutation that is auditable in the vector description.
+// patchBytes replaces the first old in a copy of b and panics if it is absent.
 func patchBytes(b, old, replacement []byte) []byte {
 	i := bytes.Index(b, old)
 	if i < 0 {
@@ -174,17 +163,15 @@ func patchBytes(b, old, replacement []byte) []byte {
 	return out
 }
 
-// seqNonMinimal is the canonical minimal event with its seq value 1 re-encoded as a
-// two-byte integer head (0x19 0x00 0x01): valid CBOR, same logical value, not the
-// shortest encoding, so it is not in canonical form.
+// seqNonMinimal re-encodes seq 1 as a two-byte head (0x19 0x00 0x01): same
+// value, not the shortest encoding.
 func seqNonMinimal() []byte {
 	return patchBytes(mustCanonical(baseEvent()),
 		[]byte{0x63, 's', 'e', 'q', 0x01},
 		[]byte{0x63, 's', 'e', 'q', 0x19, 0x00, 0x01})
 }
 
-// dupKeyFull is the canonical minimal event grown by one duplicated "seq" entry, so
-// the duplicate-key rejection is pinned on a full envelope, not only on a fragment.
+// dupKeyFull adds a duplicate "seq" to a full envelope, not only a fragment.
 func dupKeyFull() []byte {
 	b := mustCanonical(baseEvent())
 	out := append([]byte{}, b...)
@@ -192,7 +179,6 @@ func dupKeyFull() []byte {
 	return append(out, 0x63, 's', 'e', 'q', 0x02)
 }
 
-// indefFull is the canonical minimal event re-framed as an indefinite-length map.
 func indefFull() []byte {
 	b := mustCanonical(baseEvent())
 	out := append([]byte{0xBF}, b[1:]...)
@@ -346,9 +332,8 @@ func Generate() []Vector {
 	}
 }
 
-// largeIntEvent returns an event whose seq and time exceed float64's 53-bit integer
-// range, so any verifier that routes int64 through a Number representation corrupts
-// them and fails the re-derivation check.
+// largeIntEvent exceeds float64's 53-bit integer range, so a verifier routing
+// int64 through a Number corrupts it and fails re-derivation.
 func largeIntEvent(seq, timeNanos int64) []byte {
 	e := baseEvent()
 	e.Seq = seq
@@ -373,9 +358,7 @@ func bytesPayloadEvent() []byte {
 	return mustCanonical(e)
 }
 
-// emptyStringsEvent returns an event whose required string fields are all empty:
-// well-formed per the encode-even-when-empty rule, since the actor category and
-// the non-string fields still carry values.
+// emptyStringsEvent is well-formed: empty strings are still encoded.
 func emptyStringsEvent() []byte {
 	e := baseEvent()
 	e.Stream = ""

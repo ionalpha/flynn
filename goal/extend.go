@@ -12,25 +12,16 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// BudgetExtendedReason is the reason on the stall condition when a person's extension
-// released a run stopped on its budget. Like [AllowanceResumeReason] it is written as
-// the stall going False, so the record shows the stop being answered and not only
-// ending.
+// BudgetExtendedReason is written with the stall going False, like
+// [AllowanceResumeReason], so the record shows the stop answered.
 const BudgetExtendedReason = "BudgetExtended"
 
-// spendStopReason is the stall reason the spend guard settles a goal under (see
-// Reconciler.spendGuard); it is the only stall that names this goal's own ceiling.
 const spendStopReason = "SpendBudgetExhausted"
 
-// StoppedOnBudget reports whether a goal's status records a stop caused by a spent
-// token or cost ceiling, which is the one stop a person's extension answers.
-//
-// Two shapes count. The goal's own ceiling settles it under the spend stop. The run's
-// ledger ceiling is enforced at the dispatch waist, so it surfaces as a step that died
-// with a [fault.BudgetExceeded] fault, and the step failure carries the fault's code in
-// its message. The step budget (MaxSteps), a pause on the plan window and every other
-// stall are different questions: more tokens do not answer them, so they are not
-// extendable.
+// StoppedOnBudget reports a token or cost stop, the only stop an extension answers. The
+// run's ledger ceiling is enforced in dispatch, so it shows as a failed step carrying the
+// [fault.BudgetExceeded] code. MaxSteps and the plan window are not extendable, because
+// more tokens do not answer them.
 func StoppedOnBudget(s Status) bool {
 	if s.Phase != PhaseStalled {
 		return false
@@ -49,8 +40,7 @@ func StoppedOnBudget(s Status) bool {
 	return false
 }
 
-// BudgetReopener is the goal side of [budget.Ledger.Extend] for one goal. It implements
-// [budget.Reopener].
+// BudgetReopener is the [budget.Reopener] for one goal, used by [budget.Ledger.Extend].
 type BudgetReopener struct {
 	store resource.Store
 	scope resource.Scope
@@ -58,16 +48,15 @@ type BudgetReopener struct {
 	clk   clock.Clock
 }
 
-// NewBudgetReopener returns the reopener for the goal called name in scope.
+// NewBudgetReopener does no I/O; the goal is read by Admit and Reopen.
 func NewBudgetReopener(store resource.Store, scope resource.Scope, name string, clk clock.Clock) *BudgetReopener {
 	return &BudgetReopener{store: store, scope: scope, name: name, clk: clk}
 }
 
 var _ budget.Reopener = (*BudgetReopener)(nil)
 
-// Admit refuses a goal that cannot be extended without writing anything. Reopen runs the
-// same check against the record it writes, so this is the early refusal and not the
-// guard: a goal killed between the two still stays killed.
+// Admit is the early refusal. Reopen repeats the check on the record it writes, so a goal
+// killed in between stays killed.
 func (b *BudgetReopener) Admit(ctx context.Context) error {
 	r, err := b.store.Get(ctx, Kind, b.scope, b.name)
 	if err != nil {
@@ -77,20 +66,11 @@ func (b *BudgetReopener) Admit(ctx context.Context) error {
 	return err
 }
 
-// Reopen raises the goal's spend ceiling to ceiling and releases the budget stop, in one
-// compare-and-set write, so the goal can never be left running on a ceiling that
-// disagrees with the run's or reopened without the ceiling that lets it proceed.
-//
-// A goal's own ceiling is only ever raised: if it already sits above the run's, it keeps
-// its value. An axis the goal never set is set to the run's, so the two agree and the
-// goal does not stop again below the run's ceiling. The status is moved to running with
-// its stall cleared, because a stalled goal whose spec hash did not change (its ceiling
-// was never set) would otherwise be skipped as already settled.
-//
-// A goal that is no longer stopped on its budget when this writes has been reopened by
-// a concurrent extension (or has moved on): its ceiling is still raised, so the two
-// ceilings agree whichever extension wrote last, and its status is left as it is. A kill
-// is the exception: a killed goal is never touched, and the error says so.
+// Reopen raises the ceiling and releases the stop in one compare-and-set write, so the
+// goal never runs on a ceiling that disagrees with the run's. A ceiling is only raised.
+// The status moves to running explicitly, because an unchanged spec hash would leave the
+// goal settled. A goal a concurrent extension already reopened still gets the raise. A
+// killed goal is never touched.
 func (b *BudgetReopener) Reopen(ctx context.Context, ceiling budget.Limits) error {
 	_, err := resource.Update(ctx, b.store, Kind, b.scope, b.name, func(r *resource.Resource) error {
 		spec, status, err := decodeForExtension(*r)
@@ -132,9 +112,8 @@ func (b *BudgetReopener) Reopen(ctx context.Context, ceiling budget.Limits) erro
 	return err
 }
 
-// admitExtension decodes the goal and decides whether it may be extended. A kill comes
-// first: a run an operator stopped stays stopped whatever else is true of it, and a kill
-// still on the spec is as final as one the reconciler has already settled.
+// admitExtension checks the kill first, because a kill on the spec is final even before
+// the reconciler settles it.
 func admitExtension(r resource.Resource) (Spec, Status, error) {
 	spec, status, err := decodeForExtension(r)
 	if err != nil {
@@ -146,7 +125,6 @@ func admitExtension(r resource.Resource) (Spec, Status, error) {
 	return spec, status, nil
 }
 
-// decodeForExtension decodes the goal and refuses a killed one.
 func decodeForExtension(r resource.Resource) (Spec, Status, error) {
 	spec, err := DecodeSpec(r)
 	if err != nil {

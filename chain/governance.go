@@ -7,26 +7,21 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// The governance vocabulary a record carries: the lifecycle event types the
-// execution waist emits for every governed action. An action is admitted before it
-// runs (GovStart), then completes (GovEnd), or is refused before it runs
-// (GovRejected); GovCallKey is the payload key holding the correlation id that pairs
-// one invocation's events. These string values are the wire contract a producer
-// writes and this verifier reads; an integration test asserts a producer agrees with
-// them, so the two cannot silently drift.
+// The governance vocabulary: lifecycle events the execution waist emits for every
+// governed action. An action is admitted (GovStart), then completes (GovEnd), or
+// is refused before it runs (GovRejected); GovCallKey holds the correlation id
+// pairing one invocation's events. These strings are the wire contract; an
+// integration test asserts a producer agrees with them.
 const (
-	GovStart    = "dispatch.start"
-	GovEnd      = "dispatch.end"
-	GovRejected = "dispatch.rejected"
-	GovCallKey  = "call"
-	// GovActionKey holds the name of the action a lifecycle event concerns.
+	GovStart     = "dispatch.start"
+	GovEnd       = "dispatch.end"
+	GovRejected  = "dispatch.rejected"
+	GovCallKey   = "call"
 	GovActionKey = "action"
-	// GovErrorClassKey holds how a caller should react to a refusal or failure.
+	// GovErrorClassKey is how a caller should react to a refusal or failure.
 	GovErrorClassKey = "error_class"
-	// GovErrorCodeKey holds which rule refused, beside the class saying how to react to
-	// it. Several gates refuse with one class, so a record keyed on the class alone
-	// cannot tell a run refused three times by one gate from a run refused once by each
-	// of three, and those are different runs.
+	// GovErrorCodeKey is which rule refused. Several gates share one class, so the
+	// class alone cannot tell three refusals by one gate from one by each of three.
 	GovErrorCodeKey = "error_code"
 )
 
@@ -36,19 +31,13 @@ const (
 	CodeDeniedButExecuted = "gov.admission_denied_but_executed"
 )
 
-// VerifyGovernance checks the admission invariants over a run's events, the
-// governance (L4) tier above the cryptographic record. It assumes the events are
-// already authentic and in order (verify the run record first), and checks what the
-// signed bytes then mean:
+// VerifyGovernance checks the admission invariants (L4) over a run's events. The
+// events must already be verified and in order. It fails on:
 //
-//   - No action completed without a preceding admission: every completion (end) names a
-//     call admitted (a start) earlier in the stream, else it claims an action ran that
-//     was never authorized.
-//   - No denied action also completed: no call is both refused (rejected) and completed
-//     (end), else it claims an action denied admission nonetheless executed.
-//
-// Passing means the recorded actions are consistent with having been admitted through
-// the governance gate.
+//   - a completion (end) with no earlier admission (start) for its call, which
+//     claims an action ran unauthorized;
+//   - a call both refused (rejected) and completed, which claims a denied action
+//     executed.
 func VerifyGovernance(events []spine.Event) error {
 	admitted := map[int64]bool{}
 	completed := map[int64]bool{}
@@ -78,8 +67,8 @@ func VerifyGovernance(events []spine.Event) error {
 		}
 	}
 
-	// A completion and a refusal for the same call are contradictory regardless of the
-	// order they appear in, so check the full sets once more after the pass.
+	// A completion and a refusal for one call contradict in either order, so check
+	// the full sets after the pass.
 	for call := range completed {
 		if refused[call] {
 			return fault.New(fault.Terminal, CodeDeniedButExecuted,
@@ -89,15 +78,12 @@ func VerifyGovernance(events []spine.Event) error {
 	return nil
 }
 
-// callID extracts the correlation id from a lifecycle event's payload.
 func callID(payload map[string]any) (int64, bool) {
 	return intField(payload, GovCallKey)
 }
 
-// intField reads an integer-valued payload field tolerantly across the integer and
-// float representations a CBOR or JSON round trip can produce, so a record is
-// verifiable whether its events came straight from the canonical bytes or back
-// through a store that serializes them as JSON.
+// intField reads an integer across the integer and float shapes a CBOR or JSON
+// round trip produces, so a record verifies after either.
 func intField(payload map[string]any, key string) (int64, bool) {
 	v, ok := payload[key]
 	if !ok {

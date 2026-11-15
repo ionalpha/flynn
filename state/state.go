@@ -1,11 +1,8 @@
-// Package state defines the persistence boundary between the open-source agent and
-// any host. This is the host boundary: the agent reaches all durable state
-// - sessions, skills, memory - only through the interfaces here.
+// Package state is the host boundary: the agent reaches all durable sessions,
+// skills and memory only through these interfaces.
 //
-// The open agent ships a local implementation (in-memory in memory.go; a durable
-// SQLite implementation in storage/sqlite). A commercial host such as an Ion
-// Alpha instance can supply its own Provider backed by a knowledge graph and
-// fleet-wide learning, without this package ever importing the host.
+// The agent ships [NewMemory] and a SQLite Provider in storage/sqlite. A host
+// can supply its own Provider without this package importing the host.
 package state
 
 import (
@@ -23,56 +20,41 @@ import (
 	"github.com/ionalpha/flynn/envelope"
 )
 
-// ErrNotFound is returned by stores when a requested record does not exist.
+// ErrNotFound means the requested record does not exist.
 var ErrNotFound = errors.New("state: not found")
 
-// ErrConflict is returned by a write when optimistic concurrency fails: the
-// caller passed a non-zero SyncVersion that no longer matches the stored record
-// (someone else wrote in between). Re-read and retry.
+// ErrConflict means a write's non-zero SyncVersion no longer matches the
+// stored record. Re-read and retry.
 var ErrConflict = errors.New("state: version conflict")
 
-// Scope partitions a store into three nested levels so skills and memory can be
-// kept apart and resolved most-specific-first. The zero Scope is the global
-// scope. Scope is comparable.
+// Scope partitions a store into three nested levels, resolved
+// most-specific-first. The zero Scope is global, and Scope is comparable.
 //
-// The levels carry one meaning, containment: Instance is the widest (one
-// installation of the agent), Project sits inside an instance and Workspace
-// inside a project. Each is an opaque label that is stored and compared, never
-// interpreted; an empty label means "not narrowed at this level". A host chooses
-// which of its own levels to write into which label. Three fixed levels, not a
-// path, so depth is a fixed expression a store can order by (see [Scope.Depth]).
+// Instance (one installation) contains Project, which contains Workspace.
+// Labels are opaque and never interpreted; empty means not narrowed at that
+// level, and a host decides what to put in each. The levels are fixed so a
+// store can order by [Scope.Depth].
 //
-// Matching is exact: {Project: "x"} and {Project: "x", Workspace: "w"} are
-// different scopes. Widening is opt-in through [RecallQuery].IncludeAncestors.
+// Matching is exact: {Project: "x"} and {Project: "x", Workspace: "w"} differ.
+// Widening is opt-in through [RecallQuery].IncludeAncestors.
 type Scope struct {
 	Instance  string
 	Project   string
 	Workspace string
 }
 
-// BundledScope is where skills shipped inside the binary live, and nothing else
-// may be written there. The agent's own scopes are occupied (the CLI lists,
-// regrades and distills at the zero scope), so a pack seeded there would share a
-// slug namespace with the learning loop's output. The instance name is not a
-// legal instance identifier (identifiers are host names and UUIDs), so no real
-// instance can land here by accident.
+// BundledScope holds only the skills shipped in the binary, apart from the
+// zero scope where the learning loop writes. Its instance name is not a legal
+// instance identifier, so no real instance lands here.
 //
-// Skills are keyed by (Scope, Slug) on write but resolved by slug alone on read,
-// and Get breaks a cross-scope slug tie by taking the earliest created row. A
-// bundled skill is seeded at install, so it is always the earliest: were the loop
-// allowed to mint a learned skill with a bundled slug, every later read of that
-// slug would return the bundled record and the learned one would be unreachable
-// while still counting as stored. learn.Curate enforces the boundary from the
-// write side.
+// Reads resolve by slug alone and Get takes the earliest row on a tie, which
+// is always the bundled one. A learned skill reusing a bundled slug would be
+// stored but unreachable, so learn.Curate refuses it.
 var BundledScope = Scope{Instance: "@bundled"}
 
-// Ancestors returns s and the scopes enclosing it, most-specific first and ending
-// at the global (zero) scope: {I,P,W}, {I,P}, {I}, {}. It is the resolution chain
-// a widened read walks, and the one definition of "encloses" every backend shares.
-//
-// s is always the first element and no scope repeats, so a Scope whose outer
-// fields are empty yields a shorter chain: {Project: "x"} resolves through
-// {Project: "x"} then the global scope, with no phantom instance level.
+// Ancestors returns s and its enclosing scopes, ending at the zero scope:
+// {I,P,W}, {I,P}, {I}, {}. Every backend uses it as the definition of
+// "encloses". No scope repeats, so {Project: "x"} yields itself then {}.
 func (s Scope) Ancestors() []Scope {
 	out := make([]Scope, 0, 4)
 	out = append(out, s)
@@ -90,14 +72,10 @@ func (s Scope) Ancestors() []Scope {
 	return out
 }
 
-// Depth reports how specific a scope is: 3 workspace, 2 project, 1 instance, 0
-// global. Ordering by descending Depth is most-specific-first, which is how a
-// backend ranks a recall widened across several scope levels.
-//
-// Depth reads the innermost set field rather than counting set fields, so every
-// scope in a given ancestor chain has a distinct Depth even when an outer field
-// is empty. It is expressible in a backend's query language as well as in Go (see
-// the ORDER BY in the SQLite store), so one rule orders every implementation.
+// Depth is 3 for workspace, 2 project, 1 instance, 0 global; a widened recall
+// ranks by it descending. It reads the innermost set field, so scopes in one
+// [Scope.Ancestors] chain always differ, and SQL can express it (see the
+// SQLite store's ORDER BY).
 func (s Scope) Depth() int {
 	switch {
 	case s.Workspace != "":
@@ -111,36 +89,25 @@ func (s Scope) Depth() int {
 	}
 }
 
-// Envelope is the sync/concurrency metadata carried by every persisted record,
-// embedded into Session, Turn, Skill, and MemoryItem. It is the shared sync
-// envelope (see the envelope package for the fields and the stamping rules):
-// state records and resources carry the identical five fields under identical
-// rules, which is what keeps fleet merge one discipline instead of two.
-//
-// SyncVersion powers optimistic concurrency: on an update, pass the version you
-// read and the write fails with ErrConflict if the stored version has moved (a
-// zero SyncVersion means "unconditional").
+// Envelope is the sync metadata on every persisted record, shared with
+// resources so fleet merge follows one set of rules (see package envelope).
+// Pass the SyncVersion you read on an update to get [ErrConflict] if it moved;
+// zero is unconditional.
 type Envelope = envelope.Envelope
 
-// Provider is the agent's durable backend: the single interface a host
-// implements to back the agent with its own storage. The agent never depends on
-// a concrete store, only on this Provider and the stores it returns.
+// Provider is the one interface a host implements to back the agent's
+// storage; the agent depends on no concrete store.
 type Provider interface {
-	// Name identifies the backend for diagnostics, e.g. "memory", "sqlite".
+	// Name identifies the backend in diagnostics, e.g. "sqlite".
 	Name() string
-	// Sessions returns the durable conversation store.
 	Sessions() SessionStore
-	// Skills returns the scoped, searchable skill store.
 	Skills() SkillStore
-	// Memory returns the durable memory store.
 	Memory() MemoryStore
-	// Close releases any resources held by the provider.
 	Close() error
 }
 
-// Session is a durable, resumable conversation. Sessions survive process
-// restarts so a crashed or disconnected run can be picked back up - the agent's
-// answer to message loss in ephemeral, file-based agents.
+// Session is a conversation that survives restarts, so a crashed run can be
+// resumed.
 type Session struct {
 	ID        string
 	Title     string
@@ -150,8 +117,8 @@ type Session struct {
 	Envelope
 }
 
-// Turn is one entry in a session's ordered transcript. Seq is assigned by the
-// store and is monotonic within a session.
+// Turn is one transcript entry. The store assigns Seq, monotonic within a
+// session.
 type Turn struct {
 	ID        string
 	SessionID string
@@ -162,57 +129,49 @@ type Turn struct {
 	Envelope
 }
 
-// SessionStore persists conversations and their transcripts. Turns are
-// append-only; resuming a session means reading its turns back in Seq order.
+// SessionStore persists conversations. Turns are append-only; resuming reads
+// them back in Seq order.
 type SessionStore interface {
-	// Create persists a new session, assigning an ID if one is not set.
+	// Create assigns an ID if none is set.
 	Create(ctx context.Context, s Session) (Session, error)
 	// Get returns the session by ID, or ErrNotFound.
 	Get(ctx context.Context, id string) (Session, error)
 	// List returns all sessions, oldest first.
 	List(ctx context.Context) ([]Session, error)
-	// AppendTurn appends a turn to its session, assigning ID and Seq, and bumps
-	// the session's SyncVersion. It returns ErrNotFound if the session does not
-	// exist.
+	// AppendTurn assigns ID and Seq and bumps the session's SyncVersion, or
+	// returns ErrNotFound.
 	AppendTurn(ctx context.Context, t Turn) (Turn, error)
-	// Turns returns a session's transcript in Seq order.
+	// Turns returns the transcript in Seq order.
 	Turns(ctx context.Context, sessionID string) ([]Turn, error)
-	// Delete tombstones a session by ID (soft delete), or returns ErrNotFound.
+	// Delete tombstones a session, or returns ErrNotFound.
 	Delete(ctx context.Context, id string) error
 }
 
-// Skill is a reusable, versioned unit of learned procedure. Slug is unique
-// within a Scope; Body is the skill content. Version is the content revision
-// (for provenance/rollback), distinct from Envelope.SyncVersion (the
-// concurrency/sync token).
+// Skill is a versioned learned procedure. Slug is unique within a Scope.
+// Version is the content revision, separate from the SyncVersion used for
+// concurrency.
 type Skill struct {
 	ID   string
 	Slug string
 	Name string
-	// Description is the one-paragraph statement of what the skill is for and when
-	// to reach for it. It is the only text a conformant runtime loads at discovery,
-	// so activation keys on it: a skill with no description is invisible until
-	// something else has decided to read its body. It is bounded by
-	// skillmd.MaxDescriptionLen wherever a skill is minted.
+	// Description says what the skill is for and when to use it. It is the only
+	// text loaded at discovery, so a skill without one is never activated. It is
+	// capped at skillmd.MaxDescriptionLen.
 	Description string
 	Body        string
 	Tags        []string
 	Scope       Scope
-	// Offers counts the runs shown this skill's name and description; Reads counts
-	// the runs that then asked for its body; Wins counts the reads on runs that
-	// went on to succeed. Offers is not evidence about the skill, so ranking and
-	// retirement key on Reads and Wins. Offered-and-never-read says the
-	// description is failing to sell the skill.
+	// Offers counts runs shown the description, Reads runs that then read the
+	// body, Wins reads on runs that succeeded. Ranking and retirement use Reads
+	// and Wins; offered and never read means the description is not working.
 	//
-	// The wire keys are deliberate: Offers decodes from the old "Uses" key, which
-	// counted runs the skill was injected into, so older records keep the count
-	// they held. Wins sits on "ReadWins", so the old "Wins" key (offers on
-	// successful runs) decodes into nothing.
+	// Offers keeps the "Uses" wire key so older records keep their count. Wins
+	// uses "ReadWins" so the old "Wins" key, which counted something else,
+	// decodes into nothing.
 	Offers int `json:"Uses"`
 	Reads  int `json:"Reads"`
 	Wins   int `json:"ReadWins"`
-	// Check is an optional shell command that verifies the skill still works, so it
-	// can be re-graded as the environment changes.
+	// Check is an optional shell command that re-grades the skill.
 	Check     string
 	Version   int
 	CreatedAt time.Time
@@ -220,76 +179,54 @@ type Skill struct {
 	Envelope
 }
 
-// SkillStore persists scoped skills and searches them. The durable
-// implementation backs Search with full-text search (SQLite FTS5); the
-// in-memory implementation does a case-insensitive substring scan.
+// SkillStore persists and searches scoped skills. SQLite searches with FTS5,
+// the in-memory store by case-insensitive substring.
 type SkillStore interface {
-	// Upsert creates or updates a skill keyed by (Scope, Slug). On update the
-	// content Version is incremented, CreatedAt and OriginInstanceID preserved,
-	// and SyncVersion bumped. Optimistic concurrency is opt-in: a non-zero
-	// SyncVersion on the passed skill must match the stored record, else
-	// ErrConflict; a zero SyncVersion writes unconditionally.
+	// Upsert writes by (Scope, Slug). An update increments Version, keeps
+	// CreatedAt and OriginInstanceID, and bumps SyncVersion. A non-zero
+	// SyncVersion must match the stored one, else ErrConflict.
 	Upsert(ctx context.Context, sk Skill) (Skill, error)
 	// Get returns a skill by ID or slug, or ErrNotFound.
 	Get(ctx context.Context, idOrSlug string) (Skill, error)
-	// List returns the skills in exactly that scope, ordered by slug. There is no
-	// ancestor walk; a caller wanting enclosing scopes lists each itself.
+	// List returns skills in exactly scope, by slug, with no ancestor walk.
 	List(ctx context.Context, scope Scope) ([]Skill, error)
-	// Search returns skills matching query, ordered by slug, capped at limit
-	// (limit <= 0 means no cap). A skill matches on its name, description, body
-	// or tags; the description is included because it is the text discovery
-	// keys on.
+	// Search matches name, description, body or tags, ordered by slug and
+	// capped at limit (<= 0 is no cap).
 	Search(ctx context.Context, query string, limit int) ([]Skill, error)
-	// Delete tombstones a skill by ID or slug (soft delete), or returns
-	// ErrNotFound.
+	// Delete tombstones a skill by ID or slug, or returns ErrNotFound.
 	Delete(ctx context.Context, idOrSlug string) error
 }
 
-// ErrInvalid is returned by a write whose record is malformed in a way no backend
-// should have to store: today, an anchor missing its kind or its id.
+// ErrInvalid means a write's record is malformed, such as an anchor missing
+// its kind or id.
 var ErrInvalid = errors.New("state: invalid record")
 
-// Anchor is a reference from a memory item to something outside this store: the
-// piece of work, the record, the file the fact is about. It makes recall
-// associative rather than purely lexical: reading the anchored thing can surface
-// what was learned about it.
+// Anchor points a memory item at something outside this store that the fact
+// is about, so reading that thing can recall what was learned about it.
 //
-// An anchor is opaque. Kind and ID are the referring system's own vocabulary and
-// identifiers; anchors are stored, indexed and matched, never dereferenced or
-// resolved. A dangling anchor is therefore a normal state, not an error: the
-// referent can be deleted or never have existed, and the memory stays valid and
-// recallable. Validation is shape only (see [Anchor.Valid]).
+// Anchors are opaque: stored, indexed and matched, never resolved. A dangling
+// anchor is valid and its memory stays recallable. Validation is shape only
+// (see [Anchor.Valid]).
 type Anchor struct {
-	// Kind names the referent's type in the referring system's vocabulary, so ids
-	// from two different systems cannot collide.
+	// Kind is the referent's type in the referring system's vocabulary, so ids
+	// from two systems cannot collide.
 	Kind string
-	// ID identifies the referent within that kind. It is an opaque string: a UUID,
-	// a path, a URL, whatever the owner uses.
+	// ID is the referent's opaque id within Kind.
 	ID string
 }
 
-// Valid reports whether the anchor is well formed: both halves present. That is
-// the whole of what a store may check. An empty kind is ambiguous against every
-// other system's ids and an empty id refers to nothing, so both are rejected at
-// the write rather than stored as a ref that can never match.
+// Valid reports whether both halves are present, which is all a store may
+// check. Either half empty is refused at the write, since it could never match.
 func (a Anchor) Valid() bool { return a.Kind != "" && a.ID != "" }
 
-// AnchorKindSkill is the anchor kind for a skill in this store: a memory anchored
-// with it is about the procedure that skill holds.
-//
-// It is the one anchor kind named here because a skill is the one referent Flynn
-// owns: a row in this store with an id this package issued, so Flynn can write
-// and read the anchor back without a host present. Every other kind belongs to
-// whoever refers with it.
+// AnchorKindSkill anchors a memory to a skill in this store. It is the only
+// kind defined here because a skill is the only referent whose id this package
+// issues; every other kind belongs to whoever refers with it.
 const AnchorKindSkill = "skill"
 
-// SkillAnchor returns the anchor for the skill with this id, or the zero Anchor for
-// an empty id, so a caller can build anchors from a list of ids without filtering
-// it first (an invalid anchor is refused at the write, by NormalizeAnchors).
-//
-// Ids rather than slugs: a slug is renameable and resolves across scopes, so two
-// skills can answer to one slug and a renamed skill would silently drop every
-// memory anchored to it. The id is issued once and never moves.
+// SkillAnchor returns the anchor for skill id, or the zero Anchor for an empty
+// id, which [NormalizeAnchors] refuses. It keys on the id because a slug can be
+// renamed and can match skills in several scopes.
 func SkillAnchor(id string) Anchor {
 	if id == "" {
 		return Anchor{}
@@ -297,8 +234,7 @@ func SkillAnchor(id string) Anchor {
 	return Anchor{Kind: AnchorKindSkill, ID: id}
 }
 
-// SkillAnchors returns the anchors for these skill ids, skipping empty ones. Nil in,
-// nil out.
+// SkillAnchors returns the anchors for ids, skipping empty ones, or nil.
 func SkillAnchors(ids []string) []Anchor {
 	if len(ids) == 0 {
 		return nil
@@ -315,14 +251,10 @@ func SkillAnchors(ids []string) []Anchor {
 	return out
 }
 
-// NormalizeAnchors returns the anchors in canonical form (sorted by kind then id,
-// exact duplicates collapsed) or [ErrInvalid] if any of them is not Valid. Nil and
-// empty both normalize to nil.
-//
-// Order carries no meaning here (unlike [MemoryItem].Sources), so canonicalizing
-// it makes the same anchor set encode, and therefore content-hash, identically on
-// every write. Every write path normalizes through this, so a backend cannot
-// invent its own answer to what a duplicate anchor means.
+// NormalizeAnchors sorts by kind then id and drops duplicates, or returns
+// [ErrInvalid] for an invalid anchor. Empty input gives nil. Anchor order
+// carries no meaning, so one set always hashes the same. Every write path
+// calls it, so backends agree on what a duplicate is.
 func NormalizeAnchors(in []Anchor) ([]Anchor, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -343,19 +275,11 @@ func NormalizeAnchors(in []Anchor) ([]Anchor, error) {
 	return slices.Compact(out), nil
 }
 
-// NormalizeSubject returns the canonical form of a subject slug: lower-cased,
-// with each run of characters that is neither a letter nor a digit collapsed to a
-// single hyphen and the ends trimmed. "DB choice" and "db_choice" both normalize
-// to "db-choice", so two writers naming one topic key on the same subject.
-//
-// An empty input normalizes to empty, the item about no particular subject. A
-// non-empty input that leaves nothing behind (punctuation only) is [ErrInvalid]:
-// storing it as unsubjected would hide the mistake at the point the caller relies
-// on the key. Letters and digits are judged by Unicode category, so a non-Latin
-// subject normalizes to itself instead of collapsing to nothing.
-//
-// Every write path normalizes through this, so a backend cannot invent its own
-// answer to what the same subject is.
+// NormalizeSubject lower-cases a subject and collapses each run of
+// non-letters and non-digits (by Unicode category) to one hyphen, trimming the
+// ends: "DB choice" and "db_choice" both give "db-choice". Empty stays empty.
+// Input with no letters or digits is [ErrInvalid], since storing it as
+// unsubjected would hide the mistake. Every write path calls it.
 func NormalizeSubject(in string) (string, error) {
 	var b strings.Builder
 	b.Grow(len(in))
@@ -379,13 +303,9 @@ func NormalizeSubject(in string) (string, error) {
 	return out, nil
 }
 
-// NormalizeSupersedes returns the superseded ids in canonical form (sorted,
-// duplicates collapsed) or [ErrInvalid] if self is among them or any id is blank.
-// Nil and empty both normalize to nil.
-//
-// An item may not supersede itself: a reader walks the chain backwards, and a
-// self-loop makes that walk non-terminating. Order carries nothing, so fixing it
-// gives a stable encoding, as for anchors.
+// NormalizeSupersedes sorts and dedupes the ids, or returns [ErrInvalid] for a
+// blank id or for self, since a self-loop never ends a reader's walk back
+// along the chain. Empty input gives nil.
 func NormalizeSupersedes(in []string, self string) ([]string, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -404,95 +324,57 @@ func NormalizeSupersedes(in []string, self string) ([]string, error) {
 	return slices.Compact(out), nil
 }
 
-// MemoryItem is a durable fact the agent has learned, attributable to its
-// sources for provenance and rollback.
+// MemoryItem is a learned fact, attributed to its sources for rollback.
 type MemoryItem struct {
 	ID      string
 	Kind    string // e.g. "fact", "preference", "observation"
 	Content string
 	Scope   Scope
-	// Subject is the slug this item is about, the key a host groups writes on when
-	// it decides what a new fact does to the ones already stored: replace the
-	// standing answer, or join a running series. Kind says what sort of thing the
-	// item is; Subject says which topic it belongs to.
-	//
-	// Unlike an anchor, which is opaque, the subject is this store's own vocabulary
-	// and is normalized (see [NormalizeSubject]) so two spellings of a topic do not
-	// fork the chain. Empty is the item about no particular subject. A store records
-	// the key; the host's write policy decides whether the next write on it replaces
-	// or appends (see [MemoryStore]).
+	// Subject is the topic slug a host groups writes on to decide whether a new
+	// fact replaces or joins earlier ones (see [MemoryStore]). It is normalized
+	// by [NormalizeSubject] so two spellings share a chain. Empty means no
+	// particular subject.
 	Subject string
-	// Supersedes are the ids of the items this one replaces: the correction's link
-	// back to what it corrected, so a reader of two contradictory facts on one subject
-	// can tell a revision from a disagreement.
-	//
-	// Superseding does not retire anything. The store returns both items until the
-	// loser is tombstoned with Delete, so a host can retire the old fact while the
-	// audit trail still says what replaced it, or keep both live. A backend must not
-	// infer a delete from this field. Ids are opaque and nothing resolves them: an
-	// id naming a purged item is a dead link in the chain, not an error.
+	// Supersedes lists the ids this item corrects, so a reader can tell a
+	// revision from a disagreement. It retires nothing: both stay recallable
+	// until the host calls Delete, and a backend must never infer a delete from
+	// it. Ids are never resolved, so one naming a purged item is not an error.
 	Supersedes []string
-	// Sources is the provenance: every input this fact came from, in the order the
-	// writer credits them. It is a list because a purge is exact only if it finds
-	// every item that lists a compromised input, including those where it was one
-	// among several. Order carries no ranking.
-	//
-	// An empty or nil Sources is an item with no recorded provenance, which readers
-	// that classify by origin (see the memory/guard package) treat as the
-	// least-trusted answer they can defend, never as trusted.
+	// Sources lists every input the fact came from, unranked, so a purge finds
+	// each item that cites a compromised input. Empty Sources means unknown
+	// provenance, which origin classifiers (package memory/guard) treat as
+	// least trusted.
 	Sources []string
-	// Anchors are the things outside this store that the fact is about, the cues a
-	// reader can recall by (see [Anchor] and [RecallQuery].Anchors). Every write path
-	// stores them in canonical form (sorted, deduplicated). They are not provenance:
-	// Sources is what a purge follows, Anchors is what a read matches on.
+	// Anchors are what the fact is about, matched by [RecallQuery].Anchors and
+	// stored sorted and deduplicated. A purge follows Sources and ignores them.
 	Anchors []Anchor
-	// Tainted records that attacker-influenceable input was in the context that
-	// produced this fact, whatever its Sources say. It is set at write and never
-	// cleared: taint only ever spreads.
+	// Tainted records that attacker-influenceable input was in the producing
+	// context, whatever Sources says, since an agent can restate a poisoned
+	// input as its own conclusion. It is set at write and never cleared.
 	//
-	// It is separate from Sources because an agent that reads a poisoned tool output
-	// and writes the conclusion as its own launders the input, and Sources credits
-	// only the inputs the writer names. Only the writing context can say so.
-	//
-	// A taint is not a refusal. A tainted fact is written, recalled and used like
-	// any other; what it cannot do is enter the wake digest, the one path that
-	// reaches every reader unasked (see guard.PushEligibility). Marking is the
-	// host's job: a store with no taint source records only what provenance implies.
+	// A tainted fact is stored, recalled and used normally but is kept out of
+	// the wake digest, which reaches every reader unasked (see
+	// guard.PushEligibility). The host does the marking.
 	Tainted   bool
 	CreatedAt time.Time
-	// ExpiresAt is the first instant this item stops being recallable; the zero
-	// value never expires. It is half-open, like [RecallQuery].Since and Until: an
-	// item expiring at T is recalled at T-1ns and not at T.
-	//
-	// Recall omits an expired item on every backend (see [MemoryStore].Recall);
-	// nothing else changes, so the item is still on the event stream and still
-	// tombstoned by Delete. Expiry hides a fact from retrieval; it does not erase it.
-	//
-	// Write accepts an already-expired item rather than rejecting it, so clock skew
-	// or a replayed event does not become a write error.
+	// ExpiresAt is the first instant Recall omits the item; zero never expires.
+	// Expiry only hides the item: it stays on the event stream and Delete still
+	// applies. Write accepts an expired item so clock skew or replay is not an
+	// error.
 	ExpiresAt time.Time
-	// Score is how well this item matched the query that recalled it, in [0,1]
-	// with 1 the best match. It is a read-side annotation: Recall sets it, Write
-	// ignores it, and no backend persists it.
-	//
-	// A backend that cannot rank reports 1 for every match, so a floor
-	// ([RecallQuery].MinScore) excludes nothing there instead of emptying every
-	// recall. The scale is the backend's own: scores order one recall's results and
-	// are not comparable across backends, queries, or a growing corpus, so a MinScore
-	// is tuned for one backend and one corpus.
+	// Score is the recall match quality in [0,1], 1 best. Recall sets it; it is
+	// never persisted. A backend that cannot rank reports 1, so
+	// [RecallQuery].MinScore excludes nothing there. Scores only order one
+	// recall and do not compare across backends, queries or corpus growth.
 	Score float64
 	Envelope
 }
 
-// UnmarshalJSON decodes a memory item, accepting the single-valued "Source" that
-// items carried before provenance became a list.
-//
-// The spine still holds events written under the old shape, and a replay must
-// agree with the state they produced, so the old field decodes into a one-element
-// Sources. A payload carrying both fields is a new writer's, so Sources wins.
+// UnmarshalJSON also accepts the single-valued "Source" key, which spine
+// events still carry and replay must honour, as a one-element Sources. When
+// both are present Sources wins.
 func (m *MemoryItem) UnmarshalJSON(b []byte) error {
-	// item sheds the method set, so the embedded decode below is the default one
-	// and not a recursive call back into here.
+	// item sheds the method set, so this decode does not recurse.
 	type item MemoryItem
 	var v struct {
 		item
@@ -508,50 +390,36 @@ func (m *MemoryItem) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// RecallQuery selects memory for prefetch into context. Query is matched
-// lexically (and, in vector-capable backends, semantically); Scope narrows the
-// search; Limit caps results (<= 0 means no cap).
+// RecallQuery selects memory to prefetch. Query matches lexically, and
+// semantically where the backend has vectors. Limit <= 0 is no cap.
 type RecallQuery struct {
 	Query string
-	// Scope narrows the search to one exact scope. The zero Scope is the
-	// unfiltered read that spans every scope, not the global scope.
+	// Scope is the one exact scope read. The zero Scope reads every scope,
+	// which differs from reading the global scope alone.
 	Scope Scope
-	// IncludeAncestors widens a scoped recall to Scope.Ancestors(), so an item
-	// written at {Project: X} is recalled by a reader at {Project: X, Workspace: W}.
-	// Results come back most-specific-first (see Recall). It has no effect on an
-	// unfiltered recall, which already spans everything.
+	// IncludeAncestors widens a scoped recall to [Scope.Ancestors],
+	// most-specific first. It does nothing for the zero Scope.
 	IncludeAncestors bool
-	// Kinds restricts the recall to these MemoryItem kinds; empty matches every
-	// kind. Filtering here avoids paying retrieval cost for rows then thrown away.
+	// Kinds restricts the recall to these kinds; empty matches all.
 	Kinds []string
-	// Subjects restricts the recall to items whose Subject is one of these; empty
-	// matches every item. Values are matched exactly and are not normalized here, so
-	// a caller filtering on a subject it did not get from a stored item passes it
-	// through [NormalizeSubject] first.
-	//
-	// This is the read a write policy takes before deciding what a new fact does to
-	// the ones on its subject. A lexical query cannot express it: it also finds items
-	// that merely mention the subject and misses those that never spell it out.
+	// Subjects restricts the recall to these subjects; empty matches all. Values
+	// match exactly and are not normalized here, so pass outside input through
+	// [NormalizeSubject]. A write policy reads by this, since a lexical query
+	// finds mentions and misses items that never spell the subject out.
 	Subjects []string
-	// Anchors restricts the recall to items carrying at least one of these anchors;
-	// empty matches every item. Any one suffices, not all: an item anchored to the
-	// thing and to two others is still about it. An anchored recall with an empty
-	// Query is the normal shape.
-	//
-	// Anchors are matched exactly on both halves. Nothing resolves a ref, so an
-	// anchor naming a referent that no longer exists matches nothing.
+	// Anchors restricts the recall to items carrying any one of these, matched
+	// exactly on both halves; empty matches all. An anchored recall usually has
+	// an empty Query.
 	Anchors []Anchor
 	// Since and Until bound CreatedAt to the half-open window [Since, Until). A
 	// zero Since has no lower bound and a zero Until no upper bound, so the zero
 	// query still spans all of history.
 	Since time.Time
 	Until time.Time
-	// MinScore drops results the backend scored below it, so Limit means "top K of
-	// what is relevant" rather than "K rows, however weak". Zero admits everything.
-	// See [MemoryItem].Score for what a backend with no ranking reports.
+	// MinScore drops results scored below it, so Limit keeps only relevant
+	// rows. Zero admits all (see [MemoryItem].Score).
 	MinScore float64
-	// Order selects the ranking; the zero value is the recency order Recall has
-	// always returned.
+	// Order selects the ranking; zero is [OrderRecent].
 	Order RecallOrder
 	Limit int
 }
@@ -560,36 +428,25 @@ type RecallQuery struct {
 type RecallOrder int
 
 const (
-	// OrderRecent returns the most recent memory first. It is the zero value, and
-	// the right default for "what has happened lately".
+	// OrderRecent returns the most recent memory first.
 	OrderRecent RecallOrder = iota
-	// OrderRelevance returns the best-matching memory first, recency breaking
-	// ties. With Limit it is top-K-by-relevance: recency order caps how many rows
-	// come back but not how good they are, so the strongest match can be truncated
-	// away by a row that merely arrived later. Against a backend that cannot rank,
-	// every match scores 1 and this degrades to recency.
+	// OrderRelevance returns the best match first, recency breaking ties, so
+	// Limit cannot truncate the strongest match in favour of a newer row. A
+	// backend that cannot rank degrades it to recency.
 	OrderRelevance
 )
 
-// ExpiredAt reports whether the item has reached its expiry as of now. The zero
-// ExpiresAt never expires, and expiry is inclusive of the instant itself,
-// matching the half-open window of [RecallQuery].Until.
-//
-// It is the single definition of "expired": [RecallQuery.Selects] calls it, and a
-// backend that evaluates expiry in its own query language must answer identically.
+// ExpiredAt reports whether now is at or past ExpiresAt, matching the
+// half-open [RecallQuery].Until. It defines "expired"; a backend computing
+// expiry in its own query language must agree with it.
 func (m MemoryItem) ExpiredAt(now time.Time) bool {
 	return !m.ExpiresAt.IsZero() && !now.Before(m.ExpiresAt)
 }
 
-// Selects reports whether it satisfies the query's kind, subject and anchor
-// filters and its time window, and has not expired as of now. Scope resolution
-// ([RecallQuery.ScopeChain]) and the lexical match (graded by Score) are separate.
-// A backend that pushes these predicates into its query language must produce the
-// identical answer.
-//
-// now is the backend's reading of the clock, taken once per recall so every item
-// in a result set is judged against the same instant. Expiry is checked here so a
-// backend cannot forget it and serve expired memory.
+// Selects reports whether it passes the kind, subject, anchor and time filters
+// and is unexpired at now, read once per recall. Scope ([RecallQuery.ScopeChain])
+// and the lexical match are checked elsewhere. A backend evaluating these in
+// its own query language must agree with it.
 func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
 	if it.ExpiredAt(now) {
 		return false
@@ -612,8 +469,6 @@ func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
 	return true
 }
 
-// matchesAnchors reports whether it carries any of the anchors the query asked
-// for, which an unanchored query trivially satisfies.
 func (q RecallQuery) matchesAnchors(it MemoryItem) bool {
 	if len(q.Anchors) == 0 {
 		return true
@@ -626,9 +481,8 @@ func (q RecallQuery) matchesAnchors(it MemoryItem) bool {
 	return false
 }
 
-// ScopeChain returns the scopes a recall reads, most-specific first, or nil when
-// the recall spans every scope (a zero Scope). Backends resolve through it so
-// "most-specific-first" has one definition rather than one per backend.
+// ScopeChain returns the scopes a recall reads, most-specific first, or nil
+// for the zero Scope. Every backend resolves scope through it.
 func (q RecallQuery) ScopeChain() []Scope {
 	switch {
 	case q.Scope == (Scope{}):
@@ -640,94 +494,61 @@ func (q RecallQuery) ScopeChain() []Scope {
 	}
 }
 
-// RanksByScope reports whether this recall reads more than one scope level and so
-// orders by scope before recency. It is false for every query that resolves to a
-// single scope, including an unfiltered one, which is what keeps widening from
-// changing the order of reads that did not ask for it.
+// RanksByScope reports whether the recall reads several scope levels and so
+// orders by scope before recency. It is false for single-scope and unfiltered
+// reads, so their order is unchanged by widening.
 func (q RecallQuery) RanksByScope() bool { return len(q.ScopeChain()) > 1 }
 
-// MemoryStore persists and recalls memory. The durable implementation combines
-// lexical (FTS5) and vector (chromem-go) recall; the in-memory implementation
-// does a case-insensitive substring scan, most-recent first.
+// MemoryStore persists and recalls memory. SQLite combines FTS5 and
+// chromem-go vectors; the in-memory store scans substrings.
 //
-// Memory is append-only: a Write is always a new record, never an edit of an
-// earlier one, and Delete tombstones rather than erases. Dedup and retention are
-// the host's to decide, and a backend must not invent its own answer:
-// contradictory writes both stay live and Recall returns both, and nothing ages
-// memory out on its own. A host that needs one truth per subject groups writes by
-// [MemoryItem].Subject, links the correction with [MemoryItem].Supersedes and
-// retires the loser with Delete; an item with a known death date carries
-// [MemoryItem].ExpiresAt. A backend that drops a write it judges duplicate, or
-// garbage-collects old items, is lossy in a way no caller asked for.
+// Memory is append-only: each Write is a new record and Delete tombstones.
+// Dedup and retention belong to the host, so a backend must keep
+// contradictory writes and never age items out. A host wanting one answer per
+// subject groups by [MemoryItem].Subject, links with [MemoryItem].Supersedes,
+// and deletes the loser; [MemoryItem].ExpiresAt covers a known end date.
 type MemoryStore interface {
 	// Write persists a memory item, assigning an ID if one is not set.
 	Write(ctx context.Context, m MemoryItem) (MemoryItem, error)
-	// Recall returns memory matching the query, most-recent first, with the item
-	// ID as the final tiebreak so the order is total and deterministic. A recall
-	// widened over several scope levels (RecallQuery.IncludeAncestors) orders by
-	// scope first, most-specific first, so the nearest memory wins; see
-	// SortRecall, which every backend sorts through.
-	//
-	// Tombstoned items and items whose MemoryItem.ExpiresAt has passed are never
-	// returned. Expiry is judged against one reading of the clock per call, so a
-	// single result set is internally consistent.
+	// Recall returns matches in [SortRecall] order. Tombstoned and expired
+	// items are never returned, with expiry judged at one clock reading per
+	// call.
 	Recall(ctx context.Context, q RecallQuery) ([]MemoryItem, error)
-	// Delete tombstones a memory item by ID (soft delete), or returns
-	// ErrNotFound.
+	// Delete tombstones an item, or returns ErrNotFound.
 	Delete(ctx context.Context, id string) error
 
-	// RecordPush counts one push of each of these items at a reader: the store
-	// put them in front of somebody who did not ask for them. It is recorded
-	// against the writing instance (see [MemoryUsage]). Every id is checked before
-	// anything is recorded, so a set carrying one bad id records nothing.
-	//
-	// The caller knows a push happened; no read path infers one. Recall never
-	// records anything, because a store that instrumented its own reads would count
-	// the instrumentation. An unknown or tombstoned ID is [ErrNotFound] and nothing
-	// is recorded, so a stale id in a digest surfaces. An empty list is a no-op.
+	// RecordPush counts one unrequested showing of each item, against the
+	// writing instance (see [MemoryUsage]). Only the caller reports pushes;
+	// Recall records nothing. An unknown or tombstoned id is [ErrNotFound] and
+	// records nothing for the whole set. An empty list is a no-op.
 	RecordPush(ctx context.Context, memoryIDs []string) error
-	// RecordUse counts one use of an item, attributed by origin: the caller
-	// declares whether the reader went and found it (UsageOrganic) or whether it
-	// had already been pushed at them (UsagePrimed). An origin that is not one of
-	// those two is ErrInvalid; there is no default, because the split is the
-	// measurement (see UsageOrigin). An unknown or tombstoned ID is ErrNotFound.
+	// RecordUse counts one use, which the caller marks UsageOrganic (the reader
+	// found it) or UsagePrimed (it was pushed first). Any other origin is
+	// ErrInvalid, with no default, since the split is the measurement. An
+	// unknown or tombstoned id is ErrNotFound.
 	RecordUse(ctx context.Context, memoryID string, origin UsageOrigin) error
-	// Usage returns the per-instance usage rows for these items, ordered by item
-	// then instance (SortUsage). An empty list returns every row the store holds,
-	// which is the read the fleet-wide metrics take.
-	//
-	// Items with no usage yet have no rows, not a zero row: materializing one would
-	// make an untouched corpus indistinguishable from an ignored one. Rows survive
-	// their item's tombstone.
+	// Usage returns per-instance rows in SortUsage order; an empty list returns
+	// all rows. An unused item has no row, so an untouched corpus stays
+	// distinguishable from an ignored one. Rows survive tombstones.
 	Usage(ctx context.Context, memoryIDs []string) ([]MemoryUsage, error)
 
-	// Promote records a trusted reviewer's standing decision about whether an item
-	// may be pushed at a reader who did not ask for it, and returns the post-image
-	// row (see [MemoryPromotion]). A decision on an item that already has one
-	// replaces it, so revoking is Promote with Promoted false: there is one current
-	// answer per item, and its history is on the event stream.
-	//
-	// A decision missing an item or a reviewer is [ErrInvalid], and an unknown or
-	// tombstoned item is [ErrNotFound]: an unattributable promotion, or one pointing
-	// at nothing, leaves a hole in the audit trail.
+	// Promote records a reviewer's decision on whether an item may be pushed
+	// unasked and returns the row (see [MemoryPromotion]). It replaces any
+	// earlier decision, so revoking is Promoted false; history is on the event
+	// stream. A missing item or reviewer is [ErrInvalid] and an unknown or
+	// tombstoned item [ErrNotFound], keeping the audit trail whole.
 	Promote(ctx context.Context, d PromotionDecision) (MemoryPromotion, error)
-	// Promotions returns the decision rows for these items, ordered by item
-	// (SortPromotions). An empty list returns every row the store holds.
-	//
-	// An item nobody has reviewed has no row rather than a false one, as with usage:
-	// silence is not a decision. A reader building the push set treats both as
-	// not-promoted (see PromotedSet). Rows survive their item's tombstone.
+	// Promotions returns rows in SortPromotions order; an empty list returns
+	// all. An unreviewed item has no row, which PromotedSet treats as not
+	// promoted. Rows survive tombstones.
 	Promotions(ctx context.Context, memoryIDs []string) ([]MemoryPromotion, error)
 }
 
-// SortRecall orders q's results into the order [MemoryStore].Recall promises, in
-// place. Every backend sorts through it, so the contract has one implementation.
-//
-// The keys, in order: relevance when q asked for it, then scope when the read
-// widened across levels, then recency, then ID to make the order total. Scope
-// ranking lets a workspace's own memory outrank the project-wide memory it
-// inherits, however old that is. It is skipped for a read that did not widen, so
-// an unfiltered or single-scope recall keeps plain most-recent-first order.
+// SortRecall sorts items in place into the order every backend's Recall
+// returns: score if q asks for relevance, then scope depth if
+// [RecallQuery.RanksByScope], then newest first, then ID so the order is
+// total. Scope depth lets a workspace's memory outrank older inherited
+// project memory.
 func SortRecall(q RecallQuery, items []MemoryItem) {
 	byScore := q.Order == OrderRelevance
 	byScope := q.RanksByScope()
@@ -743,6 +564,6 @@ func SortRecall(q RecallQuery, items []MemoryItem) {
 		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
 			return items[i].CreatedAt.After(items[j].CreatedAt)
 		}
-		return items[i].ID < items[j].ID // total order: deterministic reads regardless of store iteration
+		return items[i].ID < items[j].ID
 	})
 }

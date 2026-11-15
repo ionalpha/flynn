@@ -1,14 +1,11 @@
 // Package signalcli adapts the Signal messenger to the inbox Source and Sink ports
-// by speaking JSON-RPC to a signal-cli daemon. signal-cli runs as a separate,
-// operator-supplied process (it links to an existing Signal account as a secondary
-// device, so no separate phone number is needed) and exposes a newline-delimited
-// JSON-RPC interface on a loopback TCP port. This package is a pure-Go client over
-// that socket: it never embeds signal-cli and dials only the loopback daemon.
+// over JSON-RPC to a signal-cli daemon. signal-cli is a separate, operator-supplied
+// process, linked to an existing Signal account as a secondary device, that serves
+// newline-delimited JSON-RPC on a loopback TCP port. This package never embeds
+// signal-cli and dials only that loopback daemon.
 //
-// Incoming messages arrive as JSON-RPC "receive" notifications and are emitted as
-// inbox entries; replies are sent with the "send" method. Each request carries a
-// unique id and the client awaits the matching response before returning, so a
-// reply is correlated to its call and a send is never lost behind another.
+// Each request carries a unique id and waits for its matching response, so a reply is
+// correlated to its call and a send is never lost behind another.
 package signalcli
 
 import (
@@ -33,18 +30,16 @@ const name = "signal"
 // reconnectBackoff paces re-dialing the daemon after the connection drops.
 const reconnectBackoff = 2 * time.Second
 
-// loopbackPolicy permits only loopback addresses: the daemon is local, and the
-// egress gate blocks the client from being pointed at anything else.
+// loopbackPolicy permits only loopback addresses, so the egress gate blocks the client
+// from being pointed anywhere but the local daemon.
 var loopbackPolicy = netguard.Policy{Allow: []netip.Prefix{
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("::1/128"),
 }}
 
-// errNotConnected is returned by Send when no daemon connection is currently live.
 var errNotConnected = errors.New("signalcli: not connected to the daemon")
 
 // Client is a Signal source and sink backed by a signal-cli JSON-RPC daemon.
-// Construct it with New.
 type Client struct {
 	addr    string
 	account string
@@ -60,15 +55,14 @@ type Client struct {
 // Option configures a Client.
 type Option func(*Client)
 
-// WithAccount sets the Signal account (the linked +number) to act as, required only
-// when the daemon serves multiple accounts. Single-account daemons need none.
+// WithAccount sets the Signal account (the linked +number) to act as. Only a daemon
+// that serves several accounts needs it.
 func WithAccount(a string) Option {
 	return func(c *Client) { c.account = a }
 }
 
 // WithClock sets the clock that paces reconnect backoff, so a test drives re-dial
-// timing with a Manual clock instead of sleeping. Production leaves the default
-// System clock.
+// timing with a Manual clock instead of sleeping.
 func WithClock(clk clock.Timing) Option {
 	return func(c *Client) {
 		if clk != nil {
@@ -77,8 +71,8 @@ func WithClock(clk clock.Timing) Option {
 	}
 }
 
-// New builds a Signal client that talks to the signal-cli JSON-RPC daemon at the
-// given loopback TCP address (for example 127.0.0.1:7583).
+// New builds a client for the signal-cli daemon at a loopback TCP address (for example
+// 127.0.0.1:7583).
 func New(tcpAddr string, opts ...Option) (*Client, error) {
 	if tcpAddr == "" {
 		return nil, errors.New("signalcli: empty daemon address")
@@ -98,10 +92,9 @@ func New(tcpAddr string, opts ...Option) (*Client, error) {
 // Name identifies the source and its paired sink.
 func (c *Client) Name() string { return name }
 
-// Receive connects to the daemon and streams each incoming text message as an
-// inbox.Spec until ctx is cancelled, reconnecting after a dropped connection. The
-// returned channel is closed when ctx is cancelled. The Spec's Source is left for
-// the ingester to stamp.
+// Receive streams each incoming text message as an inbox.Spec, reconnecting after a
+// dropped connection, until ctx is cancelled, then closes the channel. The Spec's
+// Source is left for the ingester to stamp.
 func (c *Client) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	out := make(chan inbox.Spec)
 	go func() {
@@ -113,9 +106,8 @@ func (c *Client) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	return out, nil
 }
 
-// session holds one connection: it dials, subscribes, and reads until the
-// connection ends or ctx is cancelled. It returns a non-nil error on a connection
-// fault (so the caller reconnects) and nil on a clean ctx cancellation.
+// session runs one connection until it ends or ctx is cancelled. It returns non-nil on
+// a connection fault, so the caller reconnects, and nil on cancellation.
 func (c *Client) session(ctx context.Context, out chan<- inbox.Spec) error {
 	conn, err := c.dial(ctx, "tcp", c.addr)
 	if err != nil {
@@ -139,9 +131,8 @@ func (c *Client) session(ctx context.Context, out chan<- inbox.Spec) error {
 		}
 	}()
 
-	// Best effort: ask the daemon to stream incoming messages. A daemon started
-	// with --receive-mode=on-start already streams; an unsupported method just
-	// errors back and is ignored.
+	// Best effort: a daemon started with --receive-mode=on-start already streams, and
+	// one without the method errors back, which is ignored.
 	_ = c.notify("subscribeReceive")
 
 	r := bufio.NewReader(conn)
@@ -159,8 +150,8 @@ func (c *Client) session(ctx context.Context, out chan<- inbox.Spec) error {
 	}
 }
 
-// dispatch routes one JSON-RPC line: a response (has id) wakes its waiting caller,
-// a "receive" notification becomes an inbox entry. Anything else is ignored.
+// dispatch routes one JSON-RPC line: a response wakes its waiting caller, a "receive"
+// notification becomes an inbox entry, and anything else is ignored.
 func (c *Client) dispatch(ctx context.Context, line []byte, out chan<- inbox.Spec) {
 	var msg struct {
 		ID     *uint64         `json:"id"`
@@ -187,17 +178,15 @@ func (c *Client) dispatch(ctx context.Context, line []byte, out chan<- inbox.Spe
 	}
 }
 
-// Send delivers a reply to a conversation: a +number is sent to that recipient, any
-// other id is treated as a group id. It assigns a unique request id and waits for
-// the matching response, so the reply is confirmed and never lost behind another.
+// Send delivers a reply: a +number goes to that recipient and any other conversation
+// id is a group id. It waits for the matching response, so the reply is confirmed.
 func (c *Client) Send(ctx context.Context, conversation, text string) error {
 	_, err := c.call(ctx, "send", sendParams(conversation, text, c.account))
 	return err
 }
 
-// sendParams builds the "send" parameters: a conversation that looks like a phone
-// number (+digits) is a direct recipient, anything else is a group id. The account
-// is included only when set (multi-account daemons).
+// sendParams treats a +digits conversation as a direct recipient and anything else as
+// a group id, and includes the account only when set.
 func sendParams(conversation, text, account string) map[string]any {
 	params := map[string]any{"message": text}
 	if strings.HasPrefix(conversation, "+") {
@@ -211,8 +200,8 @@ func sendParams(conversation, text, account string) map[string]any {
 	return params
 }
 
-// call sends a request and waits for its response. It registers the id before
-// writing, so a response that races back is delivered to the waiting caller.
+// call sends a request and waits for its response. It registers the id before writing,
+// so a response that races back finds its waiter.
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	ch := make(chan rpcResult, 1)
 
@@ -241,7 +230,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 }
 
-// notify sends a request without waiting for its response (best-effort).
+// notify sends a request without waiting for its response.
 func (c *Client) notify(method string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -252,8 +241,8 @@ func (c *Client) notify(method string) error {
 	return c.enc.Encode(request{JSONRPC: "2.0", Method: method, ID: c.nextID})
 }
 
-// complete delivers a result to the caller waiting on id (if any) and unregisters
-// it. The waiter's channel is buffered, so the send never blocks.
+// complete delivers a result to the caller waiting on id, if any, and unregisters it.
+// The waiter's channel is buffered, so the send never blocks.
 func (c *Client) complete(id uint64, res rpcResult) {
 	c.mu.Lock()
 	ch, ok := c.pending[id]
@@ -265,15 +254,15 @@ func (c *Client) complete(id uint64, res rpcResult) {
 }
 
 // cancel unregisters a pending call without delivering, so a caller that gave up
-// (its context ended, or the write failed) leaves no waiter for a late response.
+// leaves no waiter for a late response.
 func (c *Client) cancel(id uint64) {
 	c.mu.Lock()
 	delete(c.pending, id)
 	c.mu.Unlock()
 }
 
-// teardown drops the connection's encoder and fails every in-flight call so no
-// caller waits forever across a reconnect.
+// teardown drops the connection's encoder and fails every in-flight call, so no caller
+// waits forever across a reconnect.
 func (c *Client) teardown() {
 	c.mu.Lock()
 	c.enc = nil
@@ -309,9 +298,9 @@ func (e *rpcError) err() error {
 	return fmt.Errorf("signalcli: rpc error %d: %s", e.Code, e.Message)
 }
 
-// specFromParams extracts a text message from a "receive" notification's params,
-// tolerating both the flat envelope shape and the result-wrapped one different
-// signal-cli versions emit. A non-text or empty message yields ok=false.
+// specFromParams extracts a text message from a "receive" notification, accepting the
+// flat and the result-wrapped shapes different signal-cli versions emit. A non-text or
+// empty message yields ok=false.
 func specFromParams(raw json.RawMessage) (inbox.Spec, bool) {
 	var p struct {
 		Envelope *envelope `json:"envelope"`
@@ -351,7 +340,7 @@ type envelope struct {
 	} `json:"dataMessage"`
 }
 
-// guards: a *Client is both an inbox Source and an inbox Sink.
+// A *Client is both an inbox Source and an inbox Sink.
 var (
 	_ inbox.Source = (*Client)(nil)
 	_ inbox.Sink   = (*Client)(nil)

@@ -1,19 +1,10 @@
-// Package github is the agent's pull-request review surface: fetch a pull
-// request and its diff, post inline and summary comments, and submit a formal
-// review verdict. It is the read-and-review half of the GitHub tool, distinct
-// from cloning a contributor's branch and running its code, which stays behind
-// the sandbox.
+// Package github reviews one pull request: fetch it and its diff, post
+// comments, and submit a verdict. It runs no code and touches no working tree;
+// requests go through a netguard client by default.
 //
-// The tools here hold no host access. They call the GitHub REST API through an
-// injected HTTP client, which defaults to a netguard-backed client so the egress
-// policy applies to every request. Nothing here executes code, reads the working
-// tree, or spawns a process: a review is a read of a diff and a write to an API.
-//
-// Authority is deliberately narrow. A Set authenticates as a GitHub App
-// installation, which holds pull_requests:write and contents:read and no
-// contents:write, so the reviewer can never push to a branch. Submitting an
-// APPROVE verdict is refused unless the caller opts in through Config, and is
-// always refused on a pull request the reviewer itself authored.
+// The App installation holds pull_requests:write and contents:read and no
+// contents:write, so the reviewer cannot push. APPROVE needs an opt-in in
+// [Config] and is always refused on the reviewer's own pull request.
 package github
 
 import (
@@ -27,147 +18,112 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// DefaultAPIBase is GitHub's REST API root, used when Config leaves APIBase empty.
+// DefaultAPIBase is GitHub's REST API root.
 const DefaultAPIBase = "https://api.github.com"
 
-// ErrApproveNotEnabled is returned when a submit_review call asks for an APPROVE
-// verdict but the Set was built without Config.AllowApprove. Approval is off by
-// default: a reviewer that approves unless told otherwise silently becomes a
-// merge gate on every repository it is installed on.
+// ErrApproveNotEnabled is returned for APPROVE without Config.AllowApprove.
+// Approval is off by default so the reviewer does not become a merge gate on
+// every repository it is installed on.
 var ErrApproveNotEnabled = errors.New("github: APPROVE verdict is not enabled for this reviewer")
 
-// ErrSelfApproval is returned when the reviewer would approve a pull request it
-// authored itself. A self-approval is not a second opinion, and no configuration
-// enables it.
+// ErrSelfApproval is returned for APPROVE on the reviewer's own pull request.
+// No configuration enables it.
 var ErrSelfApproval = errors.New("github: refusing to approve the reviewer's own pull request")
 
-// ErrDiffTooLarge is returned when a pull request exceeds the configured review
-// budget and the caller has not opted in to reviewing it anyway. A runaway diff
-// costs real money to review and produces a worse review at the end of it, so the
-// default is to refuse and let a human ask for it explicitly.
+// ErrDiffTooLarge is returned when a pull request exceeds
+// Config.MaxChangedLines without Config.ReviewOversize, because a huge diff is
+// expensive and reviews badly.
 var ErrDiffTooLarge = errors.New("github: pull request exceeds the review budget")
 
-// ErrIncompleteDiff is returned when an APPROVE verdict is attempted on a pull
-// request whose diff did not reach the review in full. An approval asserts the
-// change was reviewed, so approving a diff that was truncated on the way in states
-// something untrue. Blocking verdicts stay available on partial evidence: one real
-// defect is enough to say no, but most of a diff is never enough to say yes.
+// ErrIncompleteDiff is returned for APPROVE on a truncated diff, because an
+// approval claims the whole change was read. Blocking verdicts are allowed on
+// a partial diff, since one defect is enough to say no.
 var ErrIncompleteDiff = errors.New("github: refusing to approve a pull request whose diff was truncated")
 
 // Config describes how a Set reaches GitHub and what it is permitted to do.
 type Config struct {
-	// App identifies the GitHub App and the installation the Set acts as. Set exactly
-	// one of App and Token.
-	//
-	// The App path gives the reviewer an identity of its own, distinct from whoever
-	// authored the pull request, which is what a formal approval requires.
+	// App is the GitHub App installation to act as. Set exactly one of App and
+	// Token. Only an App gives the reviewer an identity distinct from the
+	// author, which a formal approval needs.
 	App App
 
-	// Token authenticates as whoever issued it: a workflow's ambient GITHUB_TOKEN, or
-	// a personal access token. Set exactly one of App and Token.
-	//
-	// A review posted with a workflow's GITHUB_TOKEN is authored by
-	// github-actions[bot], and a repository refuses an approving review from that
-	// identity unless an owner has enabled "Allow GitHub Actions to create and approve
-	// pull requests", which is off by default. So this path can comment and request
-	// changes anywhere, and can approve only where that setting was deliberately
-	// turned on.
+	// Token is a GITHUB_TOKEN or personal access token. A GITHUB_TOKEN review is
+	// authored by github-actions[bot], which a repository refuses to let approve
+	// unless "Allow GitHub Actions to create and approve pull requests" is on
+	// (off by default).
 	Token secret.Text
 
-	// Owner and Repo bound the Set to a single repository. Every tool call operates
-	// on this repository; the model cannot redirect a review at another one because
-	// the coordinates are not part of any tool's input schema.
+	// Owner and Repo fix the repository. No tool input names one, so the model
+	// cannot redirect a review.
 	Owner string
 	Repo  string
 
-	// Number is the pull request the reviewer was invoked for. Like Owner and Repo it
-	// binds the whole review: no tool takes a pull-request number from the model, so
-	// the diff a review reads cannot steer a comment or a verdict onto a different pull
-	// request by naming its number. A review whose own diff mentions "#123" still writes
-	// only to the pull request it was launched against. Must be positive.
+	// Number fixes the pull request, which must be positive. No tool input names
+	// one, so a diff mentioning "#123" cannot steer a comment or verdict there.
 	Number int
 
-	// SelfLogin is the reviewer's own login, such as "my-reviewer[bot]". When a pull
-	// request's author matches it, an APPROVE verdict is refused. Empty disables the
-	// check, which is only correct in tests.
+	// SelfLogin is the reviewer's login, such as "my-reviewer[bot]"; APPROVE is
+	// refused on its own pull requests. Empty disables the check, for tests only.
 	SelfLogin string
 
-	// AllowApprove permits the APPROVE verdict. It is off by default on purpose, and
-	// a host should set it only from committed repository configuration, never from
-	// a value a pull-request comment can reach.
+	// AllowApprove permits APPROVE. Set it only from committed repository
+	// configuration, never from anything a pull-request comment can reach.
 	AllowApprove bool
 
-	// MaxFiles caps how many changed files a fetch returns, and MaxPatchBytes caps
-	// each file's patch, so a large pull request cannot flood the model's context.
-	// Zero selects the defaults.
+	// MaxFiles caps the files a fetch returns and MaxPatchBytes each file's
+	// patch, so a large pull request cannot flood the model's context. Zero
+	// selects the defaults.
 	MaxFiles      int
 	MaxPatchBytes int
 
-	// MaxChangedLines is the review budget: a pull request whose additions plus
-	// deletions exceed it is refused rather than reviewed, because a runaway diff
-	// costs real money and yields a worse review. Zero selects the default. Negative
-	// disables the budget, which is what an explicit "review it anyway" invocation
-	// passes.
-	//
-	// The count is GitHub's own total for the whole pull request, so a diff cannot
-	// slip under the budget by being truncated on the way in.
+	// MaxChangedLines caps additions plus deletions, using GitHub's total for the
+	// whole pull request so truncation cannot slip a diff under it. Zero selects
+	// the default; negative disables it.
 	MaxChangedLines int
 
-	// ReviewOversize permits reviewing a pull request that exceeds MaxChangedLines.
-	// It exists for the explicit, human-initiated "yes, review the big one" path. It
-	// does not permit approving one: see ErrIncompleteDiff.
+	// ReviewOversize permits reviewing past MaxChangedLines, for an explicit human
+	// request. It never permits approving: see ErrIncompleteDiff.
 	ReviewOversize bool
 
-	// HTTPClient issues the API requests. Nil selects a netguard-backed client with a
-	// public-only egress policy, which refuses connections to private, loopback, and
-	// cloud-metadata addresses after DNS resolution.
+	// HTTPClient issues API requests. Nil selects a netguard client with
+	// netguard.PublicOnly, which refuses private, loopback and cloud-metadata
+	// addresses after DNS resolution.
 	HTTPClient *http.Client
 
-	// APIBase overrides the REST API root. Empty selects DefaultAPIBase. Tests point
-	// it at an httptest server; a GitHub Enterprise host points it at its own API.
+	// APIBase overrides the REST API root, for tests or GitHub Enterprise. Empty
+	// selects DefaultAPIBase.
 	APIBase string
 
-	// Clock supplies the current time for App token minting and expiry. Nil selects
-	// clock.System.
+	// Clock times App token minting and expiry. Nil selects clock.System.
 	Clock clock.Clock
 }
 
-// Defaults for the context-protecting caps in Config.
 const (
 	defaultMaxFiles      = 300
 	defaultMaxPatchBytes = 64 << 10
 
-	// defaultMaxChangedLines is the review budget. A pull request larger than this is
-	// past the point where a single review pass is useful, and is where an unattended
-	// reviewer starts spending real money on a diff nobody asked it to read.
+	// defaultMaxChangedLines is past the size where one review pass is useful.
 	defaultMaxChangedLines = 3000
 )
 
-// Set is the GitHub review toolset for one repository. Construct it with New and
-// hand its tools to a mission executor.
+// Set is the GitHub review toolset for one pull request.
 type Set struct {
 	cfg    Config
 	client *client
 
-	// self is the login the credential authenticates as, resolved once and cached. It
-	// answers "is this comment mine", which a marker cannot: a marker is plain text in a
-	// body anyone can copy.
+	// self is the authenticated login, resolved once. It identifies the
+	// reviewer's own comments; a marker cannot, since anyone can copy one.
 	self string
 
-	// mu guards findings, which the comment tool records into and the verdict reads.
-	// Tools of one Set run on one review, but not necessarily on one goroutine.
-	//
-	// A Set is bound to one pull request (Config.Number). Findings are still keyed by
-	// pull-request number, which is always that bound number, so the verdict links only
-	// the findings this review posted and the key doubles as a check that a record and a
-	// verdict are talking about the same pull request.
+	// mu guards findings: the comment tool records them and the verdict reads
+	// them, possibly on different goroutines. The key is always Config.Number,
+	// and checks that a record and a verdict name the same pull request.
 	mu       sync.Mutex
 	findings map[int][]ReviewComment
 }
 
-// New builds a review toolset for the repository named in cfg, filling defaults
-// for the HTTP client, API base, clock, and context caps. It returns an error when
-// cfg omits the repository coordinates, or names neither credential, or names both.
+// New fills cfg's defaults. It fails when the repository or pull request is
+// missing, or when cfg names neither credential or both.
 func New(cfg Config) (*Set, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, errors.New("github: Config.Owner and Config.Repo are required")
@@ -193,9 +149,8 @@ func New(cfg Config) (*Set, error) {
 	if cfg.MaxChangedLines == 0 {
 		cfg.MaxChangedLines = defaultMaxChangedLines
 	}
-	// The credential is resolved last, so the defaults above are already filled in and
-	// an App authenticator is built with the same clock, client, and API base every
-	// other request uses.
+	// Resolved last so an App authenticator gets the filled-in clock, client and
+	// API base.
 	auth, err := newTokenSource(cfg)
 	if err != nil {
 		return nil, err
@@ -206,11 +161,10 @@ func New(cfg Config) (*Set, error) {
 	}, nil
 }
 
-// Tools returns the review toolset as [mission.Tool] values, ready to register with an
-// executor. The names match the capability names an Agent archetype grants:
-// github_pr_fetch, github_comment, and github_submit_review. A tool the archetype
-// does not list is refused at the dispatch waist, so a reviewer granted only
-// github_pr_fetch can read a diff and post nothing.
+// Tools returns the toolset as [mission.Tool] values. Their names are the
+// capability names an archetype grants (github_pr_fetch, github_comment,
+// github_submit_review), so a reviewer granted only github_pr_fetch can read
+// and post nothing.
 func (s *Set) Tools() []mission.Tool {
 	return []mission.Tool{
 		prFetchTool{s},

@@ -1,11 +1,8 @@
-// Package archetype defines the Agent resource kind: a versioned, addressable
-// description of how an agent runs. An Agent bundles the standing system prompt,
-// the capabilities it may use, the model and loop it runs on, and the skill and
-// memory scope it sees. Promoting archetypes from inline configuration to a stored
-// resource makes them listable, diffable, grant-narrowable, and fleet-syncable like
-// every other resource, and gives a delegation (a spawned specialist) a concrete
-// thing to bind to: a run "as" an Agent is governed by exactly the capabilities the
-// Agent declares.
+// Package archetype defines the Agent resource kind: a versioned description of how
+// an agent runs (system prompt, capabilities, model and loop, skill and memory
+// scope). As a stored resource an Agent is listable, diffable, grant-narrowable and
+// fleet-syncable, and a delegated run "as" an Agent is governed by exactly the
+// capabilities it declares.
 package archetype
 
 import (
@@ -22,55 +19,45 @@ const (
 	Kind = "Agent"
 )
 
-// Spec is an Agent's desired shape: how a run as this agent is configured. Every
-// field is optional so a minimal Agent is just a name; the zero Spec runs the
-// default loop with no special capabilities.
+// Spec is an Agent's desired configuration. Every field is optional; the zero Spec
+// runs the default loop with no special capabilities.
 type Spec struct {
-	// System is the standing system prompt framing every turn for this agent. Empty
-	// uses the host's default prompt.
+	// System is the standing system prompt for every turn. Empty uses the host
+	// default.
 	System string `json:"system,omitempty"`
-	// Capabilities is the exact set of action names a run as this agent may take, the
-	// complete record of its authority. A tool the agent does not list is refused at
-	// the dispatch waist even though the host offers it, so the Agent resource is the
-	// least-privilege boundary. The model call is always permitted; it need not be
-	// listed.
+	// Capabilities is the exact set of action names a run as this agent may take.
+	// An unlisted tool is refused at dispatch even when the host offers it, so the
+	// Agent is the least-privilege boundary. The model call is always permitted.
 	Capabilities []string `json:"capabilities,omitempty"`
-	// Model is the provider:model identifier this agent runs on. Empty defers to the
-	// host's configured model.
+	// Model is the provider:model this agent runs on. Empty uses the host's model.
 	Model string `json:"model,omitempty"`
-	// Driver names the run loop this agent uses (resolved from the driver registry).
-	// Empty uses the default general-purpose loop.
+	// Driver names the run loop from the driver registry. Empty uses the default
+	// loop.
 	Driver string `json:"driver,omitempty"`
-	// SkillScope and MemoryScope bound which skills and memory the agent sees. Empty
-	// means the host default scope.
+	// SkillScope and MemoryScope bound the skills and memory the agent sees. Empty
+	// means the host default.
 	SkillScope  string `json:"skillScope,omitempty"`
 	MemoryScope string `json:"memoryScope,omitempty"`
-	// Tools and Knowledge name the tool implementations and knowledge sources this
-	// agent is built with, beyond the capability grant (which is the authority to
-	// call them). They are carried on the bundle so an Agent fully describes itself;
-	// resolving them to concrete implementations is the host's job.
+	// Tools and Knowledge name the implementations and knowledge sources the agent
+	// is built with; the capability grant is the authority to call them. The host
+	// resolves them to implementations.
 	Tools     []string `json:"tools,omitempty"`
 	Knowledge []string `json:"knowledge,omitempty"`
-	// Extends names base Agents this one composes from (mixins). The effective Agent
-	// is the bases merged in order, then this Agent on top: scalar fields (system,
-	// model, driver, scopes) take the most-derived non-empty value, and the set
-	// fields (capabilities, tools, knowledge) are the union. Composition lets a
-	// specialist be "a base plus overrides" rather than a duplicated full spec, so
-	// the archetype set scales without spec sprawl. See Resolve.
+	// Extends names base Agents to compose from, so a specialist is a base plus
+	// overrides rather than a duplicated spec. Bases merge in order and this Agent
+	// goes on top: scalar fields take the most-derived non-empty value, and
+	// capabilities, tools and knowledge are unioned. See Resolve.
 	Extends []string `json:"extends,omitempty"`
 }
 
-// Grant builds the capability grant for a run as this agent from its declared
-// capabilities. It is the authority half of the Agent: the run is admitted only for
-// the actions the Agent lists. A delegate spawned under this Agent narrows from
-// here, never widens.
+// Grant builds the capability grant for a run as this agent, admitting only the
+// listed actions. A delegate spawned under it narrows from here and never widens.
 func (s Spec) Grant() capability.Grant {
 	return capability.NewGrant(s.Capabilities...)
 }
 
-// Status is an Agent's observed state. It is minimal today: an Agent is mostly
-// desired-state configuration, so there is little to observe beyond which spec
-// generation has been reconciled.
+// Status is an Agent's observed state: the reconciled spec generation, since an
+// Agent is mostly desired-state configuration.
 type Status struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
@@ -91,8 +78,7 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// RegisterKind registers the Agent kind so agents can be stored and admitted like
-// any other resource.
+// RegisterKind registers the Agent kind with reg.
 func RegisterKind(reg *resource.Registry) error {
 	return reg.Register(resource.Kind{
 		APIVersion: GroupVersion,

@@ -6,19 +6,17 @@ import (
 	"io"
 )
 
-// file is the on-disk theme shape: a name, an optional built-in base, and
-// per-role style overrides. A user theme only writes the roles it changes.
+// file is the on-disk theme: a name, an optional built-in base and the roles it
+// overrides.
 type file struct {
 	Name   string         `json:"name"`
 	Base   string         `json:"base,omitempty"`
 	Styles map[Role]Style `json:"styles"`
 }
 
-// Load reads a JSON theme and returns it layered over its declared base
-// (default when unset), so a user theme starts from a complete, coherent
-// palette and only overrides what it names. Unknown roles are refused rather
-// than ignored: a misspelled role in a theme file would otherwise silently
-// style nothing, which is the kind of failure a user cannot debug.
+// Load reads a JSON theme layered over its base (default when unset), so a user
+// theme overrides only what it names. Unknown roles are refused: a misspelled
+// role would otherwise style nothing, silently.
 func Load(r io.Reader) (*Theme, error) {
 	var f file
 	dec := json.NewDecoder(r)
@@ -49,7 +47,6 @@ func Load(r io.Reader) (*Theme, error) {
 	return &Theme{name: name, styles: styles}, nil
 }
 
-// knownRole reports whether the role is part of the styling vocabulary.
 func knownRole(r Role) bool {
 	switch r {
 	case UserText, UserPrefix, AssistantText, Code, Quote, Link, Emphasis,

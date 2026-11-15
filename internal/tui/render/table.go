@@ -8,9 +8,8 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// table lays out a GFM table: column widths from content, shrunk widest-first
-// when the terminal is narrower than the natural layout, cells truncated with
-// a ".." marker rather than wrapped so rows stay scannable.
+// table lays out a GFM table: widths from content, shrunk widest-first when too
+// narrow, cells truncated with ".." rather than wrapped so rows stay scannable.
 func (m *Markdown) table(t *east.Table, src []byte, width int, base theme.Style) []string {
 	g := m.tableCells(t, src, base)
 	cols := g.columns()
@@ -36,16 +35,14 @@ func (m *Markdown) table(t *east.Table, src []byte, width int, base theme.Style)
 	return out
 }
 
-// tableGrid is a table's inline-rendered cells, split into the header row
-// and the body, with the alignment each header cell declares.
+// tableGrid is a table's rendered cells with the alignments its header declares.
 type tableGrid struct {
 	header []([]span)
 	rows   [][]([]span)
 	aligns []east.Alignment
 }
 
-// tableCells renders every cell's inline content. Header cells are bold, and
-// their alignments govern the columns below them.
+// tableCells renders every cell. Header cells are bold and set the column alignments.
 func (m *Markdown) tableCells(t *east.Table, src []byte, base theme.Style) tableGrid {
 	var g tableGrid
 	for r := t.FirstChild(); r != nil; r = r.NextSibling() {
@@ -74,7 +71,6 @@ func (m *Markdown) tableCells(t *east.Table, src []byte, base theme.Style) table
 	return g
 }
 
-// columns is the widest row's cell count.
 func (g tableGrid) columns() int {
 	cols := len(g.header)
 	for _, r := range g.rows {
@@ -83,7 +79,6 @@ func (g tableGrid) columns() int {
 	return cols
 }
 
-// widths is each column's natural width: its widest cell, at least one.
 func (g tableGrid) widths(cols int) []int {
 	widths := make([]int, cols)
 	for i := range widths {
@@ -101,8 +96,7 @@ func (g tableGrid) widths(cols int) []int {
 	return widths
 }
 
-// renderRow truncates, aligns and pads each cell to its column. A row shorter
-// than the table gets empty cells.
+// renderRow fits each cell to its column; a short row gets empty cells.
 func (g tableGrid) renderRow(cells []([]span), widths []int, border theme.Style) string {
 	parts := make([]string, len(widths))
 	for i, w := range widths {
@@ -117,10 +111,9 @@ func (g tableGrid) renderRow(cells []([]span), widths []int, border theme.Style)
 	return strings.Join(parts, border.Render(" │ "))
 }
 
-// fitColumns shrinks the widest columns first until the total fits the
-// budget, never below a floor of 3 cells. A terminal too narrow even for the
-// floors keeps the floors: the painter's overflow guard truncates the rest,
-// which is the only honest option left.
+// fitColumns shrinks the widest columns until the total fits budget, never below
+// 3 cells. If the floors still do not fit they stay, and the overflow guard
+// truncates the rest.
 func fitColumns(widths []int, budget int) {
 	total := 0
 	for _, w := range widths {
@@ -141,8 +134,7 @@ func fitColumns(widths []int, budget int) {
 	}
 }
 
-// alignAt returns the header-declared alignment for a column, defaulting to
-// left for columns past the header.
+// alignAt returns the header's alignment, left for columns past it.
 func alignAt(aligns []east.Alignment, i int) east.Alignment {
 	if i < len(aligns) {
 		return aligns[i]
@@ -150,8 +142,8 @@ func alignAt(aligns []east.Alignment, i int) east.Alignment {
 	return east.AlignNone
 }
 
-// alignSpans pads a cell on the correct side(s) for its alignment. Left and
-// none need no leading pad; padSpans finishes the right side either way.
+// alignSpans adds leading padding for right and center alignment; padSpans
+// finishes the right side.
 func alignSpans(cell []span, width int, a east.Alignment) []span {
 	used := textWidth(plainText(cell))
 	if used >= width {

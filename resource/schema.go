@@ -9,37 +9,33 @@ import (
 	"strings"
 )
 
-// SchemaCompiler compiles a JSON Schema document (raw JSON) into a reusable
-// Validator. It is a port: the foundation ships a small, zero-dependency compiler
-// (newBuiltinCompiler) that supports the structural subset of JSON Schema our
-// specs use; a host that needs full JSON Schema 2020-12 compliance can inject an
-// adapter wrapping a complete engine, without the core depending on it.
+// SchemaCompiler compiles a JSON Schema document into a Validator. The built-in
+// compiler covers the subset our specs use; a host needing full 2020-12 compliance
+// injects an adapter, and the core takes no dependency on it.
 type SchemaCompiler interface {
 	Compile(schema []byte) (Validator, error)
 }
 
-// Validator checks a decoded JSON instance against a compiled schema, returning an
-// error describing the first violation.
+// Validator checks a decoded JSON instance against a compiled schema and reports
+// the first violation.
 type Validator interface {
 	Validate(instance any) error
 }
 
-// builtinCompiler is the default, dependency-free SchemaCompiler. It understands
-// the common JSON Schema keywords (type, required, properties, additionalProperties,
-// enum, const, minimum/maximum and their exclusive forms, minLength/maxLength,
-// pattern, items, minItems/maxItems) and ignores any keyword it does not know, so a
-// richer schema still validates (under-constrained) rather than failing. That keeps
-// authored schemas forward-compatible with a fuller engine swapped in later.
+// builtinCompiler is the dependency-free SchemaCompiler. It understands type,
+// required, properties, additionalProperties, enum, const, minimum/maximum and
+// their exclusive forms, minLength/maxLength, pattern, items and minItems/maxItems,
+// and ignores other keywords, so a richer schema validates under-constrained rather
+// than failing.
 type builtinCompiler struct{}
 
 func newBuiltinCompiler() SchemaCompiler { return builtinCompiler{} }
 
-// NewSchemaCompiler returns the built-in, dependency-free schema compiler, so a caller
-// outside this package can validate an instance against a JSON Schema with the same engine
-// the resource store uses. The semantics match registered-kind validation exactly.
+// NewSchemaCompiler returns the built-in compiler, so a caller can validate against
+// a JSON Schema exactly as registered-kind admission does.
 func NewSchemaCompiler() SchemaCompiler { return newBuiltinCompiler() }
 
-// Compile parses a schema document into a Validator.
+// Compile parses a schema document.
 func (builtinCompiler) Compile(doc []byte) (Validator, error) {
 	v, err := decodeInstance(doc)
 	if err != nil {
@@ -48,7 +44,6 @@ func (builtinCompiler) Compile(doc []byte) (Validator, error) {
 	return compileNode(v)
 }
 
-// schema is a compiled schema node.
 type schema struct {
 	types       []string
 	required    []string
@@ -141,10 +136,8 @@ func compileNode(doc any) (*schema, error) {
 // Validate implements Validator.
 func (s *schema) Validate(instance any) error { return s.validate("", instance) }
 
-// validate checks one instance node against this schema: first the keywords that
-// apply whatever the value is (type, const, enum), then the ones that only mean
-// something for the type it turned out to be. Each of those four sets lives in its own
-// method below, so the shape of the dispatch stays readable as keywords are added.
+// validate checks type, const and enum, then the keywords for the type the
+// value turned out to be.
 func (s *schema) validate(path string, v any) error {
 	if len(s.types) > 0 && !matchesType(s.types, v) {
 		return errAt(path, fmt.Sprintf("expected type %s, got %s", strings.Join(s.types, "|"), jsonType(v)))
@@ -169,8 +162,7 @@ func (s *schema) validate(path string, v any) error {
 	return nil
 }
 
-// errAt names where a violation was found. A failure at the root of the instance has
-// no path to name, so it reports the message on its own.
+// errAt prefixes msg with path; a root failure has no path.
 func errAt(path, msg string) error {
 	if path == "" {
 		return errors.New(msg)
@@ -178,10 +170,9 @@ func errAt(path, msg string) error {
 	return fmt.Errorf("%s: %s", path, msg)
 }
 
-// validateObject checks required, properties and additionalProperties. A property the
-// schema declares is checked against its own subschema; one it does not is checked
-// against additionalProperties when that is a schema, and refused when the schema says
-// no additional properties are allowed.
+// validateObject checks required, properties and additionalProperties. An
+// undeclared property is checked against an additionalProperties schema, or
+// refused when additional properties are disallowed.
 func (s *schema) validateObject(path string, tv map[string]any) error {
 	for _, req := range s.required {
 		if _, ok := tv[req]; !ok {
@@ -206,7 +197,6 @@ func (s *schema) validateObject(path string, tv map[string]any) error {
 	return nil
 }
 
-// validateArray checks minItems, maxItems and the items subschema.
 func (s *schema) validateArray(path string, tv []any) error {
 	if s.minItems != nil && len(tv) < *s.minItems {
 		return errAt(path, fmt.Sprintf("array has %d items, fewer than minItems %d", len(tv), *s.minItems))
@@ -225,8 +215,7 @@ func (s *schema) validateArray(path string, tv []any) error {
 	return nil
 }
 
-// validateString checks minLength, maxLength and pattern. Length is counted in runes,
-// as JSON Schema specifies, so a multi-byte character counts once.
+// validateString counts length in runes, as JSON Schema specifies.
 func (s *schema) validateString(path, tv string) error {
 	n := len([]rune(tv))
 	if s.minLen != nil && n < *s.minLen {
@@ -241,7 +230,6 @@ func (s *schema) validateString(path, tv string) error {
 	return nil
 }
 
-// validateNumber checks minimum and maximum in both their inclusive and exclusive forms.
 func (s *schema) validateNumber(path string, tv float64) error {
 	if s.min != nil && tv < *s.min {
 		return errAt(path, fmt.Sprintf("%v is below minimum %v", tv, *s.min))
@@ -257,8 +245,6 @@ func (s *schema) validateNumber(path string, tv float64) error {
 	}
 	return nil
 }
-
-// --- helpers ---
 
 func matchesType(types []string, v any) bool {
 	jt := jsonType(v)

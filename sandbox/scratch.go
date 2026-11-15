@@ -10,24 +10,22 @@ import (
 	"sync"
 )
 
-// scratchState is the sandbox's scratch directory: created on the first confined launch and
-// removed on Close, so a Local that never runs a confined command leaves nothing on disk.
+// scratchState is created on the first confined launch, so a Local that never
+// confines leaves nothing on disk.
 type scratchState struct {
 	mu  sync.Mutex
 	dir string
 }
 
-// scratchTempName is the scratch subdirectory the temp variables point at. The caches sit
-// beside it, not inside it, so a tool that empties its temp directory leaves the caches
-// alone.
+// scratchTempName holds temp files apart from the caches, so a tool that empties
+// its temp directory leaves the caches alone.
 const scratchTempName = "tmp"
 
-// scratchCaches maps the cache variables of toolchains that default under the user's home
-// directory, where a confined child cannot write, to a subdirectory of the scratch
-// directory. GOCACHE is what lets `go test` run at all. GOMODCACHE is redirected because the
-// host's module cache is read-only to the child, and downloads then stay out of a cache that
-// would outlive the sandbox. CARGO_HOME is left alone: it holds registry configuration and
-// installed binaries, so redirecting it changes what cargo does, not only where it writes.
+// scratchCaches redirects caches that default under the home directory, which a
+// confined child cannot write. Without GOCACHE `go test` cannot run. GOMODCACHE
+// moves because the host module cache is read-only to the child. CARGO_HOME is
+// absent because it holds registry config and installed binaries, so moving it
+// changes what cargo does.
 var scratchCaches = map[string]string{
 	"GOCACHE":          "go-build",
 	"GOMODCACHE":       "go-mod",
@@ -43,17 +41,10 @@ func scratchTempKeys(goos string) []string {
 	return []string{"TMPDIR"}
 }
 
-// scratchDir returns the sandbox's scratch directory, creating it on first use. It is the
-// second writable location a confined child has besides the workspace: caches and temp
-// files only, private to this sandbox, and deleted on Close. It lives outside the
-// workspace so the workspace is never the temp root (Go ignores a go.mod found there) and
-// so build output does not land in the user's project.
-//
-// It is a host directory granted to the child, not the private tmpfs Linux mounts at /tmp.
-// A toolchain cache has to outlive one command, because `go mod download` followed by
-// `go test` is two launches and each launch builds its own mount namespace, and a build
-// cache or module tree can outgrow a memory-backed mount. The cost is that the directory
-// is real disk, so Close removes it.
+// scratchDir is the child's second writable location, deleted on Close. It sits
+// outside the workspace because Go ignores a go.mod in the temp root. It is a host
+// directory because a cache must outlive one launch (`go mod download` then
+// `go test` are two mount namespaces) and can outgrow a tmpfs.
 func (l *Local) scratchDir() (string, error) {
 	l.scratch.mu.Lock()
 	defer l.scratch.mu.Unlock()
@@ -75,11 +66,8 @@ func (l *Local) scratchDir() (string, error) {
 	return dir, nil
 }
 
-// makeScratchDir creates the directory under the host's temp root, except on Linux, which
-// prefers /var/tmp. The confined view mounts a private tmpfs over /tmp and /dev/shm, and a
-// scratch directory under either would be hidden by that mount, or would stop the mount
-// being made at all, leaving the child without a writable /tmp. /var/tmp is the standard
-// temp location nothing is mounted over; a host without it falls back to the default.
+// makeScratchDir prefers /var/tmp on Linux, because the confined view mounts a
+// tmpfs over /tmp and /dev/shm that would hide the directory or fail to mount.
 func makeScratchDir() (string, error) {
 	if runtime.GOOS == "linux" {
 		if dir, err := mkdirTemp("/var/tmp", "flynn-scratch-"); err == nil {
@@ -89,18 +77,14 @@ func makeScratchDir() (string, error) {
 	return mkdirTemp("", "flynn-scratch-")
 }
 
-// mkdirTemp creates the scratch directory and removeAll deletes it. They are variables so a
-// test can make creation or removal fail, which a runner with a writable temp root never
-// does.
+// mkdirTemp and removeAll are variables so a test can make them fail.
 var (
 	mkdirTemp = os.MkdirTemp
 	removeAll = os.RemoveAll
 )
 
-// removeScratch deletes the scratch directory. Tools such as the Go module cache mark what
-// they write read-only, which a removal cannot get past (Windows will not delete the file,
-// and elsewhere the directory cannot be emptied), so a failed removal makes the tree
-// writable and tries again.
+// removeScratch retries after making the tree writable, because the Go module
+// cache writes read-only files that block removal.
 func (l *Local) removeScratch() error {
 	l.scratch.mu.Lock()
 	defer l.scratch.mu.Unlock()
@@ -124,13 +108,10 @@ func (l *Local) removeScratch() error {
 	return nil
 }
 
-// withScratchEnv points the temp variables and the toolchain cache variables at scratch.
-// The host's own temp value (hostTemp, which the baseline copies in) is replaced; a value
-// that differs from the host's was granted by the operator and stays. A cache variable is
-// set only when absent, since the baseline never carries one and so any present was
-// granted. Windows treats variable names case-insensitively, so presence is checked that
-// way when goos is windows. Callers pass runtime.GOOS; the parameter lets one test run
-// prove both rules on every platform.
+// withScratchEnv replaces a temp value equal to hostTemp; a different one was
+// granted and stays. A cache variable is set only when absent, because the
+// baseline never carries one. Windows names match case-insensitively. goos is a
+// parameter so one test covers both rules.
 func withScratchEnv(m map[string]string, scratch string, hostTemp func(string) string, goos string) {
 	has := func(key string) bool {
 		if goos != "windows" {
@@ -156,10 +137,8 @@ func withScratchEnv(m map[string]string, scratch string, hostTemp func(string) s
 	}
 }
 
-// writableTargets are the directories a confined launch grants the child write access to:
-// the ones the caller named with [WithWritableDir] and the scratch directory. It creates
-// the scratch directory, so every launch path that grants before it builds the environment
-// finds it in place.
+// writableTargets creates the scratch directory, so a launch path that grants
+// before building the environment finds it.
 func (l *Local) writableTargets() ([]string, error) {
 	scratch, err := l.scratchDir()
 	if err != nil {

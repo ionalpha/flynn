@@ -15,10 +15,8 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Registry builds the resource registry a durable store admits against: the core kinds,
-// the Goal kind the runtime drives, the budget a run is charged to, and every kind the
-// binary persists. A host opening its own store must use this registry, because a run
-// spawns children and opens budgets that a store without those kinds would refuse.
+// Registry lists every kind the binary persists. A host opening its own store must use it,
+// because a run spawns goals and opens budgets a narrower store would refuse.
 func Registry() (*resource.Registry, error) {
 	reg := resource.NewRegistry()
 	for _, register := range []func(*resource.Registry) error{

@@ -10,13 +10,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// captureRun runs a program to completion. Unconfined, it runs through the standard
-// library exactly like the other platforms. Confined, it runs the program directly (no
-// shell) inside the working directory's AppContainer with the same policy Exec and Stream
-// use: the working directory the one writable location, the network granted only when it
-// was not denied, and the process hardened with the mitigation policies. The AppContainer
-// is applied through process creation, which an exec.Cmd cannot carry, so the confined
-// path does not go through captureExec.
+// captureRun confines with Exec's policy, applied at process creation, which an
+// exec.Cmd cannot carry, so it bypasses captureExec.
 func (l *Local) captureRun(ctx context.Context, spec CaptureSpec, confined bool) (ExecResult, error) {
 	if !confined {
 		return l.captureExec(ctx, spec, false)
@@ -27,9 +22,7 @@ func (l *Local) captureRun(ctx context.Context, spec CaptureSpec, confined bool)
 	return l.captureAppContainer(ctx, spec)
 }
 
-// captureWriteRestricted runs spec.Argv to completion under the write-restricted tier and
-// returns its combined output and exit code. It resolves and invokes the program exactly
-// as the container path does; only the confinement mechanism differs.
+// captureWriteRestricted invokes the program as captureAppContainer does.
 func (l *Local) captureWriteRestricted(ctx context.Context, spec CaptureSpec) (ExecResult, error) {
 	appPath, err := exec.LookPath(spec.Argv[0])
 	if err != nil {
@@ -46,15 +39,10 @@ func (l *Local) captureWriteRestricted(ctx context.Context, spec CaptureSpec) (E
 	return launchWriteRestricted(ctx, appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
 }
 
-// captureAppContainer runs spec.Argv to completion inside the working directory's
-// AppContainer and returns its combined output and exit code. It sets up the same argv
-// invocation as the streaming path (the program resolved on PATH and run directly, never
-// through cmd.exe) and then drains it through launchAppContainer, which reads the combined
-// output, waits for exit, and terminates the process if ctx is cancelled.
+// captureAppContainer runs argv without cmd.exe and drains it through
+// launchAppContainer, which terminates the process if ctx is cancelled.
 func (l *Local) captureAppContainer(ctx context.Context, spec CaptureSpec) (ExecResult, error) {
-	// The program is found on the sandbox's PATH and run directly. Resolving it here (not
-	// leaving it to the loader) keeps the failure legible and matches how the other
-	// platforms exec the argv without a shell.
+	// Resolved here so a missing program gives a clear error.
 	appPath, err := exec.LookPath(spec.Argv[0])
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: capture: command not found: %s: %w", spec.Argv[0], err)

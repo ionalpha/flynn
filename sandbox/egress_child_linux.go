@@ -13,20 +13,12 @@ import (
 	"github.com/ionalpha/flynn/internal/bindguard"
 )
 
-// serveEgressFromNetns is the launcher's half of governed egress, and it runs in the one
-// place that can do this work: inside the child's fresh network namespace, after the clone
-// and before the command is executed.
-//
-// It brings the namespace's loopback up (a fresh namespace has it down, so not even
-// 127.0.0.1 is reachable), creates the listening socket the proxy will serve, and hands it
-// to the parent over the inherited handoff descriptor. The parent accepts from the host
-// namespace and does the policy enforcement and the outbound dialling, so no networking code
-// beyond a bare listen runs in here.
-//
-// It returns the proxy variables for the command's environment. The command has no other
-// route out (its namespace has only loopback, so a direct dial fails with ENETUNREACH);
-// containment does not depend on it honouring them. Bringing loopback up needs CAP_NET_ADMIN,
-// which confine's new user namespace grants; no host privilege is involved.
+// serveEgressFromNetns runs in the launcher inside the child's new network
+// namespace, before the command execs, because only there can the listener be
+// made. It raises loopback, listens, and sends the socket to the parent, which
+// does all policy and dialling. It returns the proxy variables; a direct dial
+// still fails with ENETUNREACH, so containment does not rest on them. Raising
+// loopback needs CAP_NET_ADMIN, which confine's user namespace grants.
 func serveEgressFromNetns() (map[string]string, error) {
 	handoff, err := egressHandoffFile()
 	if err != nil {
@@ -38,17 +30,13 @@ func serveEgressFromNetns() (map[string]string, error) {
 		return nil, err
 	}
 
-	// Through bindguard like every other listener, so the endpoint cannot be opened on
-	// anything but loopback. Here that loopback is the namespace's own, reachable only by
-	// this child, but the bind still goes through the one governed path.
+	// Through bindguard like every listener, so the endpoint binds only loopback.
 	ln, err := bindguard.Listen("tcp", "127.0.0.1:0", bindguard.Loopback())
 	if err != nil {
 		return nil, fmt.Errorf("egress: listen in network namespace: %w", err)
 	}
-	// The listener is closed here after its descriptor has been sent: the descriptor in
-	// flight over the socketpair holds the socket open, so the parent's copy stays valid.
-	// Closing this copy keeps the command from inheriting a listening socket it has no
-	// business holding.
+	// The descriptor in flight keeps the socket open for the parent, and closing
+	// this copy keeps the command from inheriting a listener.
 	defer func() { _ = ln.Close() }()
 
 	addr := ln.Addr().String()
@@ -63,18 +51,16 @@ func serveEgressFromNetns() (map[string]string, error) {
 	defer func() { _ = sock.Close() }()
 
 	rights := unix.UnixRights(int(sock.Fd()))
-	// One payload byte alongside the descriptor: a zero-length send carries no control
-	// message on some kernels, and the parent distinguishes "sent nothing" from "sent a
-	// socket" by what arrives.
+	// One payload byte, because a zero-length send carries no control message on
+	// some kernels.
 	if err := unix.Sendmsg(int(handoff.Fd()), []byte{1}, rights, nil, 0); err != nil {
 		return nil, fmt.Errorf("egress: hand the listening socket to the sandbox: %w", err)
 	}
 	return proxyEnvVars(addr), nil
 }
 
-// egressHandoffFile recovers the inherited handoff descriptor the sandbox passed to this
-// launcher. It is named by number in the environment rather than assumed to be a fixed
-// descriptor, so it stays correct if the launch ever passes other files.
+// egressHandoffFile reads the descriptor number from the environment, so it stays
+// correct when the launch passes other files.
 func egressHandoffFile() (*os.File, error) {
 	raw := os.Getenv(envEgressFD)
 	fd, err := strconv.Atoi(raw)
@@ -84,9 +70,8 @@ func egressHandoffFile() (*os.File, error) {
 	return os.NewFile(uintptr(fd), "flynn-egress-handoff"), nil
 }
 
-// bringLoopbackUp raises the loopback interface of the network namespace this process is
-// in. A fresh namespace starts with loopback administratively down, so without this even
-// 127.0.0.1 is unreachable and the child could not reach the proxy endpoint.
+// bringLoopbackUp is needed because a new namespace starts with loopback down, so
+// even 127.0.0.1 is unreachable.
 func bringLoopbackUp() error {
 	sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

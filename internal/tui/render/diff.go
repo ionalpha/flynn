@@ -9,23 +9,19 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// splitDiffMinWidth is the narrowest terminal that renders diffs
-// side-by-side; below it the unified layout reads better.
+// splitDiffMinWidth is the narrowest width that renders side-by-side.
 const splitDiffMinWidth = 100
 
-// Diff renders the change from before to after as themed terminal lines:
-// a header naming the path with added and removed counts, then hunks with
-// line-number gutters. The layout adapts to width: side-by-side columns on a
-// wide terminal, unified below that. Paired changed lines carry a word-level
-// highlight (reverse video over the add and remove styles) so a one-token
-// edit inside a long line is findable at a glance.
+// Diff renders the change from before to after: a header with the path and
+// added and removed counts, then hunks with line-number gutters, side-by-side on
+// a wide terminal and unified below. Paired changed lines carry a reverse-video
+// highlight so a one-token edit in a long line is easy to find.
 func Diff(th *theme.Theme, path, before, after string, width int) []string {
 	if width < 1 {
 		return nil
 	}
-	// Normalized before diffing so wrap accounting and output agree on every
-	// byte (see Markdown.Render); diffing the normalized text also keeps the
-	// intraline pairing consistent with what is shown.
+	// Normalized first so wrap accounting, output and intraline pairing agree on
+	// every byte (see Markdown.Render).
 	before = strings.ToValidUTF8(before, "�")
 	after = strings.ToValidUTF8(after, "�")
 	edits := udiff.Strings(before, after)
@@ -61,8 +57,7 @@ func Diff(th *theme.Theme, path, before, after string, width int) []string {
 	return clampRows(append(out, unifiedHunks(th, u, width)...), width)
 }
 
-// hunkRow is one logical diff row: pre-pairing has already decided which old
-// and new line (if either) it shows.
+// hunkRow is one diff row, already paired with the old and new line it shows.
 type hunkRow struct {
 	kind    udiff.OpKind
 	oldN    int // 1-based old line number, 0 when absent
@@ -70,9 +65,8 @@ type hunkRow struct {
 	content []span
 }
 
-// pairHunk walks a hunk's lines and produces rows with line numbers, pairing
-// each run of deletes with the following run of inserts. Equal-length runs
-// get the word-level intraline highlight.
+// pairHunk numbers a hunk's rows, pairing each run of deletes with the following
+// inserts. Equal-length runs get the intraline highlight.
 func pairHunk(th *theme.Theme, h *udiff.Hunk) []hunkRow {
 	var rows []hunkRow
 	oldN, newN := h.FromLine, h.ToLine
@@ -119,10 +113,8 @@ func pairHunk(th *theme.Theme, h *udiff.Hunk) []hunkRow {
 	return rows
 }
 
-// intraline styles line against other: the shared prefix and suffix keep the
-// base style, the differing middle adds reverse video. Computed on runes, so
-// it is a character-range highlight anchored at word-edit granularity in the
-// common case of one changed token.
+// intraline styles line against other: the shared prefix and suffix keep base,
+// the differing middle adds reverse video. It works on runes.
 func intraline(line, other string, base theme.Style) []span {
 	a, b := []rune(line), []rune(other)
 	p := 0
@@ -150,9 +142,8 @@ func intraline(line, other string, base theme.Style) []span {
 	return out
 }
 
-// unifiedHunks renders the classic single-column layout with an old and new
-// line-number gutter. Content rows hard-wrap; continuation rows keep a blank
-// gutter so line numbers stay truthful.
+// unifiedHunks renders one column with old and new line-number gutters.
+// Continuation rows keep a blank gutter so line numbers stay truthful.
 func unifiedHunks(th *theme.Theme, u udiff.UnifiedDiff, width int) []string {
 	gw := gutterWidth(u)
 	// gutter + gutter + sign, each with one trailing space.
@@ -189,9 +180,8 @@ func unifiedHunks(th *theme.Theme, u udiff.UnifiedDiff, width int) []string {
 	return out
 }
 
-// splitHunks renders the side-by-side layout: old on the left, new on the
-// right, each with its own gutter, single-row cells truncated rather than
-// wrapped so the two sides stay row-aligned.
+// splitHunks renders old on the left and new on the right. Cells truncate rather
+// than wrap so the sides stay row-aligned.
 func splitHunks(th *theme.Theme, u udiff.UnifiedDiff, width int) []string {
 	gw := gutterWidth(u)
 	col := (width - 3) / 2
@@ -208,30 +198,25 @@ func splitHunks(th *theme.Theme, u udiff.UnifiedDiff, width int) []string {
 	return out
 }
 
-// splitView is the fixed geometry of a side-by-side diff: the gutter width,
-// the column width, and the cell width left for content after the gutter and
-// sign.
+// splitView is the geometry of a side-by-side diff: gutter, column and content
+// cell widths.
 type splitView struct {
 	th            *theme.Theme
 	gw, col, cell int
 }
 
-// side renders one column: line number, sign, then content truncated to the
-// cell and padded to the column.
 func (v splitView) side(n int, sign string, signStyle theme.Style, content []span) string {
 	spans := []span{{num(n, v.gw) + " ", v.th.Style(theme.Muted)}, {sign + " ", signStyle}}
 	spans = append(spans, truncateSpans(content, v.cell, "..")...)
 	return lineOf(padSpans(spans, v.col))
 }
 
-// blank is the empty column opposite an unpaired line.
 func (v splitView) blank() string { return lineOf(padSpans(nil, v.col)) }
 
 func (v splitView) join(left, right string) string {
 	return left + v.th.Style(theme.Border).Render(" │ ") + right
 }
 
-// hunk renders one hunk's rows, numbering the old and new sides as it walks.
 func (v splitView) hunk(h *udiff.Hunk) []string {
 	w := hunkWalker{v: v, oldN: h.FromLine, newN: h.ToLine}
 	lines := make([]diffLine, len(h.Lines))
@@ -252,14 +237,12 @@ func (v splitView) hunk(h *udiff.Hunk) []string {
 	return w.out
 }
 
-// diffLine is a hunk line with its text already cleaned for display;
-// go-udiff does not export its line type.
+// diffLine is a cleaned hunk line; go-udiff does not export its own.
 type diffLine struct {
 	kind udiff.OpKind
 	text string
 }
 
-// runEnd is the index just past the run of kind lines starting at i.
 func runEnd(lines []diffLine, i int, kind udiff.OpKind) int {
 	for i < len(lines) && lines[i].kind == kind {
 		i++
@@ -267,14 +250,12 @@ func runEnd(lines []diffLine, i int, kind udiff.OpKind) int {
 	return i
 }
 
-// hunkWalker accumulates a hunk's rows and the next old and new line numbers.
 type hunkWalker struct {
 	v          splitView
 	oldN, newN int
 	out        []string
 }
 
-// context emits an unchanged line on both sides.
 func (w *hunkWalker) context(l diffLine) {
 	style := w.v.th.Style(theme.DiffContext)
 	content := []span{{l.text, style}}
@@ -286,8 +267,8 @@ func (w *hunkWalker) context(l diffLine) {
 	w.newN++
 }
 
-// change emits a run of deletes against the run of inserts that follows it,
-// row by row. Equal-length runs get the word-level highlight on each pair.
+// change emits a run of deletes against the inserts after it. Equal-length runs
+// get the intraline highlight.
 func (w *hunkWalker) change(dels, inss []diffLine) {
 	paired := len(dels) == len(inss)
 	for j := 0; j < len(dels) || j < len(inss); j++ {
@@ -324,12 +305,10 @@ func (w *hunkWalker) added(l diffLine, dels []diffLine, j int, paired bool) stri
 	return row
 }
 
-// hunkLabel is the location line above a hunk.
 func hunkLabel(h *udiff.Hunk) string {
 	return "@@ -" + strconv.Itoa(h.FromLine) + " +" + strconv.Itoa(h.ToLine) + " @@"
 }
 
-// gutterWidth is the digit width needed for the diff's largest line number.
 func gutterWidth(u udiff.UnifiedDiff) int {
 	largest := 1
 	for _, h := range u.Hunks {
@@ -345,7 +324,6 @@ func gutterWidth(u udiff.UnifiedDiff) int {
 	return len(strconv.Itoa(largest))
 }
 
-// num formats a line number right-aligned to the gutter, blank when absent.
 func num(n, gw int) string {
 	if n == 0 {
 		return strings.Repeat(" ", gw)
@@ -354,8 +332,8 @@ func num(n, gw int) string {
 	return strings.Repeat(" ", gw-len(s)) + s
 }
 
-// clean strips the trailing newline a unified-diff line carries and expands
-// tabs to four cells so gutters stay aligned.
+// clean strips the trailing newline and expands tabs to four cells so gutters
+// stay aligned.
 func clean(s string) string {
 	s = strings.TrimRight(s, "\n")
 	s = strings.TrimRight(s, "\r")

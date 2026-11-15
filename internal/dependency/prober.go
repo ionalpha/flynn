@@ -8,19 +8,16 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// SandboxProber reads a present program's version by running its version command through the
-// sandbox boundary, so the detect-installed-first check never spawns a process directly: the
-// program runs confined, governed, and bounded like any other command. The invocation is the
-// program name plus the spec's literal version arguments, nothing model-authored, so there
-// is no untrusted input in the command.
+// SandboxProber runs a program's version command through the sandbox, so detection
+// never spawns a process directly. The command is the program name plus the spec's
+// literal version arguments, with no model-authored input.
 type SandboxProber struct{ sb sandbox.Sandbox }
 
 // NewSandboxProber wraps a sandbox as a version prober.
 func NewSandboxProber(sb sandbox.Sandbox) SandboxProber { return SandboxProber{sb: sb} }
 
-// Probe runs "name args..." through the sandbox and returns its output. A run error or a
-// nonzero exit is returned as an error, which the manager reads as "not present or not
-// usable" rather than trusting the program.
+// Probe runs "name args..." through the sandbox and returns its output. A run error
+// or nonzero exit is an error, which the manager reads as not usable.
 func (p SandboxProber) Probe(ctx context.Context, name string, args []string) (string, error) {
 	if p.sb == nil {
 		return "", fault.New(fault.Terminal, "dependency_no_sandbox", "dependency: no sandbox configured for the version probe")

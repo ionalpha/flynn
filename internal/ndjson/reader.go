@@ -1,15 +1,13 @@
 // Package ndjson is the byte-level framing every headless transport shares: one JSON
-// object per line, lines split on LF and nothing else.
+// object per line, split on LF only.
 //
-// The rules are fixed here, once, so that no transport re-derives them. A record ends at
-// U+000A. U+2028 and U+2029 inside a JSON string are data. A splitter that treated them
-// as line ends (JavaScript's line terminators include both) would cut a record in two and
-// let one half be read as a frame of its own; [Reader] never looks at them, and [Writer]
-// escapes both on output so a consumer that splits on them still sees one record.
-// A record is UTF-8, a single object, at most [MaxLine] bytes, nested at most
-// [MaxDepth] deep. A line that breaks a rule is reported as a [*FrameError] and the
-// reader is already positioned at the next LF, so one bad line never costs the lines
-// after it.
+// A record ends at U+000A. U+2028 and U+2029 inside a JSON string are data: a splitter
+// that ended lines on them (JavaScript does) would cut a record in two and let one half
+// read as a frame. [Reader] never looks at them, and [Writer] escapes both so such a
+// consumer still sees one record. A record is UTF-8, a single object, at most [MaxLine]
+// bytes and at most [MaxDepth] deep. A line that breaks a rule is reported as a
+// [*FrameError] with the reader already past its LF, so one bad line never costs the
+// lines after it.
 package ndjson
 
 import (
@@ -45,9 +43,9 @@ const (
 	KindNotObject
 	// KindEncoding is a line that is not valid UTF-8.
 	KindEncoding
-	// KindUnterminated is a final line the stream ended in the middle of. A frame cut
-	// short is refused and not guessed at, because a truncated write is how an attacker
-	// who controls where a stream ends would shorten a frame into a different one.
+	// KindUnterminated is a final line cut off by the end of the stream. It is refused
+	// because whoever controls where a stream ends could shorten a frame into a
+	// different one.
 	KindUnterminated
 )
 
@@ -75,8 +73,8 @@ func (k Kind) String() string {
 // the next call to [Reader.Next] reads the following line.
 type FrameError struct {
 	Kind Kind
-	// Size is the length of the refused line in bytes, not counting the LF. For an
-	// oversize line it is the true length even though the bytes were not kept.
+	// Size is the refused line's length in bytes, without the LF. For an oversize line
+	// it is the true length, though the bytes were not kept.
 	Size int64
 }
 
@@ -137,10 +135,9 @@ func (r *Reader) Next() ([]byte, error) {
 	}
 }
 
-// readLine reads up to and including the next LF. It keeps the bytes only while the line
-// is within [MaxLine]; past that it counts and discards them, so the memory held is
-// bounded by the cap and the fixed read buffer whatever the input. The returned line
-// is nil for an oversize line.
+// readLine reads up to and including the next LF. Past [MaxLine] it counts and
+// discards bytes, so the memory held is bounded by the cap and the read buffer. The
+// line is nil for an oversize line.
 func (r *Reader) readLine() (line []byte, size int64, terminated bool, err error) {
 	r.line = r.line[:0]
 	for {
@@ -183,9 +180,9 @@ func firstNonSpace(b []byte) int {
 	return -1
 }
 
-// tooDeep reports whether the line nests arrays and objects deeper than [MaxDepth]. It
-// is a single pass with no recursion, so a hostile line cannot exhaust the stack, and it
-// stops at the first byte past the limit. Brackets inside strings do not count.
+// tooDeep reports whether line nests deeper than [MaxDepth]. It is one pass without
+// recursion, so a hostile line cannot exhaust the stack, and it stops at the first
+// byte past the limit. Brackets inside strings do not count.
 func tooDeep(line []byte) bool {
 	depth := 0
 	inString := false

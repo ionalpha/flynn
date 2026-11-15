@@ -1,8 +1,6 @@
-// Package theme is the semantic styling layer for the terminal session.
-// Components never emit colors: they style text by role (what the text IS,
-// not how it looks), and a Theme maps each role to a concrete style. Swapping
-// the theme restyles the whole session without touching a component, which is
-// what makes user theme files and the accessibility variants possible at all.
+// Package theme maps semantic roles to terminal styles. Components style text by
+// role (what it is), never by color, so swapping the theme restyles the session
+// and user theme files and accessibility variants need no component changes.
 package theme
 
 import (
@@ -10,13 +8,11 @@ import (
 	"strings"
 )
 
-// Role names one kind of content the session renders. The set is the UI's
-// styling vocabulary: a new visual element gets a role here, never an inline
-// color at the call site.
+// Role names one kind of content the session renders. A new visual element gets
+// a role here, never an inline color.
 type Role string
 
-// The transcript roles: the conversation's own text and its markdown
-// constructs.
+// The transcript roles.
 const (
 	UserText      Role = "user.text"
 	UserPrefix    Role = "user.prefix"
@@ -29,8 +25,7 @@ const (
 	Heading       Role = "heading"
 )
 
-// The tool and governance roles: action blocks, admission outcomes, and
-// diffs.
+// The tool, governance and diff roles.
 const (
 	ToolName     Role = "tool.name"
 	ToolDetail   Role = "tool.detail"
@@ -44,8 +39,7 @@ const (
 	DiffLocation Role = "diff.location"
 )
 
-// The status and record roles: the status line, the record badge states,
-// and the outcome accents.
+// The status, record and outcome roles.
 const (
 	Status          Role = "status"
 	StatusBusy      Role = "status.busy"
@@ -59,9 +53,8 @@ const (
 	Muted           Role = "muted"
 )
 
-// The syntax roles: token classes inside highlighted code blocks. The set is
-// deliberately small; a highlighter buckets its lexer's fine-grained token
-// types into these, and anything unbucketed falls back to Code.
+// The syntax roles: token classes in highlighted code. A highlighter buckets its
+// fine-grained token types into these; the rest falls back to Code.
 const (
 	SyntaxKeyword  Role = "syntax.keyword"
 	SyntaxString   Role = "syntax.string"
@@ -71,8 +64,7 @@ const (
 	SyntaxType     Role = "syntax.type"
 )
 
-// The chrome roles: borders, overlays, selection, and the composer's
-// affordances.
+// The chrome roles.
 const (
 	Border      Role = "border"
 	Overlay     Role = "overlay"
@@ -82,10 +74,9 @@ const (
 	QueuedChip  Role = "queued.chip"
 )
 
-// Color names a terminal color: empty for the terminal default, one of the
-// sixteen base names ("red", "bright-blue"), a 256-palette index ("213"), or
-// a hex value ("#ff5f87"). Named and indexed colors respect the user's
-// terminal palette; hex is exact where supported.
+// Color is empty for the terminal default, one of the sixteen base names ("red",
+// "bright-blue"), a 256-palette index ("213") or hex ("#ff5f87"). Named and
+// indexed colors follow the user's palette; hex is exact where supported.
 type Color string
 
 // Style is one role's appearance.
@@ -103,10 +94,9 @@ type Style struct {
 // IsZero reports whether the style changes nothing.
 func (s Style) IsZero() bool { return s == Style{} }
 
-// Over layers s onto base: s's colors win where set, and attribute flags
-// accumulate. This is how nested markdown styles compose (emphasis inside a
-// quote keeps the quote's color and gains italics) without any renderer
-// keeping escape state.
+// Over layers s onto base: s's colors win where set and attribute flags
+// accumulate, so emphasis inside a quote keeps the quote's color and gains
+// italics with no escape state.
 func (s Style) Over(base Style) Style {
 	out := base
 	if s.Foreground != "" {
@@ -124,12 +114,10 @@ func (s Style) Over(base Style) Style {
 	return out
 }
 
-// Render styles text with s directly, for callers that compose styles
-// themselves (the markdown and syntax renderers merge several roles into one
-// effective style per span). Same contract as Theme.Render: an attribute-free
-// style passes the text through untouched, and every styled span is
-// self-contained (prefix, text, reset), so lines never leak escape state into
-// each other.
+// Render styles text with s, for callers that merge roles themselves. Like
+// Theme.Render, an attribute-free style passes text through untouched, and every
+// styled span is self-contained (prefix, text, reset) so lines leak no escape
+// state.
 func (s Style) Render(text string) string {
 	if text == "" {
 		return text
@@ -141,26 +129,23 @@ func (s Style) Render(text string) string {
 	return prefix + text + "\x1b[0m"
 }
 
-// Theme maps roles to styles. A role a theme does not define renders
-// unstyled, never as an error: a sparse user theme degrades to plain text,
-// not a broken session.
+// Theme maps roles to styles. An undefined role renders unstyled, so a sparse
+// user theme degrades to plain text.
 type Theme struct {
 	name   string
 	styles map[Role]Style
 }
 
-// Name identifies the theme (shown by the theme picker).
+// Name returns the theme name shown by the theme picker.
 func (t *Theme) Name() string { return t.name }
 
-// Style returns the style for a role (the zero style when undefined).
+// Style returns the style for role r, the zero style when undefined.
 func (t *Theme) Style(r Role) Style { return t.styles[r] }
 
-// Render styles s for the role: the role's SGR attributes, the text, then a
-// reset. Text whose style contributes no attributes passes through
-// untouched. That covers the zero style (an unthemed role costs nothing and
-// adds no escape noise) and a style whose only content is an invalid color:
-// the color is muted, so there is no prefix, and there must be no dangling
-// reset either.
+// Render wraps s in the role's SGR attributes and a reset. A style with no
+// attributes passes s through untouched: the zero style, and one whose only
+// content is an invalid color, which has no prefix and so must have no dangling
+// reset.
 func (t *Theme) Render(r Role, s string) string {
 	if s == "" {
 		return s
@@ -172,7 +157,6 @@ func (t *Theme) Render(r Role, s string) string {
 	return prefix + s + "\x1b[0m"
 }
 
-// sgr builds the style's escape sequence.
 func (s Style) sgr() string {
 	var attrs []string
 	if s.Bold {
@@ -205,7 +189,6 @@ func (s Style) sgr() string {
 	return "\x1b[" + strings.Join(attrs, ";") + "m"
 }
 
-// baseColors are the sixteen standard names and their SGR foreground codes.
 var baseColors = map[string]int{
 	"black": 30, "red": 31, "green": 32, "yellow": 33,
 	"blue": 34, "magenta": 35, "cyan": 36, "white": 37,
@@ -214,8 +197,8 @@ var baseColors = map[string]int{
 }
 
 // colorAttrs translates a Color into SGR parameters. An unparseable color is
-// reported invalid and skipped: a typo in a theme file mutes that color
-// rather than corrupting the escape stream.
+// skipped, so a typo in a theme file mutes it instead of corrupting the escape
+// stream.
 func colorAttrs(c Color, background bool) ([]string, bool) {
 	if c == "" {
 		return nil, false

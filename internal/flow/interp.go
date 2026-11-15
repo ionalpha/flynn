@@ -9,9 +9,8 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// HTTPRequest is one outbound request the interpreter asks the host to perform. It
-// is a value type, free of net/http, so the interpreter stays transport-agnostic
-// and fully testable: the host adapts its governed transport to this port.
+// HTTPRequest is one request the interpreter asks the host to perform. It is free of
+// net/http, so the host adapts its governed transport and tests need no network.
 type HTTPRequest struct {
 	Method  string
 	URL     string
@@ -20,9 +19,8 @@ type HTTPRequest struct {
 	Body    []byte
 }
 
-// HTTPResponse is the result of a request, decoded for use by later steps. Body is
-// the parsed JSON value when the payload is JSON, otherwise the raw text; Raw is the
-// unparsed bytes, against which the payload cap is checked.
+// HTTPResponse is a request's result. Body is the parsed JSON when the payload is
+// JSON, else the text; Raw is the bytes the payload cap is checked against.
 type HTTPResponse struct {
 	Status  int
 	Headers map[string]string
@@ -30,85 +28,75 @@ type HTTPResponse struct {
 	Raw     []byte
 }
 
-// HTTPDoer performs the http steps of a flow. The host's implementation is where
-// egress confinement, credential injection, rate limiting, and retries live, so the
-// interpreter never reaches the network itself.
+// HTTPDoer performs http steps. Egress confinement, credential injection, rate
+// limits and retries are in the host's implementation, so the interpreter never
+// reaches the network.
 type HTTPDoer interface {
 	Do(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
 }
 
-// ToolCaller performs the call steps of a flow: it invokes another tool or
-// extension by name. The host gates the call at the dispatch boundary, so a flow
-// cannot call anything the run is not authorised for.
+// ToolCaller performs call steps. The host gates each call at dispatch, so a flow
+// cannot call anything the run is not authorized for.
 type ToolCaller interface {
 	Call(ctx context.Context, tool string, input json.RawMessage) (any, error)
 }
 
-// ExecRequest is one command an exec step asks the host to run. It is a value type,
-// free of os/exec, so the interpreter never spawns a process itself: the host runs the
-// command through the sandbox, where confinement, egress policy, and timeouts live.
+// ExecRequest is one command for the host to run. It is free of os/exec, so the
+// interpreter never spawns a process; the host runs it in the sandbox.
 type ExecRequest struct {
 	Command string
 }
 
-// ExecResult is the outcome of a command: its exit code and combined output.
+// ExecResult is a command's exit code and combined output.
 type ExecResult struct {
 	ExitCode int
 	Output   string
 }
 
-// Execer performs the exec steps of a flow by running a command through the sandbox.
-// Without it, an exec step fails closed, so a flow can never reach a process except
-// through a host that confines it.
+// Execer runs exec steps through the sandbox. Without one an exec step fails
+// closed, so a flow reaches a process only through a confining host.
 type Execer interface {
 	Exec(ctx context.Context, req ExecRequest) (ExecResult, error)
 }
 
-// DependencyResolver performs the dependency steps of a flow: it ensures an external
-// program is present (provisioning a pinned build when missing) and returns the path to
-// run it. The host wires the dependency manager, so a flow declares what it needs
-// without knowing how it is obtained.
+// DependencyResolver ensures an external program is present and returns its path.
+// The host wires the dependency manager, so a flow declares what it needs without
+// knowing how it is obtained.
 type DependencyResolver interface {
 	Resolve(ctx context.Context, name string) (path string, err error)
 }
 
-// CredentialSink performs the secret steps of a flow: it materializes a secret, named by
-// a reference, into a target's secret store (a hosting provider's secrets, a deployed
-// workload's environment). The implementation resolves the reference to its value through
-// the host's secret source and delivers it to the named sink, so the value never enters
-// the flow as data: a step passes only the reference, the sink, and the target. Returning
-// a non-nil error fails the step. Without it, a secret step fails closed.
+// CredentialSink materializes a referenced secret into a target's secret store
+// (provider secrets, a workload's environment). It resolves the value through the
+// host's secret source, so the value never enters the flow. An error fails the
+// step; without a sink a secret step fails closed.
 type CredentialSink interface {
 	Put(ctx context.Context, sink, ref string, target map[string]string) error
 }
 
-// Confirmer performs the confirm steps of a flow: it shows the user a message and waits
-// for them to approve before the flow continues. The host wires how that is asked (an
-// interactive terminal prompt for a person, a fail-closed instruction for a
-// non-interactive run). Returning a non-nil error stops the flow, so a declined or
-// unanswerable confirmation aborts rather than proceeding without consent.
+// Confirmer shows the user a message and waits for approval: a terminal prompt for
+// a person, a fail-closed instruction for a non-interactive run. An error stops the
+// flow, so a declined or unanswerable confirmation never proceeds.
 type Confirmer interface {
 	Confirm(ctx context.Context, message string) error
 }
 
 // Limits bound a flow's resource use so a runtime-authored flow cannot wedge or
-// amplify. A zero field takes the interpreter's default; DefaultLimits documents
-// those. They are enforced as terminal faults: exceeding one stops the flow, it is
-// never retried into the same wall.
+// amplify. A zero field takes the default (DefaultLimits). Exceeding one is a
+// terminal fault, never retried.
 type Limits struct {
-	// MaxSteps caps total step executions across the whole run (loop bodies included).
+	// MaxSteps caps step executions across the run, loop bodies included.
 	MaxSteps int `json:"maxSteps,omitempty"`
-	// MaxLoopIterations caps total loop iterations across the whole run.
+	// MaxLoopIterations caps loop iterations across the run.
 	MaxLoopIterations int `json:"maxLoopIterations,omitempty"`
-	// TimeoutMillis caps wall-clock duration, measured against the injected clock.
+	// TimeoutMillis caps wall-clock time in milliseconds on the injected clock.
 	TimeoutMillis int `json:"timeoutMillis,omitempty"`
-	// MaxPayloadBytes caps a single http response body; a larger response fails closed.
+	// MaxPayloadBytes caps one http response body; a larger one fails closed.
 	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
 }
 
-// DefaultLimits is the conservative envelope applied when a flow or the interpreter
-// sets no override. The numbers are deliberately modest: a flow that needs more is
-// declaring an unusual shape and should say so explicitly.
+// DefaultLimits apply when no override is set. They are modest, so a flow that
+// needs more says so explicitly.
 var DefaultLimits = Limits{
 	MaxSteps:          256,
 	MaxLoopIterations: 1000,
@@ -133,8 +121,8 @@ func (l Limits) merge(base Limits) Limits {
 	return l
 }
 
-// Interpreter runs flows. It holds the injected effect ports and the default limits;
-// it is safe for concurrent use because Run keeps all mutable run state local.
+// Interpreter runs flows with injected effect ports and default limits. It is safe
+// for concurrent use because Run keeps run state local.
 type Interpreter struct {
 	http     HTTPDoer
 	tools    ToolCaller
@@ -150,43 +138,38 @@ type Interpreter struct {
 // Option configures an Interpreter.
 type Option func(*Interpreter)
 
-// WithHTTP sets the port that performs http steps. Without it, an http step fails
-// closed.
+// WithHTTP sets the http step port. Without it an http step fails closed.
 func WithHTTP(d HTTPDoer) Option { return func(i *Interpreter) { i.http = d } }
 
-// WithTools sets the port that performs call steps. Without it, a call step fails
-// closed.
+// WithTools sets the call step port. Without it a call step fails closed.
 func WithTools(c ToolCaller) Option { return func(i *Interpreter) { i.tools = c } }
 
-// WithExec sets the port that runs exec steps through the sandbox. Without it, an exec
-// step fails closed.
+// WithExec sets the sandboxed exec port. Without it an exec step fails closed.
 func WithExec(e Execer) Option { return func(i *Interpreter) { i.exec = e } }
 
-// WithDependencies sets the port that resolves dependency steps. Without it, a
-// dependency step fails closed.
+// WithDependencies sets the dependency port. Without it a dependency step fails
+// closed.
 func WithDependencies(d DependencyResolver) Option { return func(i *Interpreter) { i.deps = d } }
 
-// WithConfirm sets the port that asks the user to approve confirm steps. Without it, a
-// confirm step fails closed.
+// WithConfirm sets the confirm port. Without it a confirm step fails closed.
 func WithConfirm(c Confirmer) Option { return func(i *Interpreter) { i.confirm = c } }
 
-// WithCredentialSink sets the port that materializes secret steps into a target's secret
-// store. Without it, a secret step fails closed.
+// WithCredentialSink sets the secret step port. Without it a secret step fails
+// closed.
 func WithCredentialSink(s CredentialSink) Option { return func(i *Interpreter) { i.sink = s } }
 
-// WithObserver sets the port that watches each observable step as it runs, so a host can
-// show progress while a flow executes. Without it, a flow still runs; nothing is reported.
+// WithObserver sets the port that watches observable steps, so a host can show
+// progress. Without it nothing is reported.
 func WithObserver(o Observer) Option { return func(i *Interpreter) { i.observer = o } }
 
-// WithClock sets the time source the timeout cap measures against (default
-// clock.System). Tests pass a Manual clock for determinism.
+// WithClock sets the time source for the timeout cap (default clock.System).
 func WithClock(c clock.Clock) Option { return func(i *Interpreter) { i.clk = c } }
 
 // WithLimits overrides the default resource caps.
 func WithLimits(l Limits) Option { return func(i *Interpreter) { i.limits = l } }
 
-// New builds an interpreter. With no ports, it can still run pure flows (transform,
-// condition, loop, return); http and call steps require their ports.
+// New builds an interpreter. Without ports it runs pure flows (transform, condition,
+// loop, return).
 func New(opts ...Option) *Interpreter {
 	in := &Interpreter{limits: DefaultLimits}
 	for _, o := range opts {
@@ -199,14 +182,11 @@ func New(opts ...Option) *Interpreter {
 	return in
 }
 
-// Run executes a flow against the given configuration and returns its result. The
-// result is whatever a return step yields; a flow that falls off the end with no
-// return yields nil. config is exposed to expressions as "config"; step outputs
-// accumulate under "steps".
+// Run executes f with config, exposed as "config", and returns what a return step
+// yields, or nil if none fires. Step outputs accumulate under "steps".
 func (in *Interpreter) Run(ctx context.Context, f Flow, config map[string]any) (any, error) {
-	// Decode compiles; a Flow constructed directly is compiled here instead, once
-	// per Run rather than once per evaluation. The compiled tree stays local to this
-	// call, so a directly constructed Flow value is still safe to run concurrently.
+	// A Flow built without Decode compiles here, once per Run. The tree stays local
+	// to the call, so such a Flow is still safe to run concurrently.
 	cf := f.compiled
 	if cf == nil {
 		var err error
@@ -238,9 +218,8 @@ func (in *Interpreter) Run(ctx context.Context, f Flow, config map[string]any) (
 	return r.result, nil
 }
 
-// run is the mutable state of one Run: budgets consumed, the accumulating step
-// outputs, and the return result. It never escapes Run, so an Interpreter is
-// reusable and concurrency-safe.
+// run is one Run's mutable state: budgets, step outputs and the result. It never
+// escapes Run, so an Interpreter is reusable and concurrency-safe.
 type run struct {
 	in       *Interpreter
 	limits   Limits
@@ -252,16 +231,15 @@ type run struct {
 	result   any
 }
 
-// observe reports a step event to the interpreter's observer when one is configured, so
-// progress reporting is a no-op cost when nothing is watching.
+// observe reports ev to the observer when one is set.
 func (r *run) observe(ev StepEvent) {
 	if r.in.observer != nil {
 		r.in.observer.Step(ev)
 	}
 }
 
-// execSteps runs a sequence until it ends or a return fires. It returns whether a
-// return propagated, so an enclosing loop or condition can stop early too.
+// execSteps runs steps until they end or a return fires, reporting the return so an
+// enclosing loop or condition stops too.
 func (r *run) execSteps(ctx context.Context, steps []compiledStep, s *scope) (bool, error) {
 	for i := range steps {
 		if r.returned {
@@ -280,8 +258,8 @@ func (r *run) execSteps(ctx context.Context, steps []compiledStep, s *scope) (bo
 	return false, nil
 }
 
-// checkBudget enforces the step count alongside the time and cancellation checks
-// before a step runs, so a runaway flow stops promptly rather than after the fact.
+// checkBudget enforces the step count with the time and cancellation checks before
+// a step runs, so a runaway flow stops promptly.
 func (r *run) checkBudget(ctx context.Context) error {
 	if err := r.checkDeadline(ctx); err != nil {
 		return err
@@ -293,11 +271,9 @@ func (r *run) checkBudget(ctx context.Context) error {
 	return nil
 }
 
-// checkDeadline enforces the time cap and context cancellation without charging a
-// step. A loop calls it every iteration so an empty- or collect-only body (which
-// runs no inner steps) still observes the deadline and a cancelled context, and
-// cancellation is classified as Cancelled so a caller can tell it apart from a
-// genuine terminal failure.
+// checkDeadline enforces the time cap and cancellation without charging a step. A
+// loop calls it each iteration, so a body running no inner steps still sees the
+// deadline. Cancellation is classified Cancelled, apart from a terminal failure.
 func (r *run) checkDeadline(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fault.Wrap(fault.Cancelled, "flow_cancelled", err)
@@ -342,8 +318,8 @@ func (r *run) execStep(ctx context.Context, st compiledStep, s *scope) error {
 	if err != nil {
 		return err
 	}
-	// Record a value-producing step's output so later steps can reference it. Condition
-	// and assert produce no value (they branch or verify), so they record nothing.
+	// Record a value step's output for later steps. Condition and assert produce no
+	// value.
 	if st.id != "" && st.op != OpCondition {
 		r.stepsOut[st.id] = out
 	}

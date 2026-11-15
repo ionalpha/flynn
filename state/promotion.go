@@ -5,66 +5,52 @@ import (
 	"time"
 )
 
-// MemoryPromotion is a trusted reviewer's standing decision about one memory
-// item: whether it may be pushed at a reader who did not ask for it. It is the
-// gate in front of the wake digest, and the only way an item the agent wrote for
-// itself gets in.
+// MemoryPromotion is a reviewer's current decision on whether one memory item
+// may be pushed at a reader who did not ask for it. It gates the wake digest,
+// and is the only way an item the agent wrote for itself gets in.
 //
-// It is a record beside the item, not a field on it: an item is append-only, so
-// folding in a later, revisable decision would rewrite the fact each time a
-// reviewer changed their mind. The row holds the current decision and the event
-// stream holds every decision behind it (who decided, when, and what they said).
+// It is kept beside the item because items are append-only and a decision
+// can be revised. The row holds the current decision; the event stream holds
+// every earlier one, with who, when and why.
 //
-// Promotion is not trust. It cannot make a tainted or untrusted-origin item
-// pushable (see the memory/guard package): a reviewer reads the finished
-// sentence, and that is what an attacker writes. A promotion decides only the
-// middle case, the agent's own untainted notes.
+// A promotion cannot make a tainted or untrusted-origin item pushable (see the
+// memory/guard package), because the sentence a reviewer reads is what an
+// attacker writes. It decides only the agent's own untainted notes.
 type MemoryPromotion struct {
-	// MemoryID is the item this decision is about. It is a plain id, not a foreign
-	// key: like usage, a promotion outlives its item's tombstone so a reviewer can
-	// still see what was approved before it was retired.
+	// MemoryID has no foreign key: a promotion outlives its item's tombstone so
+	// a reviewer can still see what was approved.
 	MemoryID string
-	// Promoted is the current decision. False is a revocation when a row exists and
-	// the default everywhere else: the digest treats a missing row and an explicit
-	// "no" alike. They differ only in the audit trail, where one is silence and the
-	// other a reviewer's answer.
+	// Promoted is the current decision. The digest treats false and a missing
+	// row alike; only the audit trail tells a revocation from silence.
 	Promoted bool
-	// By identifies the reviewer: the operator, or the curator acting under the
-	// operator's policy. It is required, so every promotion traces to a decision.
+	// By is the required reviewer: the operator, or the curator acting under the
+	// operator's policy.
 	By string
-	// Reason is the reviewer's note, optional, carried for the audit rather than
-	// read by anything.
+	// Reason is an optional note, kept for audit and read by nothing.
 	Reason string
-	// DecidedAt is when this decision was made. A revision moves it; the earlier
-	// decisions keep their own timestamps on the event stream.
+	// DecidedAt moves on revision; earlier decisions keep theirs on the stream.
 	DecidedAt time.Time
 	Envelope
 }
 
-// PromotionDecision is one reviewer's call, the input to
-// MemoryStore.Promote. It carries no timestamp or envelope: those are the store's
-// to stamp, as with every other write here.
+// PromotionDecision is the input to MemoryStore.Promote. The store stamps the
+// time and envelope.
 type PromotionDecision struct {
-	// MemoryID is the item being decided about. It must name a live item.
+	// MemoryID must name a live item.
 	MemoryID string
-	// Promoted is the decision: true admits the item to the push set, false keeps
-	// it out or takes it back out.
+	// Promoted true admits the item to the push set; false keeps or takes it out.
 	Promoted bool
-	// By is the reviewer's identity. Required.
-	By string
-	// Reason is an optional note for the audit trail.
+	// By is the reviewer, required.
+	By     string
 	Reason string
 }
 
-// Valid reports whether the decision names an item and a reviewer. Both are
-// required and neither has a defensible default: a promotion with no item is
-// meaningless, and one with no reviewer is the audit gap the record exists to
-// close.
+// Valid reports whether the decision names an item and a reviewer; neither
+// has a default, since a decision with no reviewer leaves a gap in the audit.
 func (d PromotionDecision) Valid() bool { return d.MemoryID != "" && d.By != "" }
 
-// PromotedSet reduces promotion rows to the ids that are currently promoted, the
-// shape a digest's eligibility filter reads. A revoked row is absent from it, so a
-// caller cannot accidentally treat "reviewed and refused" as "reviewed".
+// PromotedSet returns the ids currently promoted. Revoked rows are absent, so
+// "reviewed and refused" cannot pass for "reviewed".
 func PromotedSet(rows []MemoryPromotion) map[string]bool {
 	out := make(map[string]bool, len(rows))
 	for _, r := range rows {
@@ -75,8 +61,8 @@ func PromotedSet(rows []MemoryPromotion) map[string]bool {
 	return out
 }
 
-// SortPromotions orders promotion rows by item id, so every backend returns one
-// deterministic order.
+// SortPromotions orders rows by item id, so every backend returns the same
+// order.
 func SortPromotions(rows []MemoryPromotion) {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
 }

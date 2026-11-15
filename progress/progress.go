@@ -1,13 +1,9 @@
-// Package progress implements goal.ProgressProbe over a run's durable record: it reads
-// the run's own event stream from the spine and the git HEAD at its working directory,
-// and derives a fingerprint of the substantive work done so far. The goal reconciler
-// compares successive fingerprints to tell a step that got somewhere from one that spun,
-// and stops a run that has stopped getting anywhere.
+// Package progress implements goal.ProgressProbe: it fingerprints the work a run has
+// done from its event stream and the git HEAD at its working directory, so the goal
+// reconciler can stop a run whose fingerprint stops changing.
 //
-// It lives in its own package rather than in mission because it reads the session
-// projection of the spine, and session already depends on mission; importing session
-// from mission would be a cycle. Here it depends on goal (the port), session (the reader)
-// and spine (the log), and nothing depends on it but the composition that wires it.
+// It is its own package because it reads the session projection, and session imports
+// mission.
 package progress
 
 import (
@@ -27,41 +23,33 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// SpineProbe is the goal.ProgressProbe reading a run's recorded activity. It reads three
-// signals, and deliberately not the working tree:
+// SpineProbe fingerprints three signals:
 //
-//   - The set of distinct tool actions (tool name + arguments) the run has taken. A step
-//     that re-reads the same file repeats a pair, so the set does not grow and the step
-//     reads as idle, which is what no-progress detection exists to catch.
-//   - The git HEAD at the workdir, read from the filesystem. A committing step leaves a
-//     clean tree but moves HEAD, so keying on HEAD (not tree dirtiness) counts the commit
-//     as progress. A workspace that is not a git repo yields no HEAD; the other signals
-//     still run.
-//   - The number of proven ledger items, so a step that only advanced one counts.
+//   - the set of distinct tool actions (name and arguments), so a step that re-reads the
+//     same file adds nothing and reads as idle;
+//   - the git HEAD at the workdir, because a committing step leaves a clean tree but
+//     moves HEAD (a non-git workspace contributes no HEAD);
+//   - the number of proven ledger items.
 //
-// The fingerprint is non-empty when nothing has happened (goal.ProgressProbe requires it),
-// so two do-nothing steps compare equal.
+// The working tree is not read: dirtiness does not tell a commit from no work. The
+// fingerprint is non-empty when nothing has happened, so two idle steps compare equal.
 type SpineProbe struct {
 	log     spine.Log
 	workdir string
-	// head reads the current commit at a directory, or "" when it is not a repo. It is a
-	// field so a test supplies a deterministic reader instead of touching a real .git.
+	// head returns the commit at a directory, or "" outside a repo. Tests replace it.
 	head func(dir string) string
 }
 
 var _ goal.ProgressProbe = (*SpineProbe)(nil)
 
-// NewSpineProbe builds a progress probe reading run streams from log and the git HEAD at
-// workdir. The stream to read is the goal's own id, taken from the resource on each call,
-// so one probe serves a fan-out's children as well as its root.
+// NewSpineProbe builds a probe over log and the repository at workdir. The stream is the
+// goal's id, taken from the resource on each call, so one probe serves a whole fan-out.
 func NewSpineProbe(log spine.Log, workdir string) *SpineProbe {
 	return &SpineProbe{log: log, workdir: workdir, head: readGitHead}
 }
 
-// Progress reads the run's recorded events and returns a fingerprint of the substantive
-// work observed and a short description of the last thing the run did. A failed read is
-// transient: a probe that cannot reach the record for a moment must not be read as the
-// run having made no progress, which would stall a healthy goal.
+// Progress returns the fingerprint and a description of the last action. A failed read
+// is transient, so an unreachable record never stalls a healthy goal as idle.
 func (p *SpineProbe) Progress(ctx context.Context, r resource.Resource) (string, string, error) {
 	events, err := session.History(ctx, p.log, r.Name)
 	if err != nil {
@@ -88,18 +76,14 @@ func (p *SpineProbe) Progress(ctx context.Context, r resource.Resource) (string,
 	return fingerprint, lastActivity, nil
 }
 
-// actionKey is the identity of one tool action: its name and arguments, hashed so a
-// repeated call collides with its earlier self (leaving the action set unchanged) while a
-// call with any different argument is a new action. Hashing keeps the key bounded whatever
-// the argument size.
+// actionKey hashes a tool name and its arguments, so a repeated call collides with its
+// earlier self and the key stays bounded whatever the argument size.
 func actionKey(tool string, input []byte) string {
 	sum := sha256.Sum256(append([]byte(tool+"\x00"), input...))
 	return hex.EncodeToString(sum[:])
 }
 
-// describeAction renders a short summary of a tool call for the stall reason: the tool
-// name and a clipped view of its arguments, so a no-progress stall can say "last doing:
-// read {\"path\":\"config.yaml\"}" rather than only a count.
+// describeAction renders a tool call for the stall reason, arguments clipped to 80 bytes.
 func describeAction(tool string, input []byte) string {
 	args := strings.TrimSpace(string(input))
 	const maxArgs = 80
@@ -112,10 +96,8 @@ func describeAction(tool string, input []byte) string {
 	return tool + " " + args
 }
 
-// provenCount is how many of the goal's ledger items are proven. An item advancing to
-// proven is progress on a step that may have touched nothing else, so it is one of the
-// probe's signals. A goal with no ledger contributes zero, stable across steps and so
-// never by itself reading as progress or as idle.
+// provenCount counts the goal's proven ledger items. A goal with no ledger contributes a
+// constant zero.
 func provenCount(r resource.Resource) int {
 	status, err := goal.DecodeStatus(r)
 	if err != nil {
@@ -130,13 +112,9 @@ func provenCount(r resource.Resource) int {
 	return n
 }
 
-// readGitHead returns the commit HEAD currently points at for the repository at dir, or
-// "" when dir is not a git repository (or HEAD cannot be resolved). It reads the
-// filesystem rather than shelling out to git: it resolves the gitdir (handling a
-// worktree, whose .git is a file pointing elsewhere), reads HEAD, follows a symbolic ref
-// to its loose ref file, and falls back to packed-refs. A new commit always rewrites the
-// loose ref, so this reflects the latest commit for progress detection without spawning a
-// process.
+// readGitHead returns the commit HEAD names at dir, or "" when it cannot be resolved.
+// It reads files so no git process is spawned; a new commit always rewrites the loose
+// ref, so loose refs win over packed-refs.
 func readGitHead(dir string) string {
 	gitdir := resolveGitDir(dir)
 	if gitdir == "" {
@@ -163,9 +141,8 @@ func readGitHead(dir string) string {
 	return packedRef(gitdir, ref)
 }
 
-// resolveGitDir returns the git directory for a working tree at dir: dir/.git when it is a
-// directory, or the path a dir/.git file points at (the linked-worktree form). It returns
-// "" when neither exists, which is how a non-git workspace yields no HEAD signal.
+// resolveGitDir returns dir/.git, or the path a .git file points at in a linked
+// worktree, or "" when neither exists.
 func resolveGitDir(dir string) string {
 	dotgit := filepath.Join(dir, ".git")
 	info, err := os.Stat(dotgit)
@@ -186,9 +163,7 @@ func resolveGitDir(dir string) string {
 	return ""
 }
 
-// packedRef looks ref up in a repository's packed-refs file, the fallback when a ref has
-// no loose file (after git gc packs them). It returns the commit hash, or "" if the ref
-// is not packed either.
+// packedRef looks ref up in packed-refs, where git gc moves loose refs.
 func packedRef(gitdir, ref string) string {
 	// #nosec G304 -- packed-refs is read from the repo's own gitdir, read-only.
 	f, err := os.Open(filepath.Join(gitdir, "packed-refs"))

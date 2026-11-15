@@ -1,10 +1,6 @@
-// Package catalog ships a curated set of official Extension specs inside the binary
-// and syncs them into the resource store, so a freshly installed Flynn already knows
-// how to reach common services. The specs are data, not code: each is a JSON file in
-// the embedded filesystem, admitted against the Extension kind like any other
-// resource. A bundled extension carries a provenance label so it can be told apart
-// from one the user authored or forked, and its name is reserved so a runtime spec
-// cannot impersonate an official one.
+// Package catalog embeds the official Extension specs as JSON and syncs them
+// into the resource store. Bundled extensions carry a provenance label, and
+// their names are reserved so a runtime spec cannot impersonate one.
 package catalog
 
 import (
@@ -23,28 +19,21 @@ import (
 var specsFS embed.FS
 
 const (
-	// SourceLabel records where an extension came from. A bundled extension is one
-	// this binary ships; a forked extension started bundled and was edited by the
-	// user, which the sync must not overwrite.
+	// SourceLabel records where an extension came from.
 	SourceLabel = "catalog.ionagent.io/source"
 	// SourceBundled marks an extension synced from the embedded catalog.
 	SourceBundled = "bundled"
-	// SourceForked marks a bundled extension the user has taken ownership of.
+	// SourceForked marks a bundled extension the user owns; Sync skips it.
 	SourceForked = "forked"
-	// SourceDev marks an extension linked from a locally-built binary for authoring.
-	// It is unsigned by nature and runs only under an explicitly dev-enabled path; a
-	// normal run refuses it. Like a forked extension, the catalog sync never touches
-	// it (retireMissing only reclaims bundled entries), so a dev link survives a sync.
+	// SourceDev marks an unsigned local build. It runs only in dev mode, and
+	// Sync never touches it.
 	SourceDev = "dev"
 )
 
-// Entry is one official extension from the embedded catalog: its name (the resource
-// name it syncs under), the decoded spec, and the raw spec bytes stored verbatim so
-// the resource carries exactly what shipped.
+// Entry is one official extension. Raw is stored verbatim, so the resource
+// carries exactly what shipped.
 type Entry = embeddedspecs.Entry[extension.Spec]
 
-// state caches the once-parsed catalog. Keeping it in a struct rather than loose
-// package variables keeps the cached error a field, not a package-level error var.
 var state struct {
 	once     sync.Once
 	entries  []Entry
@@ -52,9 +41,8 @@ var state struct {
 	err      error
 }
 
-// Entries returns the official catalog, parsed once and ordered by name so a sync is
-// deterministic. A malformed embedded spec is a programming error in this package
-// (the build-time gate exists to catch it), surfaced as an error here.
+// Entries returns the catalog ordered by name. An error means a malformed
+// embedded spec, which the build-time gate should have caught.
 func Entries() ([]Entry, error) {
 	state.once.Do(load)
 	return state.entries, state.err
@@ -64,21 +52,14 @@ func load() {
 	state.entries, state.reserved, state.err = parseCatalog(specsFS)
 }
 
-// parseCatalog reads every spec JSON under specs/ in fsys, validates it, and returns the
-// ordered entries and the reserved-name set. It is the testable core of load: load feeds
-// it the embedded catalog, whose specs the build-time gate keeps valid, so a test drives
-// the error paths a valid embedded catalog can never reach by feeding a crafted fs.
+// parseCatalog takes fsys so tests can reach error paths the valid embedded
+// catalog never hits.
 func parseCatalog(fsys fs.FS) ([]Entry, map[string]bool, error) {
 	return embeddedspecs.Parse(fsys, embeddedspecs.Naming{Prefix: "catalog", Noun: "extension"}, checkProcessSource)
 }
 
-// checkProcessSource enforces the one thing a bundled extension may never be: a path to
-// unsigned local code. A catalog spec ships inside the binary and carries the official
-// name, so a process surface in it must name a published release the resolver can prove
-// the origin of, and must not carry a dev source at all (Release wins over Dev at resolve
-// time, but a bundled spec should not even contain the field). A spec that gets this
-// wrong is a mistake in this repository, and it fails here and in the build-time gate
-// rather than at a user's runtime.
+// checkProcessSource requires a bundled process surface to name a release and
+// carry no dev source at all, even though Release would win at resolve time.
 func checkProcessSource(name string, spec extension.Spec) error {
 	raw, ok := spec.Surfaces[extension.SurfaceProcess]
 	if !ok {
@@ -97,9 +78,8 @@ func checkProcessSource(name string, spec extension.Spec) error {
 	return nil
 }
 
-// Reserved reports whether a name belongs to an official bundled extension. The
-// runtime-authoring path consults this so a user or the agent cannot register a spec
-// that impersonates an official one by claiming its name.
+// Reserved reports whether a name is official, so runtime authoring cannot
+// claim it.
 func Reserved(name string) bool {
 	if _, err := Entries(); err != nil {
 		return false
@@ -120,9 +100,6 @@ func Names() ([]string, error) {
 	return names, nil
 }
 
-// resourceFor builds the resource an entry syncs to: an Extension named for the
-// entry, in the bundled scope, carrying the bundled-source label and the spec bytes
-// verbatim.
 func resourceFor(e Entry) resource.Resource {
 	return resource.Resource{
 		APIVersion: extension.GroupVersion,
@@ -130,12 +107,11 @@ func resourceFor(e Entry) resource.Resource {
 		Name:       e.Name,
 		Scope:      bundledScope,
 		Labels:     map[string]string{SourceLabel: SourceBundled},
-		// Copy the cached bytes so the stored resource never aliases the shared
-		// catalog cache.
+		// Copy so the resource never aliases the shared cache.
 		Spec: append(json.RawMessage(nil), e.Raw...),
 	}
 }
 
-// bundledScope is the scope official extensions live in: the instance-global scope,
-// so they are available to every workspace without per-scope duplication.
+// bundledScope is instance-global, so every workspace sees official
+// extensions.
 var bundledScope = resource.Scope{}

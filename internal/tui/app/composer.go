@@ -18,12 +18,11 @@ const (
 	gutterWidth  = 2
 )
 
-// composerRows renders the prompt editor as styled rows. The hardware cursor
-// is hidden for the session (the painter rests it at the start of the last
-// live row, not at the edit point), so the cursor the user sees is a
-// reverse-video cell spliced into the row at the editor's reported position.
-// marker, when non-empty, replaces the first row's prompt marker; it is
-// fitted to the gutter's width so a host marker can never shift alignment.
+// composerRows renders the prompt editor as styled rows. The hardware cursor is
+// hidden (the painter rests it at the start of the last live row), so the
+// visible cursor is a reverse-video cell spliced in at the editor's position. A
+// non-empty marker replaces the first row's prompt marker, fitted to the gutter
+// width.
 func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder, marker string) []string {
 	inner := width - gutterWidth
 	if inner < 1 {
@@ -53,9 +52,7 @@ func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder, ma
 	return out
 }
 
-// fitGutter fits a host-supplied marker to exactly the gutter's width in
-// cells, truncating a long one and padding a short one, so every composer
-// row keeps the same left edge whatever the host returns.
+// fitGutter truncates or pads a host marker to exactly the gutter width.
 func fitGutter(marker string) string {
 	marker = screen.Truncate(marker, gutterWidth)
 	if pad := gutterWidth - screen.Width(marker); pad > 0 {
@@ -64,20 +61,14 @@ func fitGutter(marker string) string {
 	return marker
 }
 
-// spliceCursor styles row with the cursor over the cell at col. Editor rows
-// are plain text with no escape sequences, so the cell walk is a direct
-// grapheme-cluster scan; the cluster under the cursor (or a space when the
-// cursor rests past the end of the row) renders in reverse video between the
-// normally styled halves.
+// spliceCursor renders the grapheme cluster at col (a space past the end of the
+// row) in reverse video between the styled halves. Editor rows are plain text,
+// so a direct cluster scan suffices.
 //
-// col is clamped below width so the spliced row never exceeds it: the editor
-// can report a cursor column equal to the row width (the cursor on a line
-// break ending a full row, or on a wide cluster clipped by a very narrow
-// terminal), and appending a cursor cell there would overflow the row the
-// painter was promised. The walk never consumes a cluster that would cross
-// the clamped column: when the column lands inside a wide cluster, the
-// cursor covers that cluster, keeping the row within width instead of
-// pushing the appended cell past it.
+// col is clamped below width: the editor can report a column equal to the row
+// width (a line break ending a full row, or a wide cluster clipped by a narrow
+// terminal), and appending a cursor cell there would overflow the row. A column
+// inside a wide cluster makes the cursor cover that cluster.
 func spliceCursor(row string, col, width int, th *theme.Theme) string {
 	if col >= width {
 		col = width - 1
@@ -100,9 +91,8 @@ func spliceCursor(row string, col, width int, th *theme.Theme) string {
 	return th.Render(theme.UserText, left.String()) + cursorCell(cell) + th.Render(theme.UserText, rest)
 }
 
-// cursorCell renders the cell under the cursor in plain reverse video,
-// independent of the theme, so the cursor never vanishes under a sparse user
-// theme file.
+// cursorCell is independent of the theme so a sparse user theme cannot hide the
+// cursor.
 func cursorCell(cell string) string {
 	return theme.Style{Reverse: true}.Render(cell)
 }

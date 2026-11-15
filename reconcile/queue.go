@@ -1,16 +1,10 @@
-// Package reconcile is the agent's desired-state execution engine: a small,
-// in-process control loop in the Kubernetes mould (a level-triggered reconciler
-// driven by a deduplicating work queue) but with no cluster, no apiserver, and no
-// etcd. It runs in one binary over the resource store, the event log, and the job
-// queue. The control-theory mechanics are borrowed (they are domain-agnostic and
-// proven); the engine on top, reconciling agent goals toward an LLM-judged stop
-// condition, is the agent's own.
+// Package reconcile is an in-process, level-triggered control loop in the Kubernetes
+// style: reconcilers driven by a deduplicating work queue over the resource store, with
+// no cluster or apiserver.
 //
-// This file is the critical primitive: the work queue. It mirrors the
-// semantics of client-go's controller workqueue (a key is never processed
-// concurrently; adds collapse while a key waits; delayed and rate-limited re-adds
-// avoid hot loops) without importing it, and it schedules delays through a
-// clock.Timing source so every delay is deterministic under a Manual clock.
+// [Queue] follows client-go's workqueue semantics (a key is never processed
+// concurrently, adds collapse while a key waits, delayed re-adds back off) and schedules
+// every delay on a clock.Timing, so delays are deterministic under a Manual clock.
 package reconcile
 
 import (
@@ -21,21 +15,16 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// Default per-item exponential backoff bounds for AddRateLimited, matching the
-// controller defaults (5ms base doubling to a 1000s ceiling).
+// Backoff bounds for AddRateLimited, the client-go controller defaults.
 const (
 	defaultBaseDelay = 5 * time.Millisecond
 	defaultMaxDelay  = 1000 * time.Second
 )
 
-// Queue is a deduplicating, level-triggered work queue keyed by T. A key added
-// any number of times before it is fetched is processed once; while a key is
-// being processed, re-adds are remembered and the key is re-queued exactly once
-// when processing finishes (Done). AddAfter and AddRateLimited delay a re-add
-// without blocking, so a failing item backs off instead of spinning. T is the
-// item's identity (for the reconciler, a resource Ref), so the queue carries no
-// payload: the reconciler always re-reads current state, never trusting a stale
-// enqueued value.
+// Queue is a deduplicating work queue keyed by T. A key added many times before it is
+// fetched is processed once; a re-add during processing re-queues the key once, on
+// [Queue.Done]. T is an identity with no payload, so the reconciler always re-reads
+// current state.
 type Queue[T comparable] struct {
 	mu           sync.Mutex
 	cond         *sync.Cond
@@ -57,19 +46,15 @@ type Queue[T comparable] struct {
 	maxDelay  time.Duration
 }
 
-// waitFor is a single delayed add carried from AddAfter to the waiting loop: the
-// item to enqueue, the deadline it becomes ready, and the timer (created and
-// registered on the clock synchronously in AddAfter) that wakes the loop.
+// waitFor is one delayed add from AddAfter to the waiting loop.
 type waitFor[T comparable] struct {
 	item     T
 	deadline time.Time
 	timer    clock.Timer
 }
 
-// waitingBuffer sizes the channel from AddAfter to the waiting loop. It only has
-// to absorb bursts so producers rarely block; the loop drains it immediately, so
-// a modest buffer is enough and a full buffer merely makes AddAfter wait (with a
-// shutdown escape) rather than dropping anything.
+// waitingBuffer absorbs bursts of AddAfter. A full buffer makes AddAfter wait, with a
+// shutdown escape, and never drops an add.
 const waitingBuffer = 1000
 
 // NewQueue returns an empty queue that schedules delays on clk.
@@ -88,8 +73,8 @@ func NewQueue[T comparable](clk clock.Timing) *Queue[T] {
 	return q
 }
 
-// Add enqueues item for processing. It is a no-op if item is already waiting
-// (dedup) or already being processed (it is remembered and re-queued on Done).
+// Add enqueues item. An item already waiting is not added twice; one being processed is
+// re-queued on Done.
 func (q *Queue[T]) Add(item T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -107,10 +92,9 @@ func (q *Queue[T]) Add(item T) {
 	q.cond.Signal()
 }
 
-// Get blocks until an item is ready or the queue shuts down. The returned item is
-// marked as processing; the caller MUST call Done(item) when finished so a re-add
-// that arrived during processing is re-queued. shutdown is true only when the
-// queue is draining and empty.
+// Get blocks until an item is ready or the queue shuts down. The caller must call
+// [Queue.Done] with the item, or a re-add during processing is lost. shutdown is true
+// only once the queue is shut down and empty.
 func (q *Queue[T]) Get() (item T, shutdown bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -131,9 +115,8 @@ func (q *Queue[T]) Get() (item T, shutdown bool) {
 	return item, false
 }
 
-// Done marks item as finished. If item was re-added while it was being processed,
-// it is re-queued now (and only now), preserving the "never concurrent per key"
-// guarantee.
+// Done marks item finished and re-queues it if it was re-added meanwhile, so a key is
+// never processed concurrently.
 func (q *Queue[T]) Done(item T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -144,26 +127,18 @@ func (q *Queue[T]) Done(item T) {
 	}
 }
 
-// Len is the number of items ready to be fetched (excludes in-flight items).
+// Len counts items ready to fetch, excluding those in flight.
 func (q *Queue[T]) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.queue)
 }
 
-// AddAfter enqueues item once d has elapsed on the queue's clock, without
-// blocking the caller. A d <= 0 adds immediately. Repeated AddAfter for the same
-// item are harmless: each fires an Add, and Add dedups. The timer is created
-// synchronously (registered on the clock before AddAfter returns) so a Manual
-// clock advanced past d fires it deterministically.
-//
-// Rather than one goroutine per delayed item, all delayed adds are handed to a
-// single waiting loop (started on first use) that holds them in a deadline
-// ordered heap and enqueues each when the clock reaches its deadline. The timer
-// is created here under q.mu so a concurrent ShutDown either observes it (and the
-// loop stops it) or has already set shuttingDown (and this add is dropped). Only
-// the loop ever stops a timer it is waiting on, so there is no cross-goroutine
-// race on the timer channel.
+// AddAfter enqueues item once d has elapsed on the queue's clock; d <= 0 adds now. The
+// timer is registered before AddAfter returns, so a Manual clock advanced past d fires
+// it. One waiting loop holds every delayed add in a deadline heap. The timer is created
+// under q.mu, so a concurrent ShutDown either sees it and the loop stops it, or has set
+// shuttingDown and the add is dropped. Only the loop stops a timer it waits on.
 func (q *Queue[T]) AddAfter(item T, d time.Duration) {
 	if d <= 0 {
 		q.Add(item)
@@ -184,10 +159,9 @@ func (q *Queue[T]) AddAfter(item T, d time.Duration) {
 	}
 }
 
-// ensureLoopLocked starts the single waiting loop the first time a delayed add
-// needs it, so a queue that only ever uses Add pays for no extra goroutine.
-// Caller holds q.mu, so the started flag and the shuttingDown check in AddAfter
-// are consistent with ShutDown's join decision.
+// ensureLoopLocked starts the waiting loop on the first delayed add, so a queue using
+// only Add runs no extra goroutine. The caller holds q.mu, which keeps loopStarted
+// consistent with ShutDown's decision to wait for the loop.
 func (q *Queue[T]) ensureLoopLocked() {
 	if q.loopStarted {
 		return
@@ -197,11 +171,8 @@ func (q *Queue[T]) ensureLoopLocked() {
 	go q.waitingLoop()
 }
 
-// waitingLoop is the single goroutine that owns delayed adds. It keeps a
-// deadline ordered heap, enqueues every item whose deadline the clock has
-// reached, and otherwise sleeps on the earliest timer until it fires, a new
-// delayed add arrives, or the queue shuts down. It owns every timer in the heap:
-// nothing else stops or resets them while the loop waits on one.
+// waitingLoop owns every delayed add and its timer, so nothing else stops or resets a
+// timer while the loop waits on it.
 func (q *Queue[T]) waitingLoop() {
 	defer close(q.loopDone)
 	pending := &waitHeap[T]{}
@@ -228,10 +199,8 @@ func (q *Queue[T]) waitingLoop() {
 	}
 }
 
-// stopPending stops every timer the loop still holds on shutdown: those in the
-// heap plus any already handed off but not yet taken from the channel. It leaves
-// nothing armed once the loop returns. A late AddAfter that pushes after this
-// drain stops its own timer via the shutdownCh arm of its select.
+// stopPending stops every timer in the heap and in the channel on shutdown. A later
+// AddAfter stops its own timer through the shutdownCh arm of its select.
 func (q *Queue[T]) stopPending(pending *waitHeap[T]) {
 	for _, e := range *pending {
 		e.timer.Stop()
@@ -246,8 +215,7 @@ func (q *Queue[T]) stopPending(pending *waitHeap[T]) {
 	}
 }
 
-// waitHeap is a min-heap of delayed adds ordered by deadline, owned solely by the
-// waiting loop.
+// waitHeap is a min-heap of delayed adds by deadline, owned by the waiting loop.
 type waitHeap[T comparable] []waitFor[T]
 
 func (h waitHeap[T]) Len() int           { return len(h) }
@@ -262,15 +230,13 @@ func (h *waitHeap[T]) Pop() any {
 	return e
 }
 
-// AddRateLimited enqueues item after its current backoff delay, growing the delay
-// on each call (per-item exponential backoff) until Forget resets it. This is how
-// a reconcile that errors is retried without a hot loop.
+// AddRateLimited enqueues item after its backoff delay, which doubles on each call until
+// [Queue.Forget] resets it.
 func (q *Queue[T]) AddRateLimited(item T) {
 	q.AddAfter(item, q.backoff(item))
 }
 
-// backoff returns the next delay for item and records the attempt: baseDelay
-// doubling each failure, capped at maxDelay.
+// backoff records an attempt and returns the next delay.
 func (q *Queue[T]) backoff(item T) time.Duration {
 	q.rlMu.Lock()
 	defer q.rlMu.Unlock()
@@ -286,8 +252,7 @@ func (q *Queue[T]) backoff(item T) time.Duration {
 	return d
 }
 
-// Forget clears item's backoff so its next AddRateLimited starts from baseDelay
-// again. Call it after a successful reconcile.
+// Forget resets item's backoff. Call it after a successful reconcile.
 func (q *Queue[T]) Forget(item T) {
 	q.rlMu.Lock()
 	defer q.rlMu.Unlock()
@@ -301,9 +266,8 @@ func (q *Queue[T]) NumRequeues(item T) int {
 	return q.failures[item]
 }
 
-// ShutDown stops the queue: Get returns shutdown once the ready items drain,
-// pending AddAfter timers are abandoned, and the call waits for the waiting loop
-// to exit (if it was ever started). It is idempotent.
+// ShutDown makes Get return shutdown once ready items drain, abandons pending AddAfter
+// timers, and waits for the waiting loop to exit. It is idempotent.
 func (q *Queue[T]) ShutDown() {
 	q.closeOnce.Do(func() { close(q.shutdownCh) })
 	q.mu.Lock()

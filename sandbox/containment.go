@@ -6,38 +6,31 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Containment is how strongly a sandbox tier isolates the work inside it, on an
-// ordered scale: a higher level contains strictly more. The critical axis is the
-// last one a level adds, the kernel/hardware exploit boundary, because the worst
-// case for untrusted code is arbitrary execution that escapes a shared kernel.
-//
-// The level is what lets the run gate decide, before anything executes, whether a
-// tier is strong enough for the work's trust level, and refuse rather than run
-// untrusted code somewhere it could break out.
+// Containment orders sandbox tiers so a higher level contains strictly more. The
+// run gate compares it with the work's trust before anything executes. The kernel
+// boundary decides the scale, because the worst case is code escaping a shared
+// kernel.
 //
 //flynn:policy
 type Containment int
 
 const (
-	// ContainmentNone is a process jail: the work is confined to a directory and runs
-	// without the agent's environment, but shares the host kernel, network, and
-	// syscalls. Suitable only for trusted code (the agent's own tools).
+	// ContainmentNone confines the work to a directory and strips the agent's
+	// environment, sharing kernel, network and syscalls. Trusted code only.
 	ContainmentNone Containment = iota
-	// ContainmentKernel adds kernel-enforced confinement of the filesystem, syscalls,
-	// and namespaces (Landlock/seccomp, Seatbelt, AppContainer). Suitable for
-	// semi-trusted, model-authored code; still a shared kernel.
+	// ContainmentKernel adds Landlock/seccomp, Seatbelt or AppContainer. It suits
+	// model-authored code; the kernel is still shared.
 	ContainmentKernel
-	// ContainmentContainer adds a container's namespacing and resource control, but
-	// still over a shared host kernel, so it is not a boundary for untrusted code.
+	// ContainmentContainer shares the host kernel, so it does not contain
+	// untrusted code.
 	ContainmentContainer
-	// ContainmentUserKernel re-implements syscalls in user space off the host kernel
-	// (a user-space-kernel sandbox), a strong boundary with some compatibility cost.
+	// ContainmentUserKernel implements syscalls in user space, at some
+	// compatibility cost.
 	ContainmentUserKernel
-	// ContainmentMicroVM gives the work its own kernel on hardware virtualization, so
-	// a kernel exploit inside cannot reach the host. The boundary for untrusted code.
+	// ContainmentMicroVM gives the work its own kernel, so a kernel exploit cannot
+	// reach the host. Untrusted code needs it.
 	ContainmentMicroVM
-	// ContainmentRemote runs the work off this host entirely, the strongest
-	// blast-radius separation.
+	// ContainmentRemote runs the work on another host.
 	ContainmentRemote
 )
 
@@ -61,21 +54,18 @@ func (c Containment) String() string {
 	}
 }
 
-// Trust is how far the code about to run is trusted, which sets the containment it
-// requires.
+// Trust sets the containment code requires, through [Required].
 //
 //flynn:policy
 type Trust int
 
 const (
-	// TrustTrusted is the agent's own built-in tools: code we ship and vet.
+	// TrustTrusted is the agent's own built-in tools.
 	TrustTrusted Trust = iota
-	// TrustSemi is code the model authored this run (a shell command, a script):
-	// not hostile by construction, but not vetted either.
+	// TrustSemi is code the model wrote this run, such as a shell command.
 	TrustSemi
-	// TrustUntrusted is code from outside that we cannot vouch for: a downloaded
-	// model's weights parsed by a runtime with a history of remote-code-execution
-	// flaws, or an unsigned plugin. The worst case is host compromise.
+	// TrustUntrusted is outside code, such as model weights for a parser with a
+	// history of RCE flaws, or an unsigned plugin.
 	TrustUntrusted
 )
 
@@ -93,16 +83,10 @@ func (t Trust) String() string {
 	}
 }
 
-// Required is the minimum containment a trust level may run under. Untrusted code
-// requires a hardware boundary by default, the strict posture: a kernel exploit in,
-// say, a model parser must not be able to reach the host. A policy may later relax
-// untrusted to a user-space-kernel tier explicitly, but the safe default does not.
-//
-// A level this binary does not define is treated as untrusted. The zero Trust is
-// [TrustTrusted] on purpose (an action that declares no trust is the agent's own
-// tool), but a value outside the declared set carries no such meaning, and answering it
-// with the weakest tier would let a corrupted or newer-than-this-binary level run
-// anywhere.
+// Required is the minimum containment for t; untrusted code needs a microVM. The
+// zero Trust is [TrustTrusted], because an action that declares none is the
+// agent's own tool. An undefined level is treated as untrusted, so a corrupt or
+// newer value cannot run anywhere.
 func Required(t Trust) Containment {
 	switch t {
 	case TrustTrusted:
@@ -114,18 +98,13 @@ func Required(t Trust) Containment {
 	}
 }
 
-// Contained is the optional capability a sandbox implements to report how strongly
-// it isolates work. A sandbox that does not implement it is treated as the weakest
-// level, so an unknown tier is never assumed to contain more than it proves.
+// Contained is optional; a sandbox without it counts as [ContainmentNone].
 type Contained interface {
 	Containment() Containment
 }
 
-// ContainmentOf reports a sandbox's containment level, defaulting to the weakest when
-// the sandbox does not declare one or declares a level outside the defined scale.
-// Defaulting down is the safe direction: an undeclared tier can never satisfy a
-// requirement it has not earned, and a level above [ContainmentRemote] would otherwise
-// satisfy every requirement there is.
+// ContainmentOf returns [ContainmentNone] for an undeclared or out-of-range level,
+// because a level above [ContainmentRemote] would satisfy every requirement.
 func ContainmentOf(sb Sandbox) Containment {
 	if c, ok := sb.(Contained); ok {
 		if lvl := c.Containment(); lvl >= ContainmentNone && lvl <= ContainmentRemote {
@@ -135,16 +114,12 @@ func ContainmentOf(sb Sandbox) Containment {
 	return ContainmentNone
 }
 
-// ErrInsufficientContainment is returned when a tier is too weak for the work's
-// trust level. It is Forbidden (a policy refusal), not transient: the answer is a
-// stronger tier, not a retry.
+// ErrInsufficientContainment is Forbidden: the remedy is a stronger tier, and a
+// retry cannot help.
 var ErrInsufficientContainment = fault.New(fault.Forbidden, "containment_insufficient",
 	"sandbox: the available isolation cannot contain this work; refusing")
 
-// Admit reports whether sb may run work of the given trust level, the gate that keeps
-// untrusted code out of a tier that cannot contain it. It returns nil when the
-// sandbox's containment meets or exceeds the requirement, and a Forbidden error
-// naming the gap otherwise.
+// Admit returns a Forbidden error naming the gap when sb is too weak for t.
 func Admit(sb Sandbox, t Trust) error {
 	have, need := ContainmentOf(sb), Required(t)
 	if have < need {
@@ -155,10 +130,8 @@ func Admit(sb Sandbox, t Trust) error {
 	return nil
 }
 
-// Select returns the strongest candidate sandbox that may run work of the given trust
-// level, or a Forbidden error when none is strong enough. Choosing the strongest
-// available tier, and refusing when there is none, is the no-silent-downgrade rule:
-// the system runs untrusted work only where it is genuinely contained, or not at all.
+// Select returns the strongest admissible candidate, or a Forbidden error, so work
+// never runs in a weaker tier than it needs.
 func Select(t Trust, candidates ...Sandbox) (Sandbox, error) {
 	need := Required(t)
 	var best Sandbox

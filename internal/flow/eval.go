@@ -9,11 +9,10 @@ import (
 	"strings"
 )
 
-// scope is a lexical frame: named values plus an optional parent. The root frame
-// holds "config" (the flow inputs) and "steps" (outputs so far); a loop pushes a
-// child frame binding its element and index. Lookups walk outward, so an inner
-// binding shadows an outer one without mutating it, keeping evaluation free of
-// shared state across iterations.
+// scope is a lexical frame: named values and an optional parent. The root holds
+// "config" (flow inputs) and "steps" (outputs so far); a loop pushes a frame for its
+// element and index. Lookups walk outward, so an inner binding shadows an outer one
+// without mutating it and iterations share no state.
 type scope struct {
 	vars   map[string]any
 	parent *scope
@@ -32,13 +31,11 @@ func (s *scope) get(name string) (any, bool) {
 	return nil, false
 }
 
-// literalNode is a constant value.
 type literalNode struct{ val any }
 
 func (n *literalNode) eval(*scope) (any, error) { return n.val, nil }
 
-// refNode reads a named value from the scope. An unbound name is an error rather
-// than a silent null, so a typo in a spec fails loudly at run time.
+// refNode reads a named value. An unbound name is an error, so a typo fails loudly.
 type refNode struct{ name string }
 
 func (n *refNode) eval(s *scope) (any, error) {
@@ -49,9 +46,8 @@ func (n *refNode) eval(s *scope) (any, error) {
 	return v, nil
 }
 
-// indexNode reads base.key, where key is a field name (string) or a list index
-// (number). A missing map field evaluates to null so optional fields are easy to
-// test; an out-of-range or non-integer list index is an error.
+// indexNode reads base.key for a field name or list index. A missing field is null
+// so optional fields are easy to test; a bad list index is an error.
 type indexNode struct {
 	base node
 	key  node
@@ -113,9 +109,8 @@ func (n *unaryNode) eval(s *scope) (any, error) {
 	return nil, fmt.Errorf("flow: unknown unary operator %q", n.op)
 }
 
-// binaryNode is a comparison, boolean, or arithmetic operation. && and || short
-// circuit so the right side is not evaluated (or its errors raised) when the left
-// already decides the result.
+// binaryNode is a comparison, boolean or arithmetic operation. && and || short
+// circuit, so the right side is not evaluated when the left decides.
 type binaryNode struct {
 	op          string
 	left, right node
@@ -175,9 +170,8 @@ func (n *binaryNode) eval(s *scope) (any, error) {
 	return nil, fmt.Errorf("flow: unknown operator %q", n.op)
 }
 
-// callNode invokes a whitelisted pure function. The whitelist is the entire surface
-// the expression language can reach beyond the scope: there is no function that
-// touches the host, so an expression is structurally side-effect-free.
+// callNode invokes a function from builtins, the only reach beyond the scope. None
+// touches the host, so an expression has no side effects.
 type callNode struct {
 	name string
 	args []node
@@ -199,9 +193,8 @@ func (n *callNode) eval(s *scope) (any, error) {
 	return fn(args)
 }
 
-// builtins is the fixed set of pure functions an expression may call. Every entry
-// is deterministic and free of side effects, which is what keeps a runtime-authored
-// flow from reaching outside its declared http and call steps.
+// builtins are the pure, deterministic functions an expression may call, so a
+// runtime-authored flow reaches outside only through its http and call steps.
 var builtins = map[string]func(args []any) (any, error){
 	"urlencode": func(a []any) (any, error) {
 		if len(a) != 1 {
@@ -275,8 +268,8 @@ var builtins = map[string]func(args []any) (any, error){
 	},
 }
 
-// truthy is the boolean reading of a value: false/null/0/""/empty-collection are
-// false, everything else is true. It is the rule conditions and && / || use.
+// truthy is the boolean reading conditions, && and || use: false, null, 0, "" and
+// empty collections are false.
 func truthy(v any) bool {
 	switch x := v.(type) {
 	case nil:
@@ -296,8 +289,7 @@ func truthy(v any) bool {
 	}
 }
 
-// isEmpty reports whether a value is null or an empty string/collection, the test
-// the default() function uses to fall back.
+// isEmpty reports null or an empty string or collection, default()'s fallback test.
 func isEmpty(v any) bool {
 	switch x := v.(type) {
 	case nil:
@@ -313,9 +305,8 @@ func isEmpty(v any) bool {
 	}
 }
 
-// equals compares two values for equality. Numbers compare numerically; otherwise
-// values are equal only when the same type and value. Collections compare by deep
-// structural equality so a condition can test a projected object.
+// equals compares numbers numerically and other values by type and value;
+// collections compare deeply, so a condition can test a projected object.
 func equals(a, b any) bool {
 	an, aok := toNumber(a)
 	bn, bok := toNumber(b)
@@ -359,9 +350,8 @@ func equals(a, b any) bool {
 	}
 }
 
-// compare orders two values for <, <=, >, >=. Numbers compare numerically, strings
-// lexically; a mismatch is an error so an ordering on incomparable types fails
-// loudly rather than producing a meaningless result.
+// compare orders numbers numerically and strings lexically. Mixed types are an
+// error, so an ordering never produces a meaningless result.
 func compare(op string, a, b any) (any, error) {
 	if an, aok := toNumber(a); aok {
 		if bn, bok := toNumber(b); bok {
@@ -401,9 +391,8 @@ func orderResult(op string, c int) bool {
 	return false
 }
 
-// add is "+": numeric addition when both sides are numbers, string concatenation
-// otherwise (so a template-style "a" + "b" works). This is the only overloaded
-// operator.
+// add is "+": numeric addition for two numbers, else string concatenation. It is
+// the only overloaded operator.
 func add(a, b any) (any, error) {
 	an, aok := toNumber(a)
 	bn, bok := toNumber(b)
@@ -413,8 +402,8 @@ func add(a, b any) (any, error) {
 	return toString(a) + toString(b), nil
 }
 
-// arithmetic is "-", "*", "/" on numbers. Division by zero is an error rather than
-// an infinity, so a flow cannot smuggle a NaN downstream.
+// arithmetic is "-", "*" and "/" on numbers. Division by zero is an error, so a flow
+// cannot pass an infinity or NaN downstream.
 func arithmetic(op string, a, b any) (any, error) {
 	an, aok := toNumber(a)
 	bn, bok := toNumber(b)
@@ -435,10 +424,9 @@ func arithmetic(op string, a, b any) (any, error) {
 	return nil, fmt.Errorf("flow: unknown operator %q", op)
 }
 
-// toNumber coerces a value to a float64 if it is numeric. JSON numbers decode as
-// float64; the int cases cover values built in Go. A bool is deliberately not a
-// number, so arithmetic or an ordering on a bool fails rather than silently
-// coercing true to 1.
+// toNumber coerces a numeric value to float64. JSON numbers decode as float64; the
+// int cases cover Go-built values. A bool is not a number, so arithmetic on true
+// fails instead of reading 1.
 func toNumber(v any) (float64, bool) {
 	switch x := v.(type) {
 	case float64:
@@ -461,8 +449,8 @@ func toInt(v any) (int, bool) {
 	return int(f), true
 }
 
-// toString renders a value for templating and string functions. Numbers print
-// without a trailing ".0" when integral, so {{.id}} on 42 yields "42" not "42.0".
+// toString renders a value for templates. An integral number prints without ".0",
+// so {{.id}} on 42 yields "42".
 func toString(v any) string {
 	switch x := v.(type) {
 	case nil:

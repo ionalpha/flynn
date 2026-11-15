@@ -10,7 +10,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Result reports what a Sync did, for logging and tests.
+// Result reports what a Sync did.
 type Result struct {
 	Created   int // bundled extensions newly added
 	Updated   int // bundled extensions whose spec changed with the binary
@@ -20,20 +20,11 @@ type Result struct {
 	Dev       int // dev-linked extensions left untouched
 }
 
-// Sync reconciles the embedded official catalog into the resource store. It is
-// idempotent and preserves user intent:
-//
-//   - A new official extension is created, stamped as bundled.
-//   - An official extension whose shipped spec changed is updated in place, carrying
-//     its observed status (so a disabled extension stays disabled) forward.
-//   - An official extension already current is left alone (no version churn).
-//   - An extension the user forked is never overwritten.
-//   - An extension dev-linked to a local build is never overwritten, even where it
-//     takes an official name: the author is iterating on that extension.
-//   - A bundled extension no longer in the catalog (removed in a new binary) is
-//     retired.
-//
-// The store must admit the Extension kind (register extension.KindDef first).
+// Sync reconciles the embedded catalog into the store, idempotently. A changed
+// spec keeps its status, so a disabled extension stays disabled; an unchanged
+// one is not re-versioned. Forked and dev-linked extensions are never
+// overwritten. Bundled extensions dropped from the catalog are retired. The
+// store must admit [extension.KindDef].
 func Sync(ctx context.Context, store resource.Store) (Result, error) {
 	entries, err := Entries()
 	if err != nil {
@@ -70,28 +61,20 @@ func Sync(ctx context.Context, store resource.Store) (Result, error) {
 	return res, nil
 }
 
-// reconcile updates a bundled extension that already exists. A user fork is left
-// untouched; a dev link is left untouched; an unchanged bundled spec is skipped; a
-// changed one is re-applied with its status preserved.
 func reconcile(ctx context.Context, store resource.Store, e Entry, existing resource.Resource) (Result, error) {
 	switch existing.Labels[SourceLabel] {
 	case SourceForked:
 		return Result{Forked: 1}, nil
 	case SourceDev:
-		// An author who linked a local build under an official name is iterating on that
-		// very extension, which is the whole point of the dev loop. Overwriting the link
-		// with the bundled spec would silently swap their binary for the published release
-		// on the next command that opens the store, and they would be debugging code they
-		// are not running. The link is unsigned, so it still only runs where an unsigned
-		// source is allowed; taking the name costs no authority.
+		// Overwriting a dev link would swap the author's build for the release
+		// unnoticed. The link stays unsigned, so keeping the name grants nothing.
 		return Result{Dev: 1}, nil
 	}
 	if sameSpec(existing.Spec, e.Raw) {
 		return Result{Unchanged: 1}, nil
 	}
 	r := resourceFor(e)
-	// Carry the observed status forward so re-syncing a changed spec does not flip a
-	// user-disabled extension back on.
+	// Keep status so a re-sync does not re-enable a disabled extension.
 	r.Status = existing.Status
 	if _, err := store.Put(ctx, r); err != nil {
 		return Result{}, fmt.Errorf("catalog: update %q: %w", e.Name, err)
@@ -99,9 +82,8 @@ func reconcile(ctx context.Context, store resource.Store, e Entry, existing reso
 	return Result{Updated: 1}, nil
 }
 
-// retireMissing deletes bundled extensions that are no longer in the catalog, so a
-// spec removed in a new binary does not linger. A forked extension is never retired:
-// the user owns it.
+// retireMissing deletes bundled extensions absent from the catalog. Forked ones
+// belong to the user and stay.
 func retireMissing(ctx context.Context, store resource.Store, inCatalog map[string]bool) (int, error) {
 	all, err := store.List(ctx, extension.Kind, bundledScope, nil)
 	if err != nil {
@@ -120,9 +102,8 @@ func retireMissing(ctx context.Context, store resource.Store, inCatalog map[stri
 	return retired, nil
 }
 
-// Fork takes user ownership of a bundled extension by relabeling it forked, so a
-// later Sync leaves it and the user's edits alone. It is a no-op on an extension
-// that is not bundled.
+// Fork relabels a bundled extension as forked so Sync leaves it alone. It is a
+// no-op on one that is not bundled.
 func Fork(ctx context.Context, store resource.Store, name string) error {
 	r, err := store.Get(ctx, extension.Kind, bundledScope, name)
 	if err != nil {
@@ -139,9 +120,7 @@ func Fork(ctx context.Context, store resource.Store, name string) error {
 	return err
 }
 
-// sameSpec reports whether two spec encodings are semantically equal, comparing
-// canonical JSON so a difference in key order or whitespace is not mistaken for a
-// change.
+// sameSpec compares canonical JSON, ignoring key order and whitespace.
 func sameSpec(a, b json.RawMessage) bool {
 	ca, oka := canonicalJSON(a)
 	cb, okb := canonicalJSON(b)

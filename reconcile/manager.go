@@ -10,22 +10,17 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Ref identifies the resource a reconcile acts on: kind + scope + name, the
-// logical key of the resource store. It is the only thing a Reconciler is handed,
-// so the reconciler must re-read the live resource itself (level-triggered).
+// Ref is the resource store key (kind, scope, name). It is all a Reconciler is given, so
+// it re-reads the live resource.
 type Ref = resource.Key
 
-// DefaultResync is how often the manager re-enqueues every live resource of each
-// registered kind when no interval is configured. Resync is the safety net: even
-// if a change hint is lost (the bus is at-most-once), every resource is reconciled
-// again within this window, so the system always converges.
+// DefaultResync is how often the manager re-enqueues every live resource. The bus is
+// at-most-once, so resync is what reconciles a resource whose change hint was lost.
 const DefaultResync = 30 * time.Second
 
-// Manager wires reconcilers to the resource store. It owns one Controller per
-// registered kind, routes change hints to the right controller's queue, and runs
-// the periodic resync that guarantees eventual convergence. It deliberately holds
-// no watch of its own: truth is the store, and the manager only decides WHEN to
-// reconcile, never WHAT the state is.
+// Manager owns one Controller per registered kind, routes change hints to its queue, and
+// runs the periodic resync. It holds no watch: the store is the truth, and the manager
+// only decides when to reconcile.
 type Manager struct {
 	store       resource.Store
 	clk         clock.Timing
@@ -37,8 +32,7 @@ type Manager struct {
 // ManagerOption configures a Manager.
 type ManagerOption func(*Manager)
 
-// WithClock sets the time source (default clock.System). A Manual clock makes the
-// resync ticker deterministic in tests.
+// WithClock sets the time source (default clock.System).
 func WithClock(c clock.Timing) ManagerOption {
 	return func(m *Manager) {
 		if c != nil {
@@ -47,26 +41,15 @@ func WithClock(c clock.Timing) ManagerOption {
 	}
 }
 
-// WithResync sets the resync interval (default DefaultResync). A value <= 0
-// disables periodic resync (only the initial resync and explicit Enqueue drive
-// reconciles), which is useful in tests that want to control every trigger.
+// WithResync sets the resync interval (default [DefaultResync]). A value <= 0 keeps only
+// the initial resync and explicit Enqueue.
 func WithResync(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.resync = d }
 }
 
-// WithResyncScope narrows resync to the keys scope returns, instead of every live resource
-// in the store. The manager then never lists the store and never adopts a resource it did
-// not already know, but a lost change hint for a scoped resource is still recovered on the
-// next tick.
-//
-// A one-shot run scopes resync to the goals it submitted or resumed itself. That keeps each
-// run's event stream its own and makes resuming an earlier run's non-terminal goal an
-// explicit act, without giving up convergence for the run's own work. Convergence is the
-// manager's contract, so no option switches resync off: the choice is what it sweeps, never
-// whether it sweeps.
-//
-// A nil scope is ignored (the whole store is swept); a scope returning no keys is a manager
-// with nothing to recover, the correct state before the first submission.
+// WithResyncScope narrows resync to the keys scope returns, so the manager never lists
+// the store or adopts a resource it did not know. A one-shot run scopes resync to its own
+// goals, so resuming an earlier run's goal is an explicit act. A nil scope is ignored.
 func WithResyncScope(scope func() []Ref) ManagerOption {
 	return func(m *Manager) {
 		if scope != nil {
@@ -96,9 +79,7 @@ func (m *Manager) Register(kind string, rec Reconciler[Ref], opts ...ControllerO
 	m.controllers[kind] = NewController(kind, q, rec, opts...)
 }
 
-// Enqueue schedules a reconcile of ref. This is the change-hint entry point: a
-// bus signal, a write callback, or any "this resource may have changed" notice
-// calls it. Hints are advisory (the reconcile re-reads truth), and a hint for an
+// Enqueue is the change-hint entry point. A hint is advisory, and one for an
 // unregistered kind is ignored.
 func (m *Manager) Enqueue(ref Ref) {
 	if c, ok := m.controllers[ref.Kind]; ok {
@@ -106,9 +87,8 @@ func (m *Manager) Enqueue(ref Ref) {
 	}
 }
 
-// Start runs every controller and the resync loop, blocking until ctx is
-// cancelled and all of them have drained. Run it in its own goroutine; cancel ctx
-// to stop.
+// Start runs every controller and the resync loop, blocking until ctx is cancelled and
+// all have drained.
 func (m *Manager) Start(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, c := range m.controllers {
@@ -126,8 +106,6 @@ func (m *Manager) Start(ctx context.Context) {
 	wg.Wait()
 }
 
-// resyncLoop performs an initial resync, then re-syncs every interval until ctx
-// is cancelled.
 func (m *Manager) resyncLoop(ctx context.Context) {
 	m.resyncAll(ctx)
 	if m.resync <= 0 {
@@ -146,11 +124,9 @@ func (m *Manager) resyncLoop(ctx context.Context) {
 	}
 }
 
-// resyncAll re-enqueues every live resource of each registered kind, or, when the
-// manager is scoped, only the scoped keys. A resync needs addresses, not records,
-// so it reads keys only when the store offers the KeyLister capability and falls
-// back to ListAll otherwise. List errors are skipped: the next resync retries, and
-// Enqueue hints still flow.
+// resyncAll re-enqueues every live resource, or only the scoped keys. It uses
+// resource.KeyLister when the store has it, because a resync needs keys only. A list
+// error is skipped until the next resync.
 func (m *Manager) resyncAll(ctx context.Context) {
 	if m.scope != nil {
 		for _, k := range m.scope() {

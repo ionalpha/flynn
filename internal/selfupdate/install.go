@@ -10,12 +10,10 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// stagedPrefix names the temporary file the new binary is written to while it is
-// being staged. It sits in the same directory as the binary it will replace, because
-// the replacement is a rename, and a rename is only atomic within one filesystem.
-// Staging in the system temp directory and then copying across would leave a window
-// where the installed binary is half-written, which is the window this design exists
-// to close.
+// stagedPrefix names the temporary file the new binary is staged in. It sits in the
+// directory of the binary it replaces because the replacement is a rename, atomic only
+// within one filesystem; staging in the temp directory and copying would leave the
+// installed binary half-written for a while.
 const stagedPrefix = ".flynn-upgrade-"
 
 // supersededSuffix marks the outgoing binary on the platforms that cannot replace a
@@ -24,10 +22,9 @@ const supersededSuffix = ".superseded"
 
 // installTarget is where an upgrade will land, resolved and vetted.
 type installTarget struct {
-	// Path is the real path of the running binary, with every symlink resolved. The
-	// replacement happens here rather than at the link, so a package manager's symlink
-	// farm keeps pointing at the file that was upgraded, and so a symlink an attacker
-	// planted cannot redirect the write to a file of their choosing.
+	// Path is the running binary's real path, every symlink resolved. Replacing it here
+	// keeps a package manager's symlink farm pointing at the upgraded file, and a
+	// planted symlink cannot redirect the write.
 	Path string
 	// Dir is Path's directory, which is where the new binary is staged.
 	Dir string
@@ -38,9 +35,8 @@ type installTarget struct {
 // resolveTarget finds the binary to replace and refuses the cases where replacing it
 // is the wrong thing to do.
 func resolveTarget(exe string) (installTarget, error) {
-	// Resolving the symlinks first is what makes every check below a check on the file
-	// that will actually be written, and not on a name that might point somewhere else
-	// by the time the write happens.
+	// Symlinks are resolved first, so every check below is on the file that will be
+	// written and not on a name that may point elsewhere by then.
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return installTarget{}, fault.Wrap(fault.Terminal, CodeInstall,
@@ -67,9 +63,9 @@ func resolveTarget(exe string) (installTarget, error) {
 	}
 
 	dir := filepath.Dir(resolved)
-	// The new binary is staged in this directory and renamed over the old one, so both
-	// operations need the directory, not just the file. Finding out now produces a
-	// sentence the user can act on; finding out after the download produces a mess.
+	// The new binary is staged here and renamed over the old one, so both need the
+	// directory writable. Checking now gives the user an actionable message before
+	// anything is downloaded.
 	if err := checkWritableDir(dir); err != nil {
 		return installTarget{}, err
 	}
@@ -77,9 +73,9 @@ func resolveTarget(exe string) (installTarget, error) {
 	return installTarget{Path: resolved, Dir: dir, Mode: info.Mode().Perm()}, nil
 }
 
-// managedPaths are the install locations owned by a package manager. Writing to one
-// would leave the manager's database describing a file that is no longer there, and
-// the next upgrade through the manager would silently undo this one.
+// managedPaths are install locations a package manager owns. Writing to one leaves the
+// manager's database describing a file that is gone, and the manager's next upgrade
+// would undo this one.
 var managedPaths = map[string]string{
 	"/nix/store":                        "Nix",
 	"/snap":                             "snap",
@@ -104,12 +100,11 @@ func managedBy(p string) (string, bool) {
 			return owner, true
 		}
 	}
-	// A binary under a Go toolchain's bin directory came from `go install`, which is
-	// the tool that should take it away again. The caller resolved the binary's symlinks,
-	// so resolve this side too: on a host where the Go directory is reached through a link
-	// (a symlinked home, or macos reaching /var through /private/var) the two spellings name
-	// the same directory and a textual prefix would still miss, and a missed owner is an
-	// upgrade that overwrites a file another tool is holding.
+	// A binary under a Go toolchain's bin directory came from `go install`, which should
+	// remove it. The caller resolved the binary's symlinks, so this side is resolved
+	// too: where the Go directory is reached through a link (a symlinked home, macOS's
+	// /var through /private/var) a textual prefix misses, and a missed owner means
+	// overwriting a file another tool holds.
 	if gobin := resolveDir(filepath.Join(goPath(), "bin")); gobin != "bin" && under(clean, gobin) {
 		return "go install", true
 	}
@@ -126,8 +121,8 @@ func under(path, dir string) bool {
 	return strings.HasPrefix(path, prefix)
 }
 
-// resolveDir returns dir with its symlinks resolved, or dir unchanged when it cannot be
-// resolved (it may not exist, which is not an error here: an absent directory owns nothing).
+// resolveDir returns dir with its symlinks resolved, or dir unchanged when that fails
+// (it may not exist, and an absent directory owns nothing).
 func resolveDir(dir string) string {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -147,11 +142,10 @@ func goPath() string {
 	return filepath.Join(home, "go")
 }
 
-// checkWritableDir proves the directory can be written before anything is downloaded,
-// by writing to it. Asking the operating system whether a write would be permitted is
-// a question with a different answer than actually writing: the permission bits, the
-// access-control list, the read-only mount, and the container's view of them all get
-// a vote, and only the write consults every one of them.
+// checkWritableDir proves the directory writable before anything is downloaded, by
+// writing to it. Asking whether a write is permitted can answer differently from
+// writing: permission bits, the ACL, a read-only mount and the container's view all
+// have a say, and only the write consults every one.
 func checkWritableDir(dir string) error {
 	f, err := os.CreateTemp(dir, stagedPrefix+"probe-*")
 	if err != nil {
@@ -167,8 +161,8 @@ func checkWritableDir(dir string) error {
 // stage writes the verified binary into the target's directory under a temporary
 // name, ready to be renamed into place, and returns its path.
 func (t installTarget) stage(archivePath, binaryName string) (string, error) {
-	// The staged file is created by the extractor with O_EXCL, so this only reserves a
-	// name that is not taken; nothing is written through this handle.
+	// The extractor creates the staged file with O_EXCL, so this only reserves an
+	// unused name; nothing is written through this handle.
 	f, err := os.CreateTemp(t.Dir, stagedPrefix+"*")
 	if err != nil {
 		return "", fault.Wrap(fault.Terminal, CodeInstall, err)
@@ -182,8 +176,8 @@ func (t installTarget) stage(archivePath, binaryName string) (string, error) {
 	if err := extractBinary(archivePath, binaryName, staged, t.Mode); err != nil {
 		return "", err
 	}
-	// A file that came out of an archive carries the archive's bits, not necessarily the
-	// ones it needs to run, and a umask can take away what the extractor asked for.
+	// An extracted file carries the archive's mode bits, and a umask can strip what the
+	// extractor asked for.
 	if err := os.Chmod(staged, t.Mode); err != nil {
 		_ = os.Remove(staged)
 		return "", fault.Wrap(fault.Terminal, CodeInstall, err)
@@ -191,10 +185,9 @@ func (t installTarget) stage(archivePath, binaryName string) (string, error) {
 	return staged, nil
 }
 
-// SweepSuperseded removes the outgoing binaries an earlier upgrade left behind on the
-// platforms that cannot delete a running executable. It is called at startup, is best
-// effort, and reports how many it collected. A leftover file is untidy, not unsafe:
-// nothing executes it, and the next upgrade does not read it.
+// SweepSuperseded removes outgoing binaries an earlier upgrade left on platforms that
+// cannot delete a running executable. It runs at startup, is best effort, and reports
+// how many it removed. A leftover is untidy and harmless: nothing executes or reads it.
 func SweepSuperseded(exe string) int {
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {
@@ -218,12 +211,11 @@ func SweepSuperseded(exe string) int {
 	return swept
 }
 
-// supersedes reports whether name is an outgoing copy of the binary called base. The
-// name is base with the suffix appended, optionally with the pid of the process that
-// could not delete it in between. The boundary matters: a bare prefix test would let
-// "flynn" claim "flynn-other.superseded", a neighbouring binary's leftovers, and sweep
-// away a file this program does not own. That only shows on the platforms where the
-// binary has no extension, since "flynn.exe" cannot prefix "flynn-other".
+// supersedes reports whether name is an outgoing copy of the binary base: base plus
+// the suffix, optionally with the pid of the process that could not delete it. A bare
+// prefix test would let "flynn" claim "flynn-other.superseded", a neighbouring
+// binary's leftover. That can happen only where the binary has no extension, since
+// "flynn.exe" cannot prefix "flynn-other".
 func supersedes(base, name string) bool {
 	if !strings.HasSuffix(name, supersededSuffix) {
 		return false

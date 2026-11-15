@@ -1,21 +1,16 @@
-// Package auth applies an integration's credentials to an outbound HTTP request.
-// It is the pluggable authentication half of the integration framework: a Config
-// (plain data, part of an integration spec) selects a Provider, and every surface
-// that calls a remote API (the API tool, the scraper) authenticates the same way,
-// by calling Apply before handing the request to the shared request transport.
+// Package auth applies an integration's credentials to an outbound HTTP request. A
+// Config (plain data in an integration spec) selects a Provider, and every surface
+// calling a remote API (the API tool, the scraper) calls Apply before handing the
+// request to the shared transport, so all authenticate the same way.
 //
-// Credentials are never written into a spec. A Config names the auth scheme and
-// the vault references to resolve, and Apply looks each reference up through a
-// secret.Source (the vault boundary) at call time. The resolved value is a
-// secret.Text and is exposed exactly once, at the single point where it is written
-// onto the request, so a credential never lands in a logged config, an event, or
-// the spec itself.
+// A Config names the scheme and the vault references to resolve, never a
+// credential. Apply looks each reference up through a secret.Source at call time
+// and exposes the secret.Text once, where it is written onto the request, so a
+// credential never reaches a logged config, an event or the spec.
 //
-// Apply is defensive about the data it writes. The header name and value it
-// produces are validated against the HTTP grammar before they are set, so a hostile
-// or malformed credential, prefix, or parameter name cannot smuggle CR/LF and
-// inject a second header. Query-placed keys go through url.Values, which
-// percent-encodes them, so the same injection is structurally impossible there.
+// Header names and values are validated against the HTTP grammar before they are
+// set, so a hostile credential, prefix or parameter name cannot smuggle CR/LF into
+// a second header. Query keys go through url.Values, which percent-encodes them.
 package auth
 
 import (
@@ -29,13 +24,12 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// Scheme names an authentication mechanism. It is the discriminant of a Config:
-// the value an integration spec carries to say how its requests are signed.
+// Scheme names an authentication mechanism, the discriminant of a Config.
 type Scheme string
 
 const (
-	// SchemeNone applies no credentials. It is the explicit "public API" choice,
-	// distinct from an unset scheme, and the zero value.
+	// SchemeNone applies no credentials. It is the zero value and the explicit
+	// public-API choice.
 	SchemeNone Scheme = "none"
 	// SchemeBasic sends RFC 7617 HTTP Basic credentials in the Authorization header.
 	SchemeBasic Scheme = "basic"
@@ -44,8 +38,8 @@ const (
 	// SchemeAPIKey sends a key in a named header or query parameter, with an
 	// optional value prefix.
 	SchemeAPIKey Scheme = "api_key"
-	// SchemeOAuth2 obtains a short-lived access token from a token endpoint and sends
-	// it as a bearer token, refreshing it when it expires.
+	// SchemeOAuth2 fetches a short-lived access token from a token endpoint, sends
+	// it as a bearer token and refreshes it on expiry.
 	SchemeOAuth2 Scheme = "oauth2"
 )
 
@@ -53,45 +47,41 @@ const (
 type Placement string
 
 const (
-	// InHeader places the key in a request header (the default).
+	// InHeader places the key in a request header, the default.
 	InHeader Placement = "header"
 	// InQuery places the key in a URL query parameter.
 	InQuery Placement = "query"
 )
 
-// Config is the data form of an integration's auth: the scheme plus the vault
-// references and placement it needs. It carries no secret values, only the names
-// to resolve them by, so it is safe to serialize, log, and store in a spec. The
-// zero Config is SchemeNone (apply nothing).
+// Config is the data form of an integration's auth: the scheme, vault references and
+// placement. It holds no secret values, so it is safe to serialize, log and store in
+// a spec. The zero Config is SchemeNone.
 type Config struct {
 	Type Scheme `json:"type,omitempty"`
 
-	// TokenRef is the vault reference for the credential used by SchemeBearer and
-	// SchemeAPIKey.
+	// TokenRef is the vault reference for SchemeBearer and SchemeAPIKey.
 	TokenRef string `json:"token_ref,omitempty"`
 
 	// UsernameRef and PasswordRef are the vault references for SchemeBasic. Either
-	// may be empty (an empty username or password is sent), but not both: a basic
-	// config that resolves nothing is an error.
+	// may be empty, sending an empty value, but a config resolving neither is an
+	// error.
 	UsernameRef string `json:"username_ref,omitempty"`
 	PasswordRef string `json:"password_ref,omitempty"`
 
 	// In selects header or query placement for SchemeAPIKey. Empty means InHeader.
 	In Placement `json:"in,omitempty"`
-	// Param is the header or query-parameter name for SchemeAPIKey (e.g.
-	// "X-API-Key", "api_key"). Required for SchemeAPIKey.
+	// Param is the header or query-parameter name for SchemeAPIKey ("X-API-Key",
+	// "api_key"). Required for SchemeAPIKey.
 	Param string `json:"param,omitempty"`
-	// Prefix is an optional literal prepended to the SchemeAPIKey value (e.g.
-	// "Token ", "Bearer "). It is part of the wire value, not a secret.
+	// Prefix is a literal prepended to the SchemeAPIKey value ("Token ", "Bearer ").
+	// It is part of the wire value and is no secret.
 	Prefix string `json:"prefix,omitempty"`
 
-	// OAuth2 fields (SchemeOAuth2). TokenURL is the token endpoint. ClientID is the
-	// client identifier (semi-public, carried inline); ClientSecretRef and
-	// RefreshTokenRef are vault references for the client secret and a refresh token.
-	// Grant selects the flow ("client_credentials" by default, or "refresh_token");
-	// Scopes are requested at the token endpoint. A token endpoint returning an
-	// access token and its lifetime is all this needs: the access token is cached and
-	// refreshed, and never stored in a spec.
+	// OAuth2 fields (SchemeOAuth2). TokenURL is the token endpoint; ClientID is the
+	// semi-public client identifier, carried inline; ClientSecretRef and
+	// RefreshTokenRef are vault references. Grant is "client_credentials" (default)
+	// or "refresh_token"; Scopes are requested at the endpoint. The access token is
+	// cached and refreshed, never stored in a spec.
 	TokenURL        string   `json:"token_url,omitempty"`
 	ClientID        string   `json:"client_id,omitempty"`
 	ClientSecretRef string   `json:"client_secret_ref,omitempty"`
@@ -110,15 +100,15 @@ const (
 )
 
 // TokenExchanger performs the token-endpoint request for SchemeOAuth2. The shared
-// request transport satisfies it, so a token request is dispatched through the same
-// governed path (anti-SSRF dialer, bounded retries) as every other request.
+// request transport satisfies it, so a token request takes the same governed path
+// (anti-SSRF dialer, bounded retries) as every other request.
 type TokenExchanger interface {
 	Do(ctx context.Context, req *http.Request) (*http.Response, error)
 }
 
-// options carries the dependencies a stateful provider needs beyond its Config. The
-// static schemes ignore them; SchemeOAuth2 requires a TokenExchanger and uses the
-// clock to track token expiry.
+// options are a stateful provider's dependencies beyond its Config. SchemeOAuth2
+// requires a TokenExchanger and tracks token expiry on the clock; static schemes
+// ignore them.
 type options struct {
 	exchanger TokenExchanger
 	clk       clock.Clock
@@ -127,14 +117,14 @@ type options struct {
 // Option configures FromConfig.
 type Option func(*options)
 
-// WithTokenExchanger supplies the transport SchemeOAuth2 uses to call the token
-// endpoint. It is required to build an oauth2 provider.
+// WithTokenExchanger supplies the transport SchemeOAuth2 calls the token endpoint
+// through. An oauth2 provider requires it.
 func WithTokenExchanger(e TokenExchanger) Option {
 	return func(o *options) { o.exchanger = e }
 }
 
-// WithClock supplies the clock SchemeOAuth2 measures token expiry against (default
-// clock.System). Tests pass a manual clock for determinism.
+// WithClock supplies the clock SchemeOAuth2 measures token expiry on (default
+// clock.System).
 func WithClock(c clock.Clock) Option {
 	return func(o *options) {
 		if c != nil {
@@ -143,25 +133,21 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// Provider applies a single auth scheme to a request. It is the pluggable unit of
-// the framework: FromConfig builds one from a Config, and a surface calls Apply on
-// every outbound request before dispatching it through the transport.
+// Provider applies one auth scheme to a request. A surface calls Apply on every
+// outbound request before dispatching it through the transport.
 type Provider interface {
-	// Apply resolves the credentials this provider needs from src and writes them
-	// onto req. A missing credential (secret.ErrNotFound) is a terminal fault: the
-	// integration is configured to need it and cannot proceed without it. Apply
-	// never writes a header it could not validate.
+	// Apply resolves the credentials from src and writes them onto req. A missing
+	// credential (secret.ErrNotFound) is a terminal fault, since the integration
+	// needs it. Apply never writes a header it could not validate.
 	Apply(ctx context.Context, req *http.Request, src secret.Source) error
-	// Scheme reports the mechanism this provider implements, for audit and
-	// introspection.
+	// Scheme reports the mechanism, for audit and introspection.
 	Scheme() Scheme
 }
 
-// FromConfig builds the Provider a Config selects, validating that the config
-// carries the references its scheme requires. An unknown scheme, or a scheme
-// missing a required field, is a terminal configuration fault. The zero Config and
-// SchemeNone both yield the no-op provider. SchemeOAuth2 requires a TokenExchanger
-// (see WithTokenExchanger); the other schemes ignore the options.
+// FromConfig builds the Provider c selects, checking that c carries the references
+// its scheme requires. An unknown scheme or a missing field is a terminal
+// configuration fault. The zero Config and SchemeNone yield the no-op provider.
+// SchemeOAuth2 requires WithTokenExchanger; other schemes ignore the options.
 func FromConfig(c Config, opts ...Option) (Provider, error) {
 	var o options
 	for _, opt := range opts {
@@ -205,14 +191,13 @@ func FromConfig(c Config, opts ...Option) (Provider, error) {
 	}
 }
 
-// none applies no credentials.
 type none struct{}
 
 func (none) Apply(context.Context, *http.Request, secret.Source) error { return nil }
 func (none) Scheme() Scheme                                            { return SchemeNone }
 
 // basic sends RFC 7617 Basic credentials. The base64 of "user:pass" is always
-// header-safe, so the value needs no validation.
+// header-safe, so the value is not validated.
 type basic struct {
 	usernameRef string
 	passwordRef string
@@ -236,7 +221,6 @@ func (b basic) Apply(ctx context.Context, req *http.Request, src secret.Source) 
 
 func (basic) Scheme() Scheme { return SchemeBasic }
 
-// bearer sends a token as an Authorization: Bearer header.
 type bearer struct{ tokenRef string }
 
 func (b bearer) Apply(ctx context.Context, req *http.Request, src secret.Source) error {
@@ -250,7 +234,6 @@ func (b bearer) Apply(ctx context.Context, req *http.Request, src secret.Source)
 
 func (bearer) Scheme() Scheme { return SchemeBearer }
 
-// apiKey sends a key in a named header or query parameter, with an optional prefix.
 type apiKey struct {
 	tokenRef string
 	in       Placement
@@ -266,8 +249,8 @@ func (a apiKey) Apply(ctx context.Context, req *http.Request, src secret.Source)
 	defer tok.Destroy()
 	value := a.prefix + tok.Expose()
 	if a.in == InQuery {
-		// url.Values.Encode percent-encodes name and value, so the key cannot alter
-		// the URL structure however hostile its bytes are.
+		// url.Values.Encode percent-encodes name and value, so hostile bytes cannot
+		// alter the URL structure.
 		q := req.URL.Query()
 		q.Set(a.param, value)
 		req.URL.RawQuery = q.Encode()
@@ -278,9 +261,9 @@ func (a apiKey) Apply(ctx context.Context, req *http.Request, src secret.Source)
 
 func (a apiKey) Scheme() Scheme { return SchemeAPIKey }
 
-// resolve looks a required reference up in the vault. A missing value is terminal:
-// the integration declared it needs this credential. A backend failure (a locked
-// keychain, an unreachable vault) is transient, so a caller may retry it.
+// resolve looks a required reference up in the vault. A missing value is terminal,
+// since the integration declared it. A backend failure (a locked keychain, an
+// unreachable vault) is transient and retryable.
 func resolve(ctx context.Context, src secret.Source, ref string) (secret.Text, error) {
 	v, err := src.Lookup(ctx, ref)
 	if errors.Is(err, secret.ErrNotFound) {
@@ -292,9 +275,9 @@ func resolve(ctx context.Context, src secret.Source, ref string) (secret.Text, e
 	return v, nil
 }
 
-// resolveOptional resolves a reference that may be intentionally absent (an empty
-// basic-auth username or password). An empty ref, or one the vault does not hold,
-// yields the empty secret without error; only a backend failure is reported.
+// resolveOptional resolves a reference that may be absent (an empty basic-auth
+// username or password). An empty ref or a value the vault lacks yields the empty
+// secret; only a backend failure is an error.
 func resolveOptional(ctx context.Context, src secret.Source, ref string) (secret.Text, error) {
 	if ref == "" {
 		return secret.Text{}, nil
@@ -309,10 +292,9 @@ func resolveOptional(ctx context.Context, src secret.Source, ref string) (secret
 	return v, nil
 }
 
-// setHeader validates name and value against the HTTP header grammar before
-// setting them, so a credential or prefix carrying CR/LF (or any control byte)
-// cannot inject an extra header. It returns a terminal fault rather than writing a
-// malformed header.
+// setHeader validates name and value against the HTTP header grammar before setting
+// them, so a credential or prefix carrying CR/LF or another control byte cannot
+// inject a header. A malformed header is a terminal fault.
 func setHeader(req *http.Request, name, value string) error {
 	if !validHeaderName(name) {
 		return fault.New(fault.Terminal, "auth_header_name", "invalid header name")
@@ -324,8 +306,7 @@ func setHeader(req *http.Request, name, value string) error {
 	return nil
 }
 
-// validHeaderName reports whether s is a non-empty RFC 7230 token (the grammar for
-// a header field name).
+// validHeaderName reports whether s is a non-empty RFC 7230 token.
 func validHeaderName(s string) bool {
 	if s == "" {
 		return false
@@ -338,9 +319,9 @@ func validHeaderName(s string) bool {
 	return true
 }
 
-// validHeaderValue reports whether s is a valid RFC 7230 header field value: it may
-// hold visible ASCII, spaces, tabs, and obs-text (high bytes), but no other control
-// characters, which is what rejects an embedded CR or LF.
+// validHeaderValue reports whether s is a valid RFC 7230 field value: visible ASCII,
+// spaces, tabs and obs-text (high bytes). Any other control character, CR and LF
+// included, is rejected.
 func validHeaderValue(s string) bool {
 	for i := range len(s) {
 		b := s[i]

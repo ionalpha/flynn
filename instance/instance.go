@@ -1,22 +1,16 @@
-// Package instance defines the Instance resource kind: a record of one running
-// flynn process. Promoting a process to a stored resource makes it listable and
-// describable through the same read model as every other kind, and gives placement
-// and remote control a concrete handle to address. An Instance carries declarative
-// spec (its host, version, and the capabilities it offers) and reconciled status
-// (its current run-state and the runs it is driving). The resource's own last-write
-// time on the envelope is the heartbeat, so a stale record is a missed heartbeat.
+// Package instance defines the Instance resource kind, the record of one running
+// flynn process, so processes are listable like any other kind and placement and
+// remote control have a handle to address. The envelope's last-write time is the
+// heartbeat.
 //
 // # Trust
 //
-// This package does no authentication and no authorisation. The record name is the
-// instance id, and anything that can Put the kind on a store can write any
-// instance's spec and status, including making a stopped runner look alive or a
-// live one look Done. The host must restrict writes of an Instance record to that
-// instance's own authenticated identity (an admission rule or per-instance
-// credential on the store), and must treat every field as self-reported by the
-// instance. The package does bound what a write can carry (see [MaxFieldLen],
-// [MaxRecordBytes]) and keeps liveness derivation fail-closed (see [IsStale]), but
-// those limits do not make a record trustworthy.
+// This package does no authentication or authorisation. Anything that can Put
+// the kind can write any instance's spec and status, including making a stopped
+// runner look alive or a live one look Done. The host must restrict writes of a
+// record to that instance's authenticated identity and treat every field as
+// self-reported. The size caps ([MaxFieldLen], [MaxRecordBytes]) and the
+// fail-closed [IsStale] do not make a record trustworthy.
 package instance
 
 import (
@@ -35,12 +29,9 @@ const (
 	Kind = "Instance"
 )
 
-// DefaultStaleAfter is how long an instance's heartbeat (its last envelope write)
-// may age before its live run-state can no longer be trusted and is reported as
-// Unknown. A healthy process refreshes its record well within this window;
-// exceeding it means the process most likely stopped without recording a terminal
-// state, so reporting its last live state as current would be a lie. The value is
-// several heartbeat intervals, so a single missed refresh does not flap the state.
+// DefaultStaleAfter is how old a heartbeat may be before a live run-state is
+// reported as Unknown, since the process most likely stopped without recording
+// Done. It spans several heartbeat intervals so one missed beat does not flap.
 const DefaultStaleAfter = 90 * time.Second
 
 const (
@@ -54,13 +45,11 @@ const (
 	MaxRecordBytes = 24 << 10
 )
 
-// MaxClockSkew is how far ahead of the reader's clock a heartbeat may be dated and
-// still count as fresh. Beyond it the heartbeat is untrustworthy and the record is
-// stale; see [IsStale].
+// MaxClockSkew is how far ahead of the reader's clock a heartbeat may be dated
+// and still count as fresh; see [IsStale].
 const MaxClockSkew = 30 * time.Second
 
-// State is the coarse run-state of an instance: the vocabulary the read surface
-// reports for what a process is doing right now.
+// State is the coarse run-state the read views report for an instance.
 type State string
 
 const (
@@ -68,27 +57,25 @@ const (
 	StateIdle State = "Idle"
 	// StateWorking is an instance driving one or more runs.
 	StateWorking State = "Working"
-	// StateBlocked is an instance whose runs are all waiting (on approval or input).
+	// StateBlocked is an instance whose runs all wait on approval or input.
 	StateBlocked State = "Blocked"
-	// StateDone is an instance that has finished its work and is shutting down.
+	// StateDone is an instance that finished its work and is shutting down.
 	StateDone State = "Done"
-	// StateUnknown is an instance whose state cannot be determined (for example a
-	// heartbeat too old to trust).
+	// StateUnknown is an instance whose state cannot be trusted, such as one
+	// with a stale heartbeat.
 	StateUnknown State = "Unknown"
 )
 
-// Spec is an instance's declared shape: where it runs, what version it is, and the
-// capabilities it can offer work. Every field is optional, so a minimal Instance is
-// just its name (the instance id).
+// Spec is an instance's declared host, version and capabilities. Every field is
+// optional; the record name is the instance id.
 type Spec struct {
 	Host         string   `json:"host,omitempty"`
 	Version      string   `json:"version,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// Status is an instance's observed state, written by the live process. Runs lists
-// the run ids the instance is currently driving; the heartbeat is the resource's
-// envelope write time, not a field here.
+// Status is written by the live process. Runs lists the run ids it is driving.
+// The heartbeat is the envelope write time and has no field here.
 type Status struct {
 	State              State    `json:"state,omitempty"`
 	Runs               []string `json:"runs,omitempty"`
@@ -109,8 +96,7 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// RegisterKind registers the Instance kind so instances can be stored and admitted
-// like any other resource.
+// RegisterKind registers the Instance kind with reg.
 func RegisterKind(reg *resource.Registry) error {
 	return reg.Register(resource.Kind{
 		APIVersion: GroupVersion,
@@ -127,10 +113,9 @@ func DecodeSpec(r resource.Resource) (Spec, error) { return resource.DecodeSpec[
 // DecodeStatus reads the typed status from a resource.
 func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeStatus[Status](r) }
 
-// Register upserts this process's Instance resource by id, recording its declared
-// spec and refreshing its heartbeat (the envelope write time). An existing record's
-// status is preserved, so re-registering on startup never clears a live run-state;
-// a brand new instance starts Idle. It returns the stored resource.
+// Register upserts the Instance record for id with spec, refreshing the
+// heartbeat. An existing status is kept, so re-registering on startup never
+// clears a live run-state; a new instance starts Idle.
 func Register(ctx context.Context, store resource.Store, scope resource.Scope, id string, spec Spec) (resource.Resource, error) {
 	if err := validate(id, spec, Status{}); err != nil {
 		return resource.Resource{}, err
@@ -149,10 +134,9 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 	switch existing, err := store.Get(ctx, Kind, scope, id); {
 	case err == nil:
 		r.Status = existing.Status
-		// The record cap covers the merged record, so a spec cannot be sized to
-		// overflow around a status already stored.
-		// An undecodable stored status counts as empty, so corruption cannot be
-		// used to skip the check.
+		// The cap covers the merged record, so a spec cannot be sized to overflow
+		// around a stored status. An undecodable status counts as empty, so
+		// corruption cannot skip the check.
 		old, derr := DecodeStatus(existing)
 		if derr != nil {
 			old = Status{}
@@ -170,10 +154,9 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 	return store.Put(ctx, r)
 }
 
-// SetStatus writes the instance's reconciled status (its run-state and active runs)
-// without changing its spec, refreshing the heartbeat. It preserves the stored spec
-// by reading the current record first, so status and spec are written by their
-// respective owners and never clobber each other.
+// SetStatus writes the run-state and active runs, keeping the stored spec, and
+// refreshes the heartbeat. Run ids past the caps are dropped and counted in
+// [Status.OmittedRuns]. The record must already exist.
 func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, id string, state State, runs []string) (resource.Resource, error) {
 	st := Status{State: state}
 	st.Runs, st.OmittedRuns = capRuns(runs)
@@ -205,8 +188,7 @@ func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, 
 var ErrTooLarge = errors.New("instance: field or record exceeds its size cap")
 
 // capRuns keeps the first [MaxListLen] run ids that fit [MaxFieldLen] and counts
-// the rest. A Reporter that over-reports must not make every beat fail: the beat
-// is the liveness signal, and a refused one reads as an unreachable runner.
+// the rest, because a refused beat would read as an unreachable runner.
 func capRuns(runs []string) (kept []string, omitted int) {
 	for _, id := range runs {
 		if len(kept) == MaxListLen || len(id) > MaxFieldLen {
@@ -240,17 +222,14 @@ func validate(id string, spec Spec, st Status) error {
 
 func (s Status) encode() (json.RawMessage, error) { return json.Marshal(s) }
 
-// IsStale reports whether the instance's heartbeat (UpdatedAt, refreshed by every
-// Register and SetStatus) is older than staleAfter as of now. A never-written
-// record is stale, and the comparison is strict. A non-positive staleAfter is
-// replaced by [DefaultStaleAfter] rather than disabling the check: a zero value
-// from an unset option must not make a dead runner read as alive.
+// IsStale reports whether the heartbeat (UpdatedAt) is strictly older than
+// staleAfter as of now. A never-written record is stale. A non-positive
+// staleAfter means [DefaultStaleAfter], so an unset option cannot make a dead
+// runner read as alive.
 //
-// now is the reader's clock while UpdatedAt is stamped by the store's, so the two
-// can differ. A heartbeat dated more than [MaxClockSkew] after now is stale: taken
-// at face value its age is negative and a stopped or forged runner would look
-// fresh until the reader's clock caught up. Skew inside the tolerance is fresh, so
-// ordinary drift does not flap.
+// The store's clock stamps UpdatedAt, so it can run ahead of now. A heartbeat
+// more than [MaxClockSkew] in the future is stale, or a stopped or forged
+// runner would look fresh until the reader's clock caught up.
 func IsStale(r resource.Resource, now time.Time, staleAfter time.Duration) bool {
 	if staleAfter <= 0 {
 		staleAfter = DefaultStaleAfter
@@ -261,17 +240,13 @@ func IsStale(r resource.Resource, now time.Time, staleAfter time.Duration) bool 
 	return now.Sub(r.UpdatedAt) > staleAfter
 }
 
-// EffectiveState is the run-state to report for an instance right now, derived from
-// its recorded status and the age of its heartbeat. It is the single rule the read
-// surface (flynn ps/status, the dashboard, the remote API) shares, so a crashed
-// process is never reported as alive: a live recorded state (Idle, Working, Blocked)
-// becomes Unknown once the heartbeat goes stale. A recorded Done stays Done
-// regardless of heartbeat age, because a clean stop writes it before the process
-// stops refreshing; it is self-reported, so a host that needs liveness uses
-// [Unreachable], which does not exempt Done. A record whose status is
-// missing or unreadable reports Unknown rather than guessing. The function is pure
-// (time enters only through now), so it is deterministic under replay and the same
-// result on every machine.
+// EffectiveState is the run-state every read view (flynn ps and status, the
+// dashboard, the remote API) reports, so a crashed process never reads as
+// alive: Idle, Working and Blocked become Unknown once the heartbeat is stale.
+// Done stays Done at any age because a clean stop writes it last; it is
+// self-reported, so a host that needs liveness uses [Unreachable]. A missing,
+// unreadable or unrecognised status is Unknown. Time enters only through now,
+// so the result is deterministic under replay.
 func EffectiveState(r resource.Resource, now time.Time, staleAfter time.Duration) State {
 	st, err := DecodeStatus(r)
 	if err != nil {
@@ -286,9 +261,7 @@ func EffectiveState(r resource.Resource, now time.Time, staleAfter time.Duration
 		}
 		return st.State
 	default:
-		// Empty, or any value outside the vocabulary (a malformed or adversarial
-		// record): the state cannot be trusted, so report Unknown rather than echo
-		// an out-of-band value into the read surface.
+		// Never echo an out-of-vocabulary value into the read views.
 		return StateUnknown
 	}
 }

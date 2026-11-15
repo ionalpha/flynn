@@ -10,14 +10,12 @@ import (
 type MergeOutcome int
 
 const (
-	// MergeApplied means the remote record won and replaced (or first-inserted) the
+	// MergeApplied means the remote record won and replaced or first inserted the
 	// local one.
 	MergeApplied MergeOutcome = iota
-	// MergeIgnored means the local record won and the remote was discarded as older
-	// or lower-precedence. The local state is unchanged.
+	// MergeIgnored means the local record won and the remote was discarded.
 	MergeIgnored
-	// MergeUnchanged means the remote was already present (same write), so the apply
-	// was an idempotent no-op.
+	// MergeUnchanged means the remote write was already present, an idempotent no-op.
 	MergeUnchanged
 )
 
@@ -34,26 +32,23 @@ func (o MergeOutcome) String() string {
 	}
 }
 
-// MergeResult is the outcome of applying a replicated resource: what happened and
-// the resource that now holds the record's slot (the winner, or the unchanged
-// local record).
+// MergeResult is what a merge did and the resource now in the record's slot.
 type MergeResult struct {
 	Outcome  MergeOutcome
 	Resource Resource
 }
 
-// Resolve decides a cross-instance conflict between an incoming replicated record and the
-// current local one for the same ID, returning the winner and whether it is the incoming
-// record. It is the pure heart of Merge, deterministic and commutative so every instance
-// converges whatever order records arrive. The rules, in order:
+// Resolve picks the winner between an incoming replicated record and the local one
+// with the same ID. It is deterministic and commutative, so every instance converges
+// whatever the arrival order. The rules, in order:
 //
-//  1. Idempotence: the same write (equal UpdatedHLC and LastWriterID) is a no-op.
-//  2. Provenance precedence: a human-authored write outranks an automated one regardless
-//     of clocks, so human intent is not silently overwritten by a later agent write.
-//  3. Last-writer-wins by UpdatedHLC, with LastWriterID as the tiebreak on an exact tie.
+//  1. The same write (equal UpdatedHLC and LastWriterID) is a no-op.
+//  2. A human-authored write outranks an automated one regardless of clocks, so a
+//     later agent write never overwrites human intent.
+//  3. Last-writer-wins by UpdatedHLC, LastWriterID breaking an exact tie.
 //
-// Tombstones carry the same envelope as live writes, so a delete and a write are ordered by
-// the same key: a higher-HLC delete removes, and a higher-HLC write after a delete resurrects.
+// Tombstones carry the same envelope, so a later delete removes and a later write
+// after a delete resurrects.
 func Resolve(incoming, current Resource) (winner Resource, takeIncoming bool) {
 	if incoming.UpdatedHLC == current.UpdatedHLC && incoming.LastWriterID == current.LastWriterID {
 		return current, false // same write already applied
@@ -76,10 +71,8 @@ func Resolve(incoming, current Resource) (winner Resource, takeIncoming bool) {
 	return current, false
 }
 
-// provenanceRank scores authorship for merge precedence. Only the human-versus-
-// automation distinction matters: a human write outranks an agent or system write.
-// Agent and system are equal (both automation), so among them last-writer-wins
-// alone decides.
+// provenanceRank ranks a human write above agent and system writes, which tie, so
+// among automation last-writer-wins alone decides.
 func provenanceRank(a spine.ActorType) int {
 	if a == spine.ActorHuman {
 		return 1
@@ -88,9 +81,8 @@ func provenanceRank(a spine.ActorType) int {
 }
 
 // ValidateForMerge checks that a replicated record carries the full envelope Merge
-// relies on. A record produced by a real write always has these; rejecting a record
-// without them guards against feeding a half-built local resource into the merge
-// path (where no Stamper assigns identity). Backends call it before resolving.
+// needs. No Stamper assigns identity on the merge path, so this keeps a half-built
+// local resource out of it. Backends call it before resolving.
 func ValidateForMerge(r Resource) error {
 	switch {
 	case r.ID == "":
@@ -105,10 +97,9 @@ func ValidateForMerge(r Resource) error {
 	return nil
 }
 
-// MergeEvent builds the spine event recording that r was applied by cross-instance
-// merge. Its payload is the winning post-image verbatim, so folding the stream
-// reproduces the merged state on any backend, and it preserves r's provenance
-// (origin instance and writer actor) rather than restamping it locally.
+// MergeEvent builds the spine event for a merged r. Its payload is the winning
+// post-image verbatim and it keeps r's origin and writer actor, so folding the stream
+// reproduces the merge on any backend.
 func MergeEvent(r Resource) (spine.AppendInput, error) {
 	p, err := encodePayload(r)
 	if err != nil {

@@ -2,15 +2,10 @@ package editor
 
 import "unicode"
 
-// Token support for completion: the composer completes the trigger-prefixed
-// word being typed, so the shell needs to read that word and, on accept,
-// replace it. The token is the unbroken run of non-space atoms ending at the
-// cursor; it only counts when its first atom is the trigger itself, so
-// "@src/f" completes while "user@host" does not (its run starts at 'u').
-
-// Token returns the text after the trigger in the token ending at the
-// cursor, and whether such a token is active. The query may be empty: a
-// trigger just typed is an active token asking for the unfiltered universe.
+// Token returns the text after the trigger in the token ending at the cursor.
+// The token is the unbroken run of non-space atoms ending there and counts only
+// when it starts with the trigger: "@src/f" completes, "user@host" does not. The
+// query may be empty.
 func (e *Editor) Token(trigger rune) (string, bool) {
 	start, ok := e.tokenStart(trigger)
 	if !ok {
@@ -23,11 +18,9 @@ func (e *Editor) Token(trigger rune) (string, bool) {
 	return string(b), true
 }
 
-// CompleteToken replaces the active trigger token with the trigger, the
-// chosen text, and a trailing space, and puts the cursor after the space.
-// Without an active token it does nothing, so a stale accept (the buffer
-// changed under a queued key) cannot splice the wrong range. One undo step
-// restores the typed query.
+// CompleteToken replaces the active token with the trigger, text and a trailing
+// space. Without an active token it does nothing, so a stale accept cannot
+// splice the wrong range. One undo step restores the typed query.
 func (e *Editor) CompleteToken(trigger rune, text string) {
 	start, ok := e.tokenStart(trigger)
 	if !ok {
@@ -44,10 +37,9 @@ func (e *Editor) CompleteToken(trigger rune, text string) {
 	e.last = opNone
 }
 
-// tokenStart finds the start of the run of non-space, non-chip atoms ending
-// at the cursor, and reports whether that run begins with the trigger. Chips
-// bound the run like spaces do: a chip (paste or image) is opaque, not part
-// of a word being typed.
+// tokenStart finds the start of the run of non-space atoms ending at the cursor
+// and reports whether it begins with the trigger. Chips bound the run like
+// spaces.
 func (e *Editor) tokenStart(trigger rune) (int, bool) {
 	i := e.cur
 	for i > 0 {
@@ -71,8 +63,7 @@ func (e *Editor) tokenStart(trigger rune) (int, bool) {
 	return i, true
 }
 
-// isSpaceAtom reports whether the atom is whitespace (a space or a line
-// break; tabs never enter the buffer).
+// isSpaceAtom reports whitespace; tabs never enter the buffer.
 func isSpaceAtom(a atom) bool {
 	if a.opaque() {
 		return false

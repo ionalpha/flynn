@@ -15,18 +15,17 @@ import (
 )
 
 // maxBundleBytes caps a bundle before it is parsed. A release bundle is a few tens of
-// kilobytes; anything approaching this is either broken or an attempt to make the
-// verifier chew through memory before it has verified anything at all.
+// kilobytes, so anything near this is broken or an attempt to exhaust memory before
+// anything is verified.
 const maxBundleBytes = 4 << 20
 
 // bundleMediaTypePrefix is the Sigstore bundle media type family this verifier
-// understands. A bundle announcing anything else is refused rather than guessed at.
+// understands. A bundle announcing anything else is refused.
 const bundleMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
 
-// bundle is the subset of the Sigstore bundle this verifier reads. The fields it does
-// not read (the inclusion promise, the timestamp material) are deliberately absent:
-// they are alternatives to the inclusion proof, and accepting them would let a
-// signature that was never actually logged pass as one that was.
+// bundle is the subset of the Sigstore bundle this verifier reads. The inclusion
+// promise and timestamp material are left out: they are alternatives to the inclusion
+// proof, and accepting them would pass a signature that was never logged.
 type bundle struct {
 	MediaType            string `json:"mediaType"`
 	VerificationMaterial struct {
@@ -68,15 +67,15 @@ type bundle struct {
 
 	// leafCertificate is the signing certificate in DER, decoded once at parse.
 	leafCertificate []byte
-	// payload and signature are the decoded DSSE parts, held so the raw bytes that
-	// were signed are the exact bytes that get verified and then read.
+	// payload and signature are the decoded DSSE parts, kept so the bytes verified are
+	// the bytes then read.
 	payload   []byte
 	signature []byte
 }
 
-// tlogEntry is one transparency-log entry with its numbers already parsed. Sigstore
-// encodes 64-bit fields as JSON strings, and a verifier that silently treats an
-// unparseable index as zero is a verifier with a hole in it.
+// tlogEntry is one transparency-log entry with its numbers parsed. Sigstore encodes
+// 64-bit fields as JSON strings, and reading an unparseable index as zero would open a
+// hole in the verifier.
 type tlogEntry struct {
 	logIndex       int64
 	integratedTime time.Time
@@ -125,9 +124,9 @@ func decodeBundle(raw []byte) (*bundle, error) {
 	return &b, nil
 }
 
-// soleTLogEntry returns the bundle's single transparency-log entry. More than one
-// entry would mean more than one answer to "was this logged", and picking one of
-// several is how a verifier gets talked into believing the wrong one.
+// soleTLogEntry returns the bundle's single transparency-log entry. Several entries
+// give several answers to "was this logged", and a verifier that picks one can be
+// steered to the wrong one.
 func (b *bundle) soleTLogEntry() (tlogEntry, error) {
 	if n := len(b.VerificationMaterial.TLogEntries); n != 1 {
 		return tlogEntry{}, fault.New(fault.Terminal, CodeTransparency,
@@ -135,9 +134,8 @@ func (b *bundle) soleTLogEntry() (tlogEntry, error) {
 	}
 	e := b.VerificationMaterial.TLogEntries[0]
 
-	// The entry kind decides how the log hashed what it stored. This verifier binds a
-	// dsse entry to the envelope it saw; it cannot make that argument about a kind it
-	// does not know, so it refuses rather than skip the binding.
+	// The entry kind decides how the log hashed what it stored. A dsse entry is bound to
+	// the envelope seen; an unknown kind cannot be bound, so it is refused.
 	if e.KindVersion.Kind != "dsse" || e.KindVersion.Version != "0.0.1" {
 		return tlogEntry{}, fault.New(fault.Terminal, CodeTransparency,
 			"the transparency-log entry is a "+e.KindVersion.Kind+"/"+e.KindVersion.Version+
@@ -172,11 +170,10 @@ func (b *bundle) soleTLogEntry() (tlogEntry, error) {
 	if out.proofIndex, err = parseInt(e.InclusionProof.LogIndex, "inclusion proof index"); err != nil {
 		return tlogEntry{}, err
 	}
-	// The two indices are not the same number and must not be checked against each
-	// other: logIndex counts across the whole log, while the inclusion proof's index is
-	// a position within the shard whose tree the proof is computed over. Each is
-	// authenticated in its own way, the first by the log's signed entry timestamp and
-	// the second by the proof itself reconstructing a signed root.
+	// The two indices are different numbers and are never compared: logIndex counts
+	// across the whole log, and the proof's index is a position in the shard its tree
+	// covers. The log's signed entry timestamp authenticates the first; the proof
+	// reconstructing a signed root authenticates the second.
 	if out.treeSize, err = parseInt(e.InclusionProof.TreeSize, "inclusion proof tree size"); err != nil {
 		return tlogEntry{}, err
 	}
@@ -211,8 +208,8 @@ func (b *bundle) verifyDSSESignature(leaf *x509.Certificate) error {
 
 	pae := dssePAE(b.DSSEEnvelope.PayloadType, b.payload)
 
-	// The digest follows the key's curve, as ECDSA is defined: a P-384 key signs a
-	// SHA-384 digest. Hard-coding SHA-256 would silently fail on a rotated key type.
+	// The digest follows the key's curve, as ECDSA defines: a P-384 key signs a SHA-384
+	// digest, so a rotated key type still verifies.
 	var digest []byte
 	switch key.Curve.Params().BitSize {
 	case 256:

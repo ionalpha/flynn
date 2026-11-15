@@ -8,19 +8,16 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// OriginFunc maps a stream id to the origin a sealed record is scoped to. A nil func
-// uses the stream id itself.
+// OriginFunc maps a stream id to the origin a sealed record is scoped to. Nil
+// uses the stream id.
 type OriginFunc func(stream string) string
 
-// RecordingLog wraps a spine.Log and records every appended event into a per-stream
-// verifiable chain, so a stream can be sealed into a signed run record without
-// changing how events are produced. It is itself a spine.Log, so it drops in wherever
-// a Log is expected.
+// RecordingLog wraps a [spine.Log] and records every appended event into a
+// per-stream chain that can be sealed into a signed run record.
 //
 // Recording never fails an Append: a recording error is retained and surfaced at
-// Seal. A run is therefore never broken by the integrity layer, but a stream whose
-// recording failed (a non-canonical event) cannot be sealed, so a sealed record
-// always covers the stream's complete, canonical event sequence.
+// Seal. A stream whose recording failed (a non-canonical event) cannot be sealed,
+// so a sealed record always covers the complete, canonical event sequence.
 type RecordingLog struct {
 	spine.Log
 
@@ -36,8 +33,7 @@ type streamRecorder struct {
 	err     error
 }
 
-// NewRecordingLog wraps inner. originFor maps a stream to its record origin; if nil,
-// the stream id is used.
+// NewRecordingLog wraps inner. A nil originFor uses the stream id.
 func NewRecordingLog(inner spine.Log, originFor OriginFunc) *RecordingLog {
 	return &RecordingLog{Log: inner, origin: originFor, builders: map[string]*streamRecorder{}}
 }
@@ -49,18 +45,15 @@ func (r *RecordingLog) originFor(stream string) string {
 	return stream
 }
 
-// Append delegates to the wrapped log, then records the assigned event into its
-// stream's chain. The append result is returned unchanged; a recording failure is
-// kept for Seal rather than propagated, so producing events never depends on the
-// integrity layer succeeding.
+// Append returns the wrapped log's result unchanged; a recording failure is kept
+// for Seal.
 func (r *RecordingLog) Append(ctx context.Context, in spine.AppendInput) (spine.Event, error) {
 	e, err := r.Log.Append(ctx, in)
 	if err != nil {
 		return e, err
 	}
-	// The global lock only fetches (or creates) the stream's recorder; the encode+hash
-	// runs under that recorder's own lock, so appends to different streams do not
-	// serialize behind one another on fan-out.
+	// The global lock only fetches the recorder; encode and hash run under its own
+	// lock, so streams do not serialize behind one another.
 	sr := r.recorderFor(e.Stream)
 	sr.mu.Lock()
 	if sr.err == nil {
@@ -70,8 +63,8 @@ func (r *RecordingLog) Append(ctx context.Context, in spine.AppendInput) (spine.
 	return e, nil
 }
 
-// recorderFor returns the recorder for a stream, creating it on first use. It holds
-// the global lock only for the map access.
+// recorderFor creates the recorder on first use, holding the global lock only for
+// the map access.
 func (r *RecordingLog) recorderFor(stream string) *streamRecorder {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -83,11 +76,8 @@ func (r *RecordingLog) recorderFor(stream string) *streamRecorder {
 	return sr
 }
 
-// Seal signs and returns the sealed record for a stream as recorded so far. It fails
-// if the stream was never recorded or if recording any of its events failed, so a
-// sealed record always covers the stream's full, canonical event sequence. The
-// returned record is an immutable snapshot: further appends to the stream do not
-// change it.
+// Seal signs the stream as recorded so far. It fails if the stream was never
+// recorded or any event failed to record. Later appends do not change the result.
 func (r *RecordingLog) Seal(stream string, signer RootSigner) (*SealedRun, error) {
 	sr := r.lookup(stream)
 	if sr == nil {
@@ -101,10 +91,8 @@ func (r *RecordingLog) Seal(stream string, signer RootSigner) (*SealedRun, error
 	return sr.builder.Seal(signer)
 }
 
-// SealAndReset seals the stream's record and resets its recorder, so a long-lived
-// stream can rotate into bounded segments: the returned record owns everything
-// recorded so far, and later appends accumulate into a fresh run under the same
-// origin. It refuses under the same conditions as Seal.
+// SealAndReset seals the stream and starts a fresh run under the same origin, so
+// a long-lived stream rotates into bounded segments. It refuses as Seal does.
 func (r *RecordingLog) SealAndReset(stream string, signer RootSigner) (*SealedRun, error) {
 	sr := r.lookup(stream)
 	if sr == nil {
@@ -118,8 +106,7 @@ func (r *RecordingLog) SealAndReset(stream string, signer RootSigner) (*SealedRu
 	return sr.builder.SealAndReset(signer)
 }
 
-// lookup returns the recorder for a stream, or nil if the stream was never recorded.
-// It holds the global lock only for the map access.
+// lookup returns nil if the stream was never recorded.
 func (r *RecordingLog) lookup(stream string) *streamRecorder {
 	r.mu.Lock()
 	defer r.mu.Unlock()

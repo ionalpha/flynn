@@ -1,7 +1,6 @@
-// Package spinetest is the conformance suite for spine.Log. Every backend (the
-// in-memory default, SQLite, a host's store) runs RunSuite and must behave
-// identically, so durable logs are held to byte-for-byte the same ordering and
-// immutability contract as the reference MemoryLog rather than re-tested by hand.
+// Package spinetest is the conformance suite for spine.Log. Every backend runs
+// RunSuite, so a durable log is held to the ordering and immutability
+// behaviour of spine.MemoryLog.
 package spinetest
 
 import (
@@ -15,8 +14,8 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// RunSuite runs the full spine.Log contract against logs built by newLog. Each
-// subtest gets a fresh log.
+// RunSuite runs the spine.Log contract; each subtest gets a fresh log from
+// newLog.
 func RunSuite(t *testing.T, newLog func() spine.Log) {
 	t.Helper()
 	t.Run("PerStreamMonotonicSeq", func(t *testing.T) { testMonotonic(t, newLog()) })
@@ -31,9 +30,8 @@ func RunSuite(t *testing.T, newLog func() spine.Log) {
 	t.Run("Snapshots", func(t *testing.T) { testSnapshots(t, newLog()) })
 }
 
-// testSchemaVersion checks that an unset SchemaVersion defaults to
-// spine.DefaultSchemaVersion and an explicit one round-trips through both Append
-// and Read, so every stored event carries an explicit version.
+// testSchemaVersion checks a zero SchemaVersion becomes
+// spine.DefaultSchemaVersion and an explicit one round-trips.
 func testSchemaVersion(t *testing.T, log spine.Log) {
 	ctx := context.Background()
 
@@ -138,7 +136,7 @@ func testTime(t *testing.T, log spine.Log) {
 	if e.Time.IsZero() {
 		t.Fatal("zero input Time was not stamped")
 	}
-	// An explicit Time is preserved exactly (to the nanosecond) across a round-trip.
+	// An explicit Time round-trips to the nanosecond.
 	at := time.Date(2026, 6, 23, 11, 0, 0, 123456789, time.UTC)
 	if _, err := log.Append(ctx, spine.AppendInput{Stream: "s", Type: "e", Actor: spine.ActorAgent, Time: at}); err != nil {
 		t.Fatal(err)
@@ -182,10 +180,8 @@ func testPayload(t *testing.T, log spine.Log) {
 	}
 }
 
-// testRawPayload holds a log to the RawPayload contract: a pre-encoded payload
-// stores and reads back exactly like its decoded equivalent (which form a
-// producer used is unobservable downstream), the returned event already carries
-// the decoded form, and setting both forms is rejected.
+// testRawPayload checks a RawPayload reads back exactly like its decoded
+// equivalent, Append returns the decoded form, and setting both is rejected.
 func testRawPayload(t *testing.T, log spine.Log) {
 	ctx := context.Background()
 	want := map[string]any{"k": "v", "n": float64(42), "nested": map[string]any{"a": "b"}}
@@ -268,10 +264,8 @@ func testConcurrency(t *testing.T, log spine.Log) {
 	}
 }
 
-// testSnapshots checks the snapshot half of the contract: LatestSnapshot finds the
-// newest snapshot at or below upToSeq (any Seq when upToSeq is not positive),
-// SaveSnapshot replaces at the same (Stream, Seq), streams do not see each other's
-// snapshots, and stored payloads are decoupled from the caller's slices.
+// testSnapshots checks LatestSnapshot honours upToSeq, SaveSnapshot replaces at
+// the same (Stream, Seq), streams are isolated, and payloads are copied.
 func testSnapshots(t *testing.T, log spine.Log) {
 	ctx := context.Background()
 	if _, found, err := log.LatestSnapshot(ctx, "s", 0); err != nil || found {
@@ -341,9 +335,8 @@ func testSnapshots(t *testing.T, log spine.Log) {
 
 func streamName(i int) string { return "s" + strconv.Itoa(i) }
 
-// jsonEqual compares two payloads by canonical JSON, so backends that round-trip
-// through JSON (e.g. SQLite, where int becomes float64) still match the
-// in-memory reference. json.Marshal sorts map keys, giving a stable encoding.
+// jsonEqual compares payloads by their JSON, so a backend that turns int into
+// float64 still matches. json.Marshal sorts map keys.
 func jsonEqual(a, b map[string]any) bool {
 	ab, err1 := json.Marshal(a)
 	bb, err2 := json.Marshal(b)

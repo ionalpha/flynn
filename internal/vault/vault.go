@@ -1,22 +1,17 @@
 // Package vault is Flynn's credential store: a secret.Source that holds API keys
-// and other credentials encrypted at rest, so a user enters a key once and it is
-// never written to disk in plaintext, never echoed, and revealed only at the point
-// of use (the model request's authorization header).
+// encrypted at rest, so a key is entered once, never written in plaintext, never
+// echoed, and revealed only at the point of use (the model request's authorization
+// header).
 //
-// It has two backends behind one interface, tried in order. The OS keychain
-// (Windows Credential Manager / DPAPI, macOS Keychain, Linux Secret Service) is
-// preferred: the platform encrypts the secret under the user's login and the agent
-// never sees the ciphertext. On a host with no keychain (a server, a container),
-// the vault falls back to a passphrase-sealed file: the credentials are encrypted
-// with XChaCha20-Poly1305 under a key derived from a passphrase with Argon2id, so
-// the file is useless without the passphrase. Either way the plaintext exists only
-// inside the process, as a secret.Text, for as long as a request needs it.
+// Two backends are tried in order. The OS keychain is preferred, because the platform
+// encrypts under the user's login and the agent never sees the ciphertext. A host with
+// no keychain (a server, a container) uses a file sealed with XChaCha20-Poly1305 under
+// an Argon2id key derived from a passphrase. Either way the plaintext exists only in
+// the process, as a secret.Text, while a request needs it.
 //
-// The honest limit: a bearer API key must be sent verbatim, so the process holds
-// plaintext at the moment of the call. Encryption at rest defeats disk theft,
-// backups, and other users; it does not defeat code already running as this user.
-// Removing even that requires a broker that holds the key out of process, which is
-// a separate, heavier tier.
+// Limit: a bearer key is sent verbatim, so the process holds plaintext during the
+// call. Encryption at rest defeats disk theft, backups and other users, and does not
+// defeat code running as this user; that needs an out-of-process broker.
 package vault
 
 import (
@@ -45,15 +40,14 @@ var (
 	ErrNoPassphrase = errors.New("vault: a passphrase is required but none was supplied")
 )
 
-// Passphrase supplies the passphrase that unlocks the sealed-file fallback. It is
-// called only when the OS keychain is unavailable. newVault is true when a vault
-// file is being created, so an interactive implementation can confirm the new
-// passphrase, and false when an existing file is being opened.
+// Passphrase supplies the passphrase for the sealed-file fallback, called only when the
+// OS keychain is unavailable. newVault is true when a file is being created, so an
+// interactive implementation can confirm the new passphrase.
 type Passphrase func(newVault bool) (secret.Text, error)
 
-// Store is the credential vault. It implements secret.Source (Lookup) for the read
-// path the provider uses, and adds Set and Delete for the management commands. It
-// is safe for sequential use by a CLI; it is not designed for concurrent writers.
+// Store is the credential vault: secret.Source (Lookup) for the provider's read path,
+// plus Set and Delete for the management commands. It supports sequential use by a CLI
+// and no concurrent writers.
 type Store struct {
 	service string
 	file    string
@@ -67,9 +61,8 @@ type Option func(*Store)
 // WithKeyring overrides the OS keychain backend, for tests or to disable it.
 func WithKeyring(kr Keyring) Option { return func(s *Store) { s.kr = kr } }
 
-// WithPassphrase sets how the sealed-file fallback obtains its passphrase. The
-// default reads the FLYNN_VAULT_PASSPHRASE environment variable; a CLI supplies a
-// terminal prompt instead.
+// WithPassphrase sets how the sealed-file fallback obtains its passphrase. The default
+// reads FLYNN_VAULT_PASSPHRASE; a CLI supplies a terminal prompt.
 func WithPassphrase(p Passphrase) Option { return func(s *Store) { s.pass = p } }
 
 // WithService overrides the keychain service name (default DefaultService).
@@ -81,12 +74,11 @@ func WithService(name string) Option {
 	}
 }
 
-// New builds a Store. The sealed-file fallback lives under dir; the OS keychain is
-// used when available. By default the fallback passphrase is read from the
-// environment, so a non-interactive run can unlock a file-backed vault. Setting
-// FLYNN_VAULT_FILE forces the sealed-file backend and never touches the OS keychain
-// (see forceFileVault); an explicit WithKeyring still overrides it, because options are
-// applied after the default is chosen.
+// New builds a Store with the sealed-file fallback under dir. The default passphrase
+// comes from the environment, so a non-interactive run can unlock a file-backed vault.
+// FLYNN_VAULT_FILE forces the sealed file and never touches the OS keychain; an
+// explicit WithKeyring still overrides it, because options apply after the default is
+// chosen.
 func New(dir string, opts ...Option) *Store {
 	s := &Store{
 		service: DefaultService,
@@ -100,9 +92,6 @@ func New(dir string, opts ...Option) *Store {
 	return s
 }
 
-// defaultKeyring selects the backend a caller did not override: the passphrase-sealed
-// file alone when FLYNN_VAULT_FILE opts out of the keychain, otherwise the OS keychain
-// (with the file as its fallback).
 func defaultKeyring() Keyring {
 	if forceFileVault() {
 		return disabledKeyring{}
@@ -110,11 +99,9 @@ func defaultKeyring() Keyring {
 	return OSKeyring()
 }
 
-// forceFileVault reports whether FLYNN_VAULT_FILE asks the vault to skip the OS keychain
-// and store credentials only in the passphrase-sealed file. It is the switch a container,
-// a CI job, or a user who does not want a key in the OS keychain sets; the passphrase
-// still comes from FLYNN_VAULT_PASSPHRASE (or the CLI prompt). It accepts the usual
-// affirmatives so FLYNN_VAULT_FILE=1, =true, =on, or =yes all enable it.
+// forceFileVault reports whether FLYNN_VAULT_FILE (1, true, on or yes) asks for the
+// sealed file only. The passphrase still comes from FLYNN_VAULT_PASSPHRASE or the CLI
+// prompt.
 func forceFileVault() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLYNN_VAULT_FILE"))) {
 	case "1", "true", "on", "yes":
@@ -126,18 +113,15 @@ func forceFileVault() bool {
 
 var _ secret.Source = (*Store)(nil)
 
-// Lookup resolves a credential reference to its value, implementing secret.Source.
-// It consults the keychain first; if the keychain is the active backend the file
-// is not touched, so a desktop lookup never prompts for a passphrase. Only when the
-// keychain is unavailable does it open the sealed file. An absent credential
-// returns secret.ErrNotFound.
+// Lookup resolves a credential reference, implementing secret.Source. When the
+// keychain is the active backend the file is not touched, so a desktop lookup never
+// prompts for a passphrase. An absent credential returns secret.ErrNotFound.
 func (s *Store) Lookup(_ context.Context, ref string) (secret.Text, error) {
 	v, err := s.kr.Get(s.service, ref)
 	switch {
 	case err == nil:
 		return secret.New(v), nil
 	case errors.Is(err, ErrKeyNotFound):
-		// Keychain is the active store and has no such entry.
 		return secret.Text{}, secret.ErrNotFound
 	}
 	// Keychain unavailable: fall back to the sealed file.
@@ -151,9 +135,8 @@ func (s *Store) Lookup(_ context.Context, ref string) (secret.Text, error) {
 	return secret.Text{}, secret.ErrNotFound
 }
 
-// Set stores a credential. It writes to the keychain when available (the OS
-// encrypts it); otherwise it adds the value to the passphrase-sealed file. The
-// value is taken as a secret.Text and exposed only to hand it to the backend.
+// Set stores a credential in the keychain when available, otherwise in the sealed
+// file. The secret.Text is exposed only to hand it to the backend.
 func (s *Store) Set(_ context.Context, ref string, value secret.Text) error {
 	if err := s.kr.Set(s.service, ref, value.Expose()); err == nil {
 		return nil
@@ -170,9 +153,9 @@ func (s *Store) Set(_ context.Context, ref string, value secret.Text) error {
 	return s.saveFile(m)
 }
 
-// Delete removes a credential from both backends, so a stale sealed-file copy
-// cannot resurrect a value removed from the keychain. Removing an absent
-// credential is not an error.
+// Delete removes a credential from both backends, so a stale sealed-file copy cannot
+// resurrect a value removed from the keychain. Removing an absent credential is not an
+// error.
 func (s *Store) Delete(_ context.Context, ref string) error {
 	_ = s.kr.Delete(s.service, ref)
 	if !s.fileExists() {
@@ -189,15 +172,13 @@ func (s *Store) Delete(_ context.Context, ref string) error {
 	return s.saveFile(m)
 }
 
-// --- sealed-file backend ----------------------------------------------------
-
 func (s *Store) fileExists() bool {
 	_, err := os.Stat(s.file)
 	return err == nil
 }
 
-// loadFile decrypts and returns the sealed credential map, or an empty map if no
-// file exists yet. It obtains the passphrase through the configured Passphrase.
+// loadFile decrypts the sealed credential map, or returns an empty map when no file
+// exists yet.
 func (s *Store) loadFile() (map[string]string, error) {
 	blob, err := os.ReadFile(s.file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -221,8 +202,8 @@ func (s *Store) loadFile() (map[string]string, error) {
 	return m, nil
 }
 
-// saveFile seals the credential map and writes it atomically with owner-only
-// permissions, so the ciphertext never lands with looser access even briefly.
+// saveFile seals the map and writes it atomically with owner-only permissions, so the
+// ciphertext never exists with looser access, even briefly.
 func (s *Store) saveFile(m map[string]string) error {
 	plain, err := json.Marshal(m)
 	if err != nil {
@@ -242,8 +223,6 @@ func (s *Store) saveFile(m map[string]string) error {
 	return fsatomic.WriteFile(s.file, blob, 0o600)
 }
 
-// passphrase obtains the sealed-file passphrase as raw bytes, erroring if none is
-// available.
 func (s *Store) passphrase(newVault bool) ([]byte, error) {
 	if s.pass == nil {
 		return nil, ErrNoPassphrase
@@ -258,9 +237,8 @@ func (s *Store) passphrase(newVault bool) ([]byte, error) {
 	return []byte(p.Expose()), nil
 }
 
-// EnvPassphrase reads the sealed-file passphrase from FLYNN_VAULT_PASSPHRASE. It is
-// the default so a non-interactive run can unlock a file-backed vault; it returns
-// ErrNoPassphrase when the variable is unset.
+// EnvPassphrase reads the sealed-file passphrase from FLYNN_VAULT_PASSPHRASE, or
+// returns ErrNoPassphrase when it is unset.
 func EnvPassphrase(bool) (secret.Text, error) {
 	v, ok := os.LookupEnv("FLYNN_VAULT_PASSPHRASE")
 	if !ok || v == "" {

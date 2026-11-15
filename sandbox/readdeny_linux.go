@@ -9,14 +9,11 @@ import (
 	"syscall"
 )
 
-// readDenyEnforceable reports whether this platform can hide a path from a confined
-// command. Linux can: the command runs in a mount namespace of its own.
+// readDenyEnforceable is true because the command has its own mount namespace.
 func readDenyEnforceable() bool { return true }
 
-// hideUnreadable covers each path with an empty directory or an empty file in the
-// launcher's mount namespace. It runs after every grant, so no grant restores a hidden
-// path, and any failure fails the launch: a path that was to be hidden and is not
-// must never reach the command. A path that does not exist is skipped.
+// hideUnreadable runs after every grant, so no grant restores a hidden path. Any
+// failure fails the launch; a missing path is skipped.
 func hideUnreadable(paths []string) error {
 	for _, p := range paths {
 		if err := hidePath(p); err != nil {
@@ -26,8 +23,8 @@ func hideUnreadable(paths []string) error {
 	return nil
 }
 
-// hidePath covers one path. A directory gets a read-only, empty tmpfs that no one can
-// enter; anything else gets /dev/null bound over it.
+// hidePath mounts an empty read-only tmpfs no one can enter over a directory, and
+// /dev/null over anything else.
 func hidePath(p string) error {
 	info, err := os.Lstat(p) //nolint:gosec // G703: p names a path to hide; covering it only removes access, so a traversal in p cannot widen what the command reads
 	if errors.Is(err, os.ErrNotExist) {

@@ -16,20 +16,16 @@ func formatTime(t time.Time) string { return sqlitex.FormatTime(t) }
 
 func parseTime(s string) time.Time { return sqlitex.ParseTime(s) }
 
-// hlcTime reconstructs an hlc.Time from its stored columns. The counter column
-// only ever holds a uint16 written by this package; the mask makes that explicit
-// (and satisfies the integer-overflow checker).
+// hlcTime masks the counter, always a uint16 written here, for the
+// integer-overflow checker.
 func hlcTime(wall, counter int64) hlc.Time {
 	return hlc.Time{Wall: wall, Counter: uint16(counter & 0xffff)}
 }
 
-// ftsMatch renders one planned attempt as an FTS5 MATCH expression. Each term is
-// quoted as a string literal, with internal double quotes doubled, so a word that
-// is an FTS5 operator (AND, NOT, NEAR) or carries syntax (a colon, a hyphen, a
-// parenthesis) is matched as text and can never be read as query syntax. A bare
-// word and its quoted form are the same match, so quoting every term costs nothing.
-// Adjacent literals are an implicit AND in FTS5; an attempt that accepts any term
-// joins them with OR.
+// ftsMatch quotes every term, doubling inner double quotes, so an FTS5
+// operator or syntax character (AND, NEAR, colon, hyphen) is matched as text.
+// Adjacent literals are an implicit AND; an attempt accepting any term joins
+// them with OR.
 func ftsMatch(a recallplan.Attempt) string {
 	sep := " "
 	if a.Any {
@@ -42,12 +38,9 @@ func ftsMatch(a recallplan.Attempt) string {
 	return strings.Join(quoted, sep)
 }
 
-// selectByMemoryID reads cols from table for the named items, or every row when
-// memoryIDs is empty, and scans each row with scan. orderBy is appended verbatim.
-//
-// The ids go in as placeholders built to match their count, never interpolated, so the
-// caller can pass whatever a digest hands it. cols, table and orderBy are package
-// constants and literals, which is what lets them be concatenated.
+// selectByMemoryID reads every row when memoryIDs is empty. Ids are bound
+// placeholders, never interpolated. cols, table and orderBy are appended
+// verbatim, so they must be package constants.
 func selectByMemoryID[T any](
 	ctx context.Context,
 	db interface {

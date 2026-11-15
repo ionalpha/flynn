@@ -7,33 +7,30 @@ import (
 	"unicode/utf8"
 )
 
-// maxSeqLen bounds how many bytes one escape sequence may span. A stream that
-// opens a sequence and never finishes it (line noise, a binary paste outside
-// paste mode) is surfaced as Unknown and dropped once it exceeds the bound,
-// so garbage can never wedge the decoder waiting forever.
+// maxSeqLen bounds one escape sequence. A sequence that never finishes (line
+// noise, binary outside paste mode) is surfaced as Unknown past the bound, so
+// garbage cannot wedge the decoder.
 const maxSeqLen = 64
 
-// Decoder turns raw terminal bytes into events. Feed as many or as few bytes
-// as each read produced; partial sequences are buffered and complete on a
-// later Feed. The zero value is ready to use.
+// Decoder turns raw terminal bytes into events. Partial sequences are buffered
+// across Feed calls. The zero value is ready to use.
 type Decoder struct {
 	buf     []byte
 	inPaste bool
 	paste   []byte
 }
 
-// Pending reports whether the decoder is holding an incomplete sequence. The
-// read loop uses it to decide whether a short idle wait plus Flush is needed
-// to resolve a lone Escape.
+// Pending reports an incomplete sequence, so the read loop knows an idle wait
+// plus Flush is needed to resolve a lone Escape.
 func (d *Decoder) Pending() bool { return len(d.buf) > 0 || d.inPaste }
 
-// MidPaste reports whether a bracketed paste is still streaming in. The read
-// loop must not Flush on idle while it is true: a large paste can stall
-// between chunks, and flushing would split it into two events.
+// MidPaste reports a bracketed paste still streaming. The read loop must not
+// Flush on idle meanwhile: a large paste can stall between chunks, and flushing
+// would split it into two events.
 func (d *Decoder) MidPaste() bool { return d.inPaste }
 
-// Feed consumes the next chunk of the input stream and returns the events it
-// completes. Bytes that end mid-sequence stay buffered for the next Feed.
+// Feed returns the events the chunk completes; a trailing partial sequence stays
+// buffered.
 func (d *Decoder) Feed(p []byte) []Event {
 	d.buf = append(d.buf, p...)
 	var evs []Event
@@ -49,12 +46,11 @@ func (d *Decoder) Feed(p []byte) []Event {
 	}
 }
 
-// Flush resolves whatever is buffered as final: a pending lone Escape becomes
-// the Escape key, an incomplete sequence is surfaced as Unknown, an
-// unterminated paste is delivered with what arrived, and an incomplete
-// multi-byte character is dropped. The caller invokes it when the stream
-// ends, or after a short idle wait while Pending, which is what turns the
-// Escape-versus-sequence ambiguity into a decision.
+// Flush resolves the buffer as final: a lone Escape becomes the Escape key, an
+// incomplete sequence becomes Unknown, an unterminated paste is delivered as
+// received and an incomplete multi-byte character is dropped. Call it at end of
+// stream or after a short idle wait while Pending, which settles the
+// Escape-versus-sequence ambiguity.
 func (d *Decoder) Flush() []Event {
 	var evs []Event
 	if d.inPaste {
@@ -71,7 +67,6 @@ func (d *Decoder) Flush() []Event {
 			}
 			continue
 		}
-		// Whatever remains is incomplete and no more bytes are coming.
 		if d.buf[0] == 0x1b {
 			if len(d.buf) == 1 {
 				evs = append(evs, Key{Code: KeyEsc})
@@ -79,16 +74,15 @@ func (d *Decoder) Flush() []Event {
 				evs = append(evs, Unknown{Seq: string(d.buf)})
 			}
 		}
-		// An incomplete multi-byte character (or the Unknown above) is consumed.
+		// This also drops an incomplete multi-byte character.
 		d.buf = nil
 	}
 	return evs
 }
 
-// next decodes one event from the front of the buffer. It returns ok=false
-// when the buffer is empty or holds only an incomplete sequence, ev=nil with
-// ok=true for bytes that consume without producing an event (a paste chunk,
-// a swallowed release event).
+// next decodes one event from the front of the buffer. ok=false means empty or
+// incomplete; ev=nil with ok=true means bytes consumed without an event (a paste
+// chunk, a release).
 func (d *Decoder) next() (ev Event, n int, ok bool) {
 	if d.inPaste {
 		return d.pasteChunk()
@@ -116,9 +110,8 @@ func (d *Decoder) next() (ev Event, n int, ok bool) {
 	return Key{Code: r}, size, true
 }
 
-// pasteChunk consumes buffered bytes while inside a bracketed paste, ending
-// the paste when the terminator arrives. Bytes that could begin the
-// terminator stay buffered so a terminator split across reads still matches.
+// pasteChunk consumes paste bytes until the terminator. Bytes that could begin
+// the terminator stay buffered so one split across reads still matches.
 func (d *Decoder) pasteChunk() (Event, int, bool) {
 	if len(d.buf) == 0 {
 		return nil, 0, false
@@ -130,7 +123,6 @@ func (d *Decoder) pasteChunk() (Event, int, bool) {
 		d.inPaste = false
 		return Paste{Text: text}, i + len(pasteEnd), true
 	}
-	// Keep any tail that is a prefix of the terminator; consume the rest.
 	keep := len(d.buf)
 	for k := 1; k < len(pasteEnd) && k <= len(d.buf); k++ {
 		if bytes.HasPrefix([]byte(pasteEnd), d.buf[len(d.buf)-k:]) {
@@ -144,7 +136,6 @@ func (d *Decoder) pasteChunk() (Event, int, bool) {
 	return nil, keep, true
 }
 
-// escape decodes a sequence starting with ESC at the front of the buffer.
 func (d *Decoder) escape() (Event, int, bool) {
 	if len(d.buf) == 1 {
 		return nil, 0, false // a lone ESC so far; Feed may complete it, Flush resolves it
@@ -179,17 +170,14 @@ func (d *Decoder) escape() (Event, int, bool) {
 	return Key{Code: r, Mods: ModAlt}, 1 + size, true
 }
 
-// csi decodes a CSI sequence (ESC [ parameters final-byte).
 func (d *Decoder) csi() (Event, int, bool) {
-	// Find the final byte (0x40..0x7e) after the parameter and intermediate
-	// bytes (0x20..0x3f).
+	// The final byte (0x40..0x7e) follows parameter and intermediate bytes (0x20..0x3f).
 	i := 2
 	for ; i < len(d.buf); i++ {
 		if c := d.buf[i]; c >= 0x40 && c <= 0x7e {
 			break
 		}
 		if c := d.buf[i]; c < 0x20 || c > 0x3f {
-			// Not a CSI byte at all: the sequence is malformed. Surface it.
 			return Unknown{Seq: string(d.buf[:i+1])}, i + 1, true
 		}
 	}
@@ -208,7 +196,6 @@ func (d *Decoder) csi() (Event, int, bool) {
 	return csiKey(params, final, string(d.buf[:n])), n, true
 }
 
-// csiKey maps a complete CSI sequence to its event.
 func csiKey(params string, final byte, raw string) Event {
 	switch final {
 	case 'u':
@@ -220,10 +207,8 @@ func csiKey(params string, final byte, raw string) Event {
 		}[final]
 		return Key{Code: code, Mods: paramMods(params)}
 	case 'P', 'Q', 'R', 'S':
-		// F1-F4 arrive as SS3 (ESC O P) unmodified, but as a CSI 1 ; mods form
-		// once a modifier is held (ESC [ 1 ; 2 P is Shift+F1). Only that
-		// 1-prefixed form names a function key; any other CSI ending in these
-		// finals is not a key and stays surfaced as Unknown.
+		// F1-F4 arrive as SS3 unmodified but as CSI 1 ; mods once a modifier is held
+		// (ESC [ 1 ; 2 P is Shift+F1). Any other CSI with these finals is Unknown.
 		if first, _, _ := strings.Cut(params, ";"); first != "1" {
 			return Unknown{Seq: raw}
 		}
@@ -241,16 +226,14 @@ func csiKey(params string, final byte, raw string) Event {
 	return Unknown{Seq: raw}
 }
 
-// tildeKey maps the legacy CSI number ~ function keys.
 func tildeKey(params, raw string) Event {
 	fields := strings.Split(params, ";")
 	code, err := strconv.Atoi(fields[0])
 	if err != nil {
 		return Unknown{Seq: raw}
 	}
-	// modifyOtherKeys (xterm level 2, iTerm2): CSI 27 ; mods ; codepoint ~
-	// carries a modified key by its character code, the same keys the kitty
-	// CSI u form carries, so it maps through the same rune resolution.
+	// modifyOtherKeys (xterm level 2, iTerm2) carries a modified key by character
+	// code, as kitty's CSI u does, so it shares the rune resolution.
 	if code == 27 && len(fields) == 3 {
 		cp, err := strconv.Atoi(fields[2])
 		if err != nil || cp < 0 || cp > utf8.MaxRune || !utf8.ValidRune(rune(cp)) { //nolint:gosec // G115: bounded to [0, MaxRune] on this line
@@ -280,10 +263,8 @@ func tildeKey(params, raw string) Event {
 	return Key{Code: k, Mods: mods}
 }
 
-// kittyKey decodes a kitty keyboard protocol key (CSI unicode;mods u). The
-// unicode field may carry alternate layouts after a colon and the mods field
-// an event type; only the primary values matter here, and release events are
-// swallowed so a press-only consumer sees each key once.
+// kittyKey decodes CSI unicode;mods u. Only the primary values are used, and
+// release events are swallowed so a consumer sees each key once.
 func kittyKey(params, raw string) Event {
 	fields := strings.Split(params, ";")
 	codeStr, _, _ := strings.Cut(fields[0], ":")
@@ -309,10 +290,8 @@ func kittyKey(params, raw string) Event {
 	return Key{Code: functionalRune(code), Mods: modBits(mods)}
 }
 
-// functionalRune maps a key's character codepoint to its functional key when
-// the codepoint names one (Enter, Escape, Tab, Backspace), or to the rune
-// itself otherwise. Both the kitty CSI u form and the xterm modifyOtherKeys
-// CSI 27 form carry a key by its character code, so they share this mapping.
+// functionalRune maps Enter, Escape, Tab and Backspace codepoints to their
+// functional keys and any other code to itself.
 func functionalRune(code int) rune {
 	switch code {
 	case 13:
@@ -327,7 +306,6 @@ func functionalRune(code int) rune {
 	return rune(code) //nolint:gosec // G115: both callers validate code is a valid rune before calling
 }
 
-// ss3Key maps the SS3 (ESC O) function keys sent in application mode.
 func ss3Key(final byte) Event {
 	switch final {
 	case 'A':
@@ -354,10 +332,9 @@ func ss3Key(final byte) Event {
 	return Unknown{Seq: "\x1bO" + string(final)}
 }
 
-// controlKey maps a raw control byte to its key. The Enter, Tab, and
-// Backspace bytes map to their functional keys; Ctrl+J stays Ctrl+J rather
-// than folding into Enter, because a composer binds it separately (insert a
-// newline versus submit).
+// controlKey maps a control byte to its key. Ctrl+J stays Ctrl+J rather than
+// folding into Enter, because a composer binds it separately (newline versus
+// submit).
 func controlKey(b byte, mods Mod) Event {
 	switch b {
 	case 0x0d:
@@ -382,8 +359,7 @@ func controlKey(b byte, mods Mod) Event {
 	return Unknown{Seq: string(b)}
 }
 
-// paramMods extracts the xterm modifier parameter (the value after the first
-// semicolon, encoded as one plus the modifier bitmask).
+// paramMods reads the modifier parameter after the first semicolon.
 func paramMods(params string) Mod {
 	_, modStr, found := strings.Cut(params, ";")
 	if !found {
@@ -397,8 +373,7 @@ func paramMods(params string) Mod {
 	return modBits(v)
 }
 
-// modBits converts the wire modifier value (one plus the bitmask shared by
-// the xterm and kitty encodings) into a Mod.
+// modBits converts the wire value, one plus the bitmask, into a Mod.
 func modBits(v int) Mod {
 	if v < 2 {
 		return 0
@@ -420,8 +395,7 @@ func modBits(v int) Mod {
 	return m
 }
 
-// normalizePaste converts the paste's line endings to \n, covering both CRLF
-// and the bare CR bursts the Windows console delivers.
+// normalizePaste converts CRLF and the bare CR the Windows console delivers to \n.
 func normalizePaste(b []byte) string {
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
 	return strings.ReplaceAll(s, "\r", "\n")

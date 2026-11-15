@@ -12,16 +12,9 @@ import (
 	"github.com/ionalpha/flynn/mission"
 )
 
-// recordingPrompter writes an approval request onto the run's stream before the prompt
-// opens and how it ended after the prompt closes, around whatever prompter resolves the
-// pause. The prompter does not know it is recorded, and the approval flow that calls it is
-// unchanged.
-//
-// Every request gets exactly one resolution record, because Prompt has one way out: the
-// answer is written on every path from the inner prompter's return, whatever it returned.
-// The record is the system's when the system closed the request (the grace period ran out,
-// the run was cancelled, the client went away) and a person's only when the prompter
-// returned an answer in time.
+// recordingPrompter records each request before the prompt and exactly one resolution
+// after it, on every return path. A resolution is a person's only when the prompter
+// answered in time; expiry, cancellation and disconnection are the system's.
 type recordingPrompter struct {
 	inner mission.ApprovalPrompter
 	sink  *spinesink.ApprovalSink
@@ -30,9 +23,8 @@ type recordingPrompter struct {
 
 var _ mission.ApprovalPrompter = recordingPrompter{}
 
-// recording wraps prompter so its requests and resolutions are recorded. A nil prompter
-// stays nil, because no prompter is the non-interactive answer and giving it a recorder
-// would make it look interactive. A nil stack returns the prompter untouched.
+// recording wraps prompter. A nil prompter stays nil, because a recorder would make a
+// non-interactive run look interactive.
 func (s *approvalStack) recording(prompter mission.ApprovalPrompter) mission.ApprovalPrompter {
 	if s == nil || prompter == nil {
 		return prompter
@@ -40,18 +32,10 @@ func (s *approvalStack) recording(prompter mission.ApprovalPrompter) mission.App
 	return recordingPrompter{inner: prompter, sink: s.sink, clk: clock.System{}}
 }
 
-// Prompt records the request, asks the inner prompter, and records the resolution.
-//
-// A request that cannot be recorded is not put to the person: a prompt the record cannot
-// account for would let an allow exist with no question behind it, so the failure declines.
-// The same holds the other way. An allow whose resolution cannot be recorded is not
-// returned as an allow, because the sealed history would show a request with no answer and
-// an action that ran anyway. A denial that cannot be recorded is still a denial.
-//
-// An answer that arrives after ctx is done is not honoured. ctx carries the grace period,
-// and a prompter that returns an allow at the moment the deadline fires has raced the
-// expiry; the request was already declined as far as the record is concerned, so the
-// action is too.
+// Prompt declines when the request cannot be recorded, and refuses an allow whose
+// resolution cannot be recorded, so no action runs without a recorded question and
+// answer. An unrecorded denial stays a denial. An answer after ctx is done (the grace
+// period) is not honoured, because the record has already declined it.
 func (r recordingPrompter) Prompt(ctx context.Context, req mission.ApprovalRequest) (mission.ApprovalDecision, error) {
 	id := ids.New()
 	var expires time.Time
@@ -79,20 +63,15 @@ func (r recordingPrompter) Prompt(ctx context.Context, req mission.ApprovalReque
 	if reason.ByPerson() {
 		ans.FeedbackPresent = dec.Feedback != ""
 	}
-	// The resolution is written even when ctx is done, which is exactly when an expiry or
-	// a cancellation needs recording.
+	// Written even when ctx is done, because that is when expiry and cancellation happen.
 	if werr := r.sink.Answer(context.WithoutCancel(ctx), ans); werr != nil && reason == approval.ReasonAllowed {
 		return mission.ApprovalDecision{}, werr
 	}
 	return dec, err
 }
 
-// resolution names how a prompt came out, from the inner prompter's result and the state
-// of the context it was given. The client going away is checked first because it is stated
-// outright; a context that ended says why through its error.
-//
-// A prompter that failed for another reason is recorded as disconnected: the client that
-// was asked could not answer, which is what the closed set has for it.
+// resolution checks disconnection before the context, because it is stated outright. Any
+// other prompter failure is recorded as disconnected, the closest reason in the set.
 func resolution(ctx context.Context, dec mission.ApprovalDecision, err error) approval.Reason {
 	switch {
 	case err == nil && dec.Allow:

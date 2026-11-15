@@ -8,9 +8,8 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// MemoryLog is an in-memory Log, snapshots included: ordered, per-stream monotonic
-// Seq, safe for concurrent use. Its semantics are the contract the durable
-// (SQLite) implementation must match.
+// MemoryLog is an in-memory [Log], safe for concurrent use. The durable SQLite
+// Log must match its behaviour.
 type MemoryLog struct {
 	clk       clock.Clock
 	mu        sync.Mutex
@@ -21,8 +20,8 @@ type MemoryLog struct {
 // MemoryOption configures a MemoryLog.
 type MemoryOption func(*MemoryLog)
 
-// WithClock sets the time source used to stamp events whose Time is unset
-// (default: clock.System). Tests and replay pass a clock.Manual.
+// WithClock sets the clock that stamps a zero Time (default clock.System).
+// Tests and replay pass a clock.Manual.
 func WithClock(c clock.Clock) MemoryOption { return func(l *MemoryLog) { l.clk = c } }
 
 // NewMemoryLog returns an empty in-memory Log.
@@ -34,9 +33,7 @@ func NewMemoryLog(opts ...MemoryOption) *MemoryLog {
 	return l
 }
 
-// Append implements Log. It builds the stored event through
-// AppendInput.Materialize (the one place event defaulting and shape live) under
-// the lock, so the assigned Seq stays monotonic within the stream.
+// Append implements Log, under the lock so Seq stays monotonic.
 func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -68,9 +65,8 @@ func (l *MemoryLog) Read(_ context.Context, q Query) ([]Event, error) {
 	return out, nil
 }
 
-// SaveSnapshot implements Log. It clones the payload so the stored
-// snapshot is decoupled from the caller's slice, and replaces any snapshot already
-// at (Stream, Seq).
+// SaveSnapshot implements Log. It copies the payload, so the caller may reuse
+// its slice.
 func (l *MemoryLog) SaveSnapshot(_ context.Context, s Snapshot) error {
 	s.Payload = append([]byte(nil), s.Payload...)
 	l.mu.Lock()
@@ -88,8 +84,8 @@ func (l *MemoryLog) SaveSnapshot(_ context.Context, s Snapshot) error {
 	return nil
 }
 
-// LatestSnapshot implements Log. Returned payloads are cloned, so a
-// caller may retain or mutate them freely.
+// LatestSnapshot implements Log. The returned payload is a copy the caller may
+// mutate.
 func (l *MemoryLog) LatestSnapshot(_ context.Context, stream string, upToSeq int64) (Snapshot, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -1,85 +1,69 @@
 package chain
 
-// The per-item evidence vocabulary a run records on its spine. Where the ground-truth
-// vocabulary (CheckRecorded/OutcomeRecorded, groundtruth.go) grounds a whole run's
-// claimed result, this grounds one ledger item: the run ran the item's declared
-// verification and recorded the verdict. The evidence gate (goal.EvidenceGate) reads
-// these events and will not flip a ledger item to proven without one.
+// The per-item evidence vocabulary. Where CheckRecorded and OutcomeRecorded
+// (groundtruth.go) ground a whole run's result, this grounds one ledger item. The
+// evidence gate (goal.EvidenceGate) will not mark an item proven without one.
 //
-// These string values are the wire contract a producer writes and the gate reads. An
-// item-scoped verification is a distinct event type from CheckRecorded on purpose: the
-// two answer different questions (is this item proven vs is the run's outcome
-// grounded), and keeping them separate means neither verifier has to guess which one a
-// shared event meant.
+// These strings are the wire contract a producer writes and the gate reads.
+// ItemVerified is distinct from CheckRecorded because they answer different
+// questions (item proven, run outcome grounded) and neither verifier should have
+// to guess which one a shared event meant.
 const (
-	// ItemVerified is the verdict of a verification run against a single ledger item.
-	// The item it pertains to is ItemKey; its boolean verdict is ItemPassedKey. The
-	// event's own spine sequence is its identity, which is what the gate consumes so one
-	// recorded verification cannot certify two items.
+	// ItemVerified is the verdict of a verification against one ledger item, named
+	// by ItemKey, with the verdict in ItemPassedKey. The gate consumes the event's
+	// spine sequence as its identity, so one verification cannot certify two items.
 	ItemVerified = "item.verified"
-	// ItemKey holds the ledger item id an ItemVerified event pertains to. The id is the
-	// content address of the item's text and its declared verify clause, so naming the
-	// id is naming the exact check the item committed to at planning time.
+	// ItemKey holds the ledger item id, the content address of the item's text and
+	// verify clause, so it names the exact check committed to at planning time.
 	ItemKey = "item"
-	// ItemPassedKey holds an ItemVerified event's boolean verdict. A false verdict is
-	// recorded, not omitted: a verification that ran and failed is evidence the item is
-	// not done, and the gate refuses it as such rather than treating it as no attempt.
+	// ItemPassedKey holds the boolean verdict. A false verdict is recorded: a
+	// verification that ran and failed is evidence the item is not done, not a
+	// missing attempt.
 	ItemPassedKey = "passed"
-	// ItemProvenanceKey holds how the verdict was arrived at: ProvenanceExecuted when
-	// the check was actually run, ProvenanceAsserted when it was not. It is a second
-	// axis, not a confidence score, because the two are different kinds of evidence and
+	// ItemProvenanceKey holds ProvenanceExecuted when the check was run and
+	// ProvenanceAsserted when it was not. They are different kinds of evidence, and
 	// only the executed kind can be re-adjudicated by a later regrade.
 	//
-	// A producer must stamp this itself, on the evidence that it ran the action. A model
-	// cannot be given a path to write it: if it could claim ProvenanceExecuted the field
-	// would certify nothing, and every rule built on it would be decoration.
+	// A producer must stamp this itself, having run the action. A model must have no
+	// path to write it: if it could claim ProvenanceExecuted the field would certify
+	// nothing.
 	ItemProvenanceKey = "provenance"
-	// ItemExitKey holds the exit code of an executed check, and ItemOutputKey the hash of
-	// its output. They are the executed case's own evidence: what the run actually
-	// observed, recorded alongside the verdict so a later reader can tell a check that
-	// passed from one that was merely said to have passed. Both are absent on an asserted
-	// verification, which has no execution to describe.
+	// ItemExitKey holds the exit code of an executed check and ItemOutputKey the
+	// hash of its output, so a reader can tell a check that passed from one said to
+	// have passed. Both are absent on an asserted verification.
 	ItemExitKey   = "exit"
 	ItemOutputKey = "outputHash"
-	// ItemReasonKey holds why a verdict nothing was run for was not run: no clause to
-	// run, no sandbox to run it in, a gate that refused it, a command that could not
-	// start. It is the unexecuted case's counterpart to the exit code, and it is on the
-	// record for the same reason the exit code is.
-	//
-	// Without it the record says an item is unproven and stops there, and "its check
-	// could not be run" is the one outcome a reader can do nothing with: it names no
-	// cause, so it is indistinguishable from a check that failed for a reason worth
-	// fixing and one that was never going to run on this host. It is absent on an
-	// executed verification, whose exit code and output hash are what happened.
+	// ItemReasonKey holds why no check was run: no clause, no sandbox, a gate
+	// refused it, or the command could not start. Without it "could not be run"
+	// names no cause, so a fixable failure looks the same as a check that never
+	// could run on this host. It is absent on an executed verification.
 	ItemReasonKey = "reason"
 )
 
-// The admission vocabulary. Before work starts, each ledger item's check is admitted or
-// refused (goal.CheckGrounding, goal.DryRunRefusal), and the verdict is recorded so a
-// reader of the run can tell a check that was vetted from one that was taken on trust.
-// ItemKey names the item and ItemReasonKey carries the sentence the planner was sent.
+// The admission vocabulary. Before work starts each item's check is admitted or
+// refused (goal.CheckGrounding, goal.DryRunRefusal), so a reader can tell a vetted
+// check from one taken on trust. ItemKey names the item and ItemReasonKey carries
+// the sentence the planner was sent.
 const (
-	// ItemAdmitted is the admission verdict for one ledger item's check. It is not
-	// evidence that the item is done and the evidence gate never reads it.
-	ItemAdmitted = "item.admitted"
-	// ItemAdmittedKey holds the boolean verdict.
+	// ItemAdmitted is the admission verdict for one item's check. It is not
+	// evidence of completion and the evidence gate never reads it.
+	ItemAdmitted    = "item.admitted"
 	ItemAdmittedKey = "admitted"
-	// ItemRefusalKey holds the stable name of why a check was refused, absent when it was
-	// admitted.
+	// ItemRefusalKey holds the stable name of the refusal, absent when admitted.
 	ItemRefusalKey = "refusal"
-	// ItemDryRunKey is true when the check was executed once on the untouched tree before
-	// it was admitted, false when it was admitted on its text alone.
+	// ItemDryRunKey is true when the check ran once on the untouched tree before
+	// admission, false when admitted on its text alone.
 	ItemDryRunKey = "dryRun"
 )
 
-// The two kinds of item evidence. They are kinds, not tiers: neither is convertible
-// into the other, and there is no path that promotes an assertion into an execution.
+// The two kinds of item evidence. Neither converts into the other; nothing
+// promotes an assertion into an execution.
 const (
-	// ProvenanceExecuted marks a verdict the producer reached by running the item's
-	// declared check, with the exit code and output hash on the same event.
+	// ProvenanceExecuted marks a verdict reached by running the declared check,
+	// with exit code and output hash on the same event.
 	ProvenanceExecuted = "executed"
-	// ProvenanceAsserted marks a verdict nothing was run for: the model said so. It is
-	// also how a reader must take a verdict whose provenance is missing or unreadable,
-	// since the weakest reading is the only safe default for a gate that fails closed.
+	// ProvenanceAsserted marks a verdict nothing was run for. A reader must also
+	// take a missing or unreadable provenance as this, the safe default for a gate
+	// that fails closed.
 	ProvenanceAsserted = "asserted"
 )

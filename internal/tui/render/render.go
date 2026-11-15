@@ -1,15 +1,14 @@
 // Package render turns session content into pre-styled, pre-wrapped terminal
-// lines: markdown through a goldmark AST walk, fenced code through a chroma
-// highlighter bucketed into the theme's syntax roles, and file changes
-// through a width-adaptive diff view. Everything it returns obeys the screen
-// contract: each string is one terminal row no wider than the given width,
-// and every styled span is self-contained (prefix, text, reset), so the
-// output can be committed to scrollback or repainted in the live region
-// without any escape-state bookkeeping.
+// lines: markdown through a goldmark AST walk, fenced code through chroma
+// bucketed into the theme's syntax roles, and file changes through a
+// width-adaptive diff view. Each returned string is one row no wider than the
+// given width, and every styled span is self-contained (prefix, text, reset), so
+// output can go to scrollback or the live region with no escape-state
+// bookkeeping.
 //
-// The package is pure: no clock, no terminal, nothing mutated per render.
-// The same source at the same width always renders to the same lines, which
-// keeps it property-testable and safe to call from a replayed session.
+// The package is pure: no clock, no terminal, nothing mutated per render. The
+// same source at the same width renders to the same lines, so it is
+// property-testable and safe in a replayed session.
 package render
 
 import (
@@ -21,19 +20,16 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// span is a run of plain text under one effective style. All rendering in
-// this package flows through spans: walkers merge nested roles into one
-// Style per run, and only the final line assembly emits escape sequences.
+// span is plain text under one effective style. Walkers merge nested roles into
+// one Style per run, and only lineOf emits escape sequences.
 type span struct {
 	text  string
 	style theme.Style
 }
 
-// lineOf assembles one terminal row from spans, merging adjacent spans that
-// share a style so a heavily nested line does not drown in escape sequences.
-// Control bytes are stripped as a final guard: spans carry plain text only,
-// and one stray carriage return from source material would break the
-// one-string-one-row contract every consumer relies on.
+// lineOf assembles one row from spans, merging adjacent spans of one style.
+// Control bytes are stripped as a final guard: a stray carriage return from
+// source material would break the one-string-one-row contract.
 func lineOf(spans []span) string {
 	var b strings.Builder
 	for i := 0; i < len(spans); {
@@ -50,9 +46,8 @@ func lineOf(spans []span) string {
 	return b.String()
 }
 
-// controlFree drops C0 control bytes and DEL from plain text. Zero-width in
-// the width accounting already, so stripping them changes no layout, only
-// removes their side effects on a real terminal.
+// controlFree drops C0 control bytes and DEL. They are already zero-width, so
+// layout is unchanged; only their terminal side effects go.
 func controlFree(s string) string {
 	if !strings.ContainsFunc(s, isControl) {
 		return s
@@ -67,15 +62,13 @@ func controlFree(s string) string {
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
-// clampRows is the hard width-overflow guard: any row still wider than the
-// width (a grapheme cluster wider than a pathological width, a table whose
-// column floors do not fit) is truncated, with a reset appended so a style
-// cut mid-span cannot bleed into the next row.
+// clampRows truncates any row still wider than width (a cluster wider than a
+// pathological width, a table whose column floors do not fit), appending a reset
+// so a style cut mid-span cannot bleed into the next row.
 //
-// The cut is re-measured and tightened until [ansi.StringWidth] agrees it fits,
-// because [ansi.Truncate] measures some clusters narrower than StringWidth does
-// (a space followed by U+FE0F is one cell to Truncate and two to StringWidth),
-// and StringWidth is the measure every caller lays rows out by.
+// The cut is tightened until [ansi.StringWidth], the measure callers lay rows out
+// by, agrees it fits, because [ansi.Truncate] measures some clusters narrower (a
+// space followed by U+FE0F is one cell to Truncate and two to StringWidth).
 func clampRows(rows []string, width int) []string {
 	for i, r := range rows {
 		for cut := width; ansi.StringWidth(rows[i]) > width && cut >= 0; cut-- {
@@ -85,21 +78,18 @@ func clampRows(rows []string, width int) []string {
 	return rows
 }
 
-// textWidth is the display width of plain (escape-free) text in terminal
-// cells, grapheme-cluster correct.
 func textWidth(s string) int { return ansi.StringWidth(s) }
 
-// token is one unit of line filling: a word (a maximal run of non-space text,
-// possibly crossing style boundaries), or a forced line break.
+// token is a word (a maximal run of non-space text, possibly crossing styles) or
+// a forced line break.
 type token struct {
 	word  []span
 	width int
 	brk   bool
 }
 
-// tokenize splits spans into words and explicit breaks. Spaces separate
-// words and are re-inserted by the filler, so a space that lands on a wrap
-// point disappears, matching ordinary text flow.
+// tokenize splits spans into words and breaks. The filler re-inserts spaces, so
+// one landing on a wrap point disappears.
 func tokenize(spans []span) []token {
 	var (
 		toks []token
@@ -136,10 +126,8 @@ func tokenize(spans []span) []token {
 	return toks
 }
 
-// wrapSpans word-wraps styled spans to the width and assembles the resulting
-// rows. Breaks happen at spaces and at newlines inside a span; a word wider
-// than a whole line is hard-broken at grapheme boundaries so no row can ever
-// exceed the width.
+// wrapSpans word-wraps spans at spaces and newlines. A word wider than a line is
+// hard-broken at grapheme boundaries so no row exceeds width.
 func wrapSpans(spans []span, width int) []string {
 	if width < 1 {
 		return nil
@@ -197,17 +185,15 @@ func wrapSpans(spans []span, width int) []string {
 	return out
 }
 
-// nextGrapheme cuts the first grapheme cluster off s and reports its cell
-// width, so hard breaks never split an emoji or a combining sequence.
+// nextGrapheme cuts the first grapheme cluster off s, so hard breaks never split
+// an emoji or combining sequence.
 func nextGrapheme(s string) (cluster, rest string, width int) {
 	cluster, rest, w, _ := uniseg.FirstGraphemeClusterInString(s, -1)
 	return cluster, rest, w
 }
 
-// hardWrapLine breaks one pre-styled logical line into rows of at most
-// width cells without ever dropping content, preserving each span's style.
-// It is the wrap used where spaces are content, not separators: code lines
-// and diff lines.
+// hardWrapLine breaks one line into rows of at most width cells, dropping
+// nothing. It wraps where spaces are content: code and diff lines.
 func hardWrapLine(spans []span, width int) []string {
 	if width < 1 {
 		return nil
@@ -234,9 +220,8 @@ func hardWrapLine(spans []span, width int) []string {
 	return out
 }
 
-// truncateSpans cuts styled spans to at most width cells, appending the tail
-// marker when anything was cut. Used where a row must stay single-line, such
-// as table cells and split-diff columns.
+// truncateSpans cuts spans to width cells, appending tail when anything was cut,
+// for rows that must stay single-line (table cells, split-diff columns).
 func truncateSpans(spans []span, width int, tail string) []span {
 	total := 0
 	for _, s := range spans {
@@ -278,7 +263,6 @@ func truncateSpans(spans []span, width int, tail string) []span {
 	return out
 }
 
-// padSpans right-pads spans with plain spaces to exactly width cells.
 func padSpans(spans []span, width int) []span {
 	used := 0
 	for _, s := range spans {
@@ -290,9 +274,8 @@ func padSpans(spans []span, width int) []span {
 	return append(append([]span{}, spans...), span{strings.Repeat(" ", width-used), theme.Style{}})
 }
 
-// prefixLines prepends a styled prefix to every line, used for blockquotes
-// and list continuations. The prefix is rendered once per line, so each row
-// stays self-contained.
+// prefixLines prepends first to the first line and rest to the others, rendering
+// each separately so every row stays self-contained.
 func prefixLines(lines []string, first, rest span) []string {
 	out := make([]string, len(lines))
 	for i, l := range lines {

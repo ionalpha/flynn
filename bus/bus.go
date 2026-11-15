@@ -1,20 +1,14 @@
-// Package bus is the agent's pub/sub messaging port: ambient, fire-and-forget
-// signals that decouple producers from consumers. Proactive mode ("flynn watch"),
-// cross-component notifications, and fleet/k8s event fan-out all publish to and
-// subscribe on subjects rather than calling each other directly.
+// Package bus is fire-and-forget pub/sub between live components: "flynn
+// watch", cross-component notices and fleet fan-out publish on subjects
+// instead of calling each other.
 //
-// Like state, spine, and observe, messaging is a PORT with a zero-dependency
-// in-process default (MemoryBus, Go channels) and heavy backends as opt-in
-// adapters (NATS/JetStream for multi-process, fleet, and k8s fan-out). The
-// subject grammar mirrors NATS so that adapter is a drop-in: dot-separated
-// non-empty tokens, with `*` matching exactly one token and `>` (only as the
-// final token) matching one or more trailing tokens.
+// [MemoryBus] is the in-process default; a NATS adapter is the multi-process
+// backend, so the subject grammar is NATS's: dot-separated non-empty tokens,
+// `*` matching one token and a final `>` matching one or more.
 //
-// The bus is deliberately distinct from its neighbours. The spine is the durable,
-// ordered truth log; the jobs queue is durable, retried work. The bus is none of
-// those: delivery is at-most-once, unordered across subscribers (but ordered
-// within one), and not itself durable. When a signal must survive a restart it is
-// recorded on the spine; the bus only moves signals between live components.
+// Delivery is at-most-once, ordered within a subscription and unordered across
+// them, and nothing is stored. A signal that must survive a restart goes on the
+// spine; durable retried work goes on the jobs queue.
 package bus
 
 import (
@@ -27,17 +21,14 @@ import (
 // Message is one published signal. Payload is opaque bytes so the wire format is
 // the caller's choice and the NATS adapter passes it through unchanged.
 type Message struct {
-	// Subject is the concrete, wildcard-free address the message is published to.
+	// Subject is concrete: no wildcards.
 	Subject string
-	// Payload is the opaque message body.
 	Payload []byte
-	// Time is when the message was published; the bus stamps it from its clock
-	// when zero.
-	Time int64 // unix nanos
+	// Time is unix nanoseconds; the bus stamps it from its clock when zero.
+	Time int64
 
-	// Trace linkage carries the originating span/causation across the bus, so a
-	// signal published in one component stays correlated with the work it
-	// triggers. These mirror spine.Event and may be empty.
+	// The trace fields mirror spine.Event so a signal stays correlated with
+	// the work it triggers. Any may be empty.
 	TraceID     string
 	SpanID      string
 	CausationID string
@@ -47,10 +38,8 @@ type Message struct {
 	OriginInstanceID string
 }
 
-// Handler processes a delivered message. It runs in the bus's delivery
-// goroutine, not the publisher's, so it must not assume the publisher is still
-// waiting. A returned error is observable (logged at the bus) but not retried:
-// the bus is at-most-once, so durable retry belongs to the jobs queue, not here.
+// Handler processes a delivered message on the bus's delivery goroutine, so the
+// publisher may have moved on. A returned error is logged and never retried.
 type Handler func(ctx context.Context, m Message) error
 
 // Subscription is one active subscription. Unsubscribe stops delivery and is
@@ -58,53 +47,40 @@ type Handler func(ctx context.Context, m Message) error
 type Subscription interface {
 	// Subject returns the pattern the subscription was created with.
 	Subject() string
-	// Unsubscribe stops delivery to this subscription. It is safe to call more
-	// than once and from any goroutine.
+	// Unsubscribe is safe to call more than once and from any goroutine.
 	Unsubscribe() error
 }
 
-// Bus is the pub/sub port. Publish delivers a message to every subscription whose
-// pattern matches its subject; a message with no matching subscription is
-// dropped. Implementations must be safe for concurrent use.
+// Bus is the pub/sub port. A message with no matching subscription is dropped.
+// Implementations must be safe for concurrent use; bustest.RunSuite is the
+// contract.
 type Bus interface {
-	// Publish delivers m to all matching subscriptions. The subject must be a
-	// concrete subject (no wildcards); an invalid subject returns an error and
-	// delivers nothing.
+	// Publish delivers m to every subscription whose pattern matches its
+	// subject. An invalid or wildcard subject is rejected and delivers nothing.
 	Publish(ctx context.Context, m Message) error
-	// Subscribe registers h for every message whose subject matches pattern. The
-	// pattern may use the `*` and `>` wildcards; an invalid pattern returns an
-	// error.
+	// Subscribe registers h under a pattern that may use `*` and `>`.
 	Subscribe(ctx context.Context, pattern string, h Handler) (Subscription, error)
-	// Close stops the bus and all its subscriptions. Publish and Subscribe fail
-	// after Close.
+	// Close stops every subscription; Publish and Subscribe fail after it.
 	Close() error
 }
 
-// Sentinel errors. They are fault-classified so callers branch on the class
-// (see fault.Classify) rather than on string matching.
+// Sentinel errors, fault-classified so callers branch with fault.Classify.
 var (
-	// ErrClosed is returned by Publish/Subscribe after the bus is closed.
-	ErrClosed = fault.New(fault.Terminal, "bus_closed", "bus is closed")
-	// ErrInvalidSubject is returned when a published subject is empty or contains
-	// wildcards or malformed tokens.
+	ErrClosed         = fault.New(fault.Terminal, "bus_closed", "bus is closed")
 	ErrInvalidSubject = fault.New(fault.Terminal, "bus_invalid_subject", "invalid subject")
-	// ErrInvalidPattern is returned when a subscription pattern is malformed.
 	ErrInvalidPattern = fault.New(fault.Terminal, "bus_invalid_pattern", "invalid subscription pattern")
 )
 
-// Wildcard tokens, mirroring NATS.
+// Wildcard tokens, as in NATS.
 const (
-	// TokenAny ("*") matches exactly one token at its position.
+	// TokenAny matches exactly one token.
 	TokenAny = "*"
-	// TokenTail (">") matches one or more trailing tokens; valid only as the
-	// final pattern token.
+	// TokenTail matches one or more trailing tokens and is valid only last.
 	TokenTail = ">"
 )
 
-// Match reports whether subject matches pattern under the NATS-style grammar:
-// tokens are separated by ".", "*" matches exactly one token, and ">" (only as
-// the final token) matches one or more trailing tokens. It is total: any pair of
-// strings yields a bool and never panics, so it is safe on untrusted input.
+// Match reports whether subject matches pattern. It never panics, so it is safe
+// on untrusted input.
 func Match(pattern, subject string) bool {
 	if pattern == "" || subject == "" {
 		return false
@@ -112,17 +88,12 @@ func Match(pattern, subject string) bool {
 	return matchTokens(strings.Split(pattern, "."), strings.Split(subject, "."))
 }
 
-// matchTokens is Match over already-split tokens. The hot delivery path splits
-// each subject once per publish and reuses a subscription's pattern tokens split
-// once at Subscribe, so a publish to N subscribers costs one subject split, not
-// N. Both slices are assumed non-empty (Match guards the empty-string cases, and
-// a subscription's pattern is validated non-empty at Subscribe).
+// matchTokens is Match over pre-split tokens, so a publish to N subscribers
+// splits the subject once. Both slices must be non-empty.
 func matchTokens(pt, st []string) bool {
 	for i, p := range pt {
 		switch p {
 		case TokenTail:
-			// ">" is only meaningful as the final pattern token, where it matches
-			// one or more remaining subject tokens. Anywhere else it cannot match.
 			return i == len(pt)-1 && i < len(st)
 		case TokenAny:
 			if i >= len(st) {
@@ -137,8 +108,8 @@ func matchTokens(pt, st []string) bool {
 	return len(pt) == len(st)
 }
 
-// ValidSubject reports whether s is a legal concrete subject to publish to:
-// one or more non-empty, wildcard-free, whitespace-free tokens.
+// ValidSubject reports whether s is publishable: non-empty tokens with no
+// wildcard or whitespace.
 func ValidSubject(s string) bool {
 	if s == "" {
 		return false
@@ -151,9 +122,8 @@ func ValidSubject(s string) bool {
 	return true
 }
 
-// ValidPattern reports whether s is a legal subscription pattern: one or more
-// non-empty, whitespace-free tokens, where "*" may appear at any position and
-// ">" only as the final token.
+// ValidPattern reports whether s is a legal subscription pattern: non-empty,
+// whitespace-free tokens with ">" only last.
 func ValidPattern(s string) bool {
 	if s == "" {
 		return false
@@ -162,7 +132,6 @@ func ValidPattern(s string) bool {
 	for i, tok := range toks {
 		switch tok {
 		case TokenAny:
-			// fine at any position
 		case TokenTail:
 			if i != len(toks)-1 {
 				return false
@@ -176,9 +145,7 @@ func ValidPattern(s string) bool {
 	return true
 }
 
-// validToken reports whether tok is a non-empty token free of whitespace and the
-// token separator. The wildcard tokens are handled by the callers, which decide
-// whether a wildcard is legal in that position.
+// validToken accepts wildcards; the callers decide where one is legal.
 func validToken(tok string) bool {
 	if tok == "" {
 		return false

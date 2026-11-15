@@ -10,48 +10,31 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Mount is what a handler receives when one surface of an extension is loaded. It
-// carries the extension's identity and full spec (so the handler can read the base
-// URL, auth, and safety envelope) alongside the raw block for the specific surface
-// it handles. The handler decodes Block into its own type; nothing else does.
+// Mount is what a [Point] receives for one loaded surface. Only the handler
+// decodes Block.
 type Mount struct {
-	// ID is the extension resource's stable id, the key OnUnload is called with.
-	ID string
-	// Name is the extension's natural name (its slug).
-	Name string
-	// Spec is the full decoded extension spec, shared context for every surface.
-	Spec Spec
-	// Surface is the surface key this mount is for (one of the Surface* constants or a
-	// host-registered key).
+	// ID is the key OnUnload is called with.
+	ID      string
+	Name    string
+	Spec    Spec
 	Surface string
-	// Block is the raw typed block for this surface, for the handler to decode.
-	Block json.RawMessage
+	Block   json.RawMessage
 }
 
-// Point is the handler for one surface kind. Registering a Point
-// under its Capability makes every spec that declares that surface loadable, which
-// is how the engine gains new abilities without edits to the kind or the loader: a
-// new surface is a new registration, not a new code path in the core.
-//
-// OnLoad is called when an extension declaring this surface is loaded; it wires the
-// surface live (registers tools, opens a provider) and returns an error to abort
-// the load. OnUnload is called with the extension id when the extension is
-// unloaded or replaced; it must release whatever OnLoad acquired and be idempotent,
-// since a roll-back may unload a surface that never fully loaded. Implementations
-// must be safe for concurrent use.
+// Point handles one surface kind; registering one makes every spec declaring
+// that surface loadable. OnLoad returns an error to abort the load. OnUnload
+// must release what OnLoad acquired and be idempotent, since a roll-back may
+// unload a surface that never fully loaded. Implementations must be safe for
+// concurrent use.
 type Point interface {
-	// Capability is the surface key this handler serves (e.g. "integration").
 	Capability() string
-	// OnLoad wires one surface of an extension live.
 	OnLoad(ctx context.Context, m Mount) error
-	// OnUnload releases the surface previously loaded for the given extension id.
 	OnUnload(ctx context.Context, id string) error
 }
 
-// Registry resolves a Point by the surface key it serves. It is
-// fail-closed: a surface with no registered handler is an error at load time, never
-// a silent skip, so an extension is either fully wired or rejected. It is safe for
-// concurrent use.
+// Registry resolves a [Point] by surface key. An unregistered surface fails
+// the load, so an extension is fully wired or rejected. Safe for concurrent
+// use.
 type Registry struct {
 	mu       sync.RWMutex
 	handlers map[string]Point
@@ -60,9 +43,7 @@ type Registry struct {
 // NewRegistry returns an empty handler registry.
 func NewRegistry() *Registry { return &Registry{handlers: map[string]Point{}} }
 
-// Register adds a handler under its Capability. It refuses a nil handler, an empty
-// capability, or a duplicate, so the registry can never hold two handlers for one
-// surface (which would make routing ambiguous).
+// Register refuses a nil handler, an empty capability, or a duplicate.
 func (r *Registry) Register(h Point) error {
 	if h == nil {
 		return fault.New(fault.Terminal, "extension_handler_nil", "extension: refusing to register a nil handler")
@@ -80,8 +61,8 @@ func (r *Registry) Register(h Point) error {
 	return nil
 }
 
-// Resolve returns the handler for a surface key, or a Terminal error naming the
-// available surfaces when none matches.
+// Resolve returns the handler, or a Terminal error naming the available
+// surfaces.
 func (r *Registry) Resolve(capability string) (Point, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -101,8 +82,7 @@ func (r *Registry) Has(capability string) bool {
 	return ok
 }
 
-// Capabilities lists the registered surface keys in sorted order, for diagnostics
-// and a kube-style listing of what surfaces this engine can serve.
+// Capabilities lists the registered surface keys, sorted.
 func (r *Registry) Capabilities() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

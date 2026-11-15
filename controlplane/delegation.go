@@ -1,25 +1,5 @@
 package controlplane
 
-// This file is the cryptographic core of cross-instance authority: a public-key,
-// offline-verifiable, attenuable capability token. An issuer mints a token over a
-// capability grant; a holder may attenuate it (only ever narrowing the authority) and
-// delegate it onward; any party holding the issuer's public key can verify a token and
-// extract its effective authority, and can forge nothing. This is what makes "no
-// authority escalation across the wire" a cryptographic property rather than a matter
-// of trust: a token can only have been narrowed in transit, never widened.
-//
-// The implementation is a minimal own-Ed25519 scheme with no third-party dependency, so
-// the open binary carries it with zero infrastructure. It sits behind no interface here
-// yet by design, but its shape (issue, attenuate, verify over a capability.Grant) is the
-// port a Datalog-checked token library can later implement without changing callers.
-//
-// Scope and threat model of THIS layer: the token is unforgeable and monotonically
-// narrowing, and verification fails closed on any broken signature, widened block,
-// expired block, or malformed token. It is a bearer credential: binding a token to its
-// holder so a stolen or truncated token cannot be replayed is proof-of-possession, a
-// separate hardening layer that also seals the chain length. Verify therefore returns
-// the authority a presented chain encodes; pinning who may present it is layered on top.
-
 import (
 	"bytes"
 	"crypto/ed25519"
@@ -36,23 +16,18 @@ import (
 	"github.com/ionalpha/flynn/ids"
 )
 
-// Identity is an instance's self-issued Ed25519 keypair: its verifiable identity on the
-// fleet and the key it signs delegations with. It extends the bookkeeping OriginInstanceID
-// into something another instance can cryptographically check, with no central authority.
+// Identity is an instance's Ed25519 keypair: its identity on the fleet and the key it
+// signs delegations with, checkable by another instance with no central authority.
 type Identity struct {
 	pub  ed25519.PublicKey
 	priv ed25519.PrivateKey
 }
 
-// GenerateIdentity creates a fresh instance identity. Persisting the key across restarts
-// (sealed in the vault) is a later hardening step; a generated-in-memory identity is
-// enough to issue and verify within a process and across a fleet that exchanges public
-// keys.
+// GenerateIdentity creates a fresh in-memory identity; [LoadOrCreateIdentity]
+// persists one across restarts.
 func GenerateIdentity() (*Identity, error) {
-	// Entropy comes from the ids package (the one sanctioned randomness source), not
-	// crypto/rand directly, so the project's single-entropy-boundary rule holds. A
-	// 256-bit token is exactly an Ed25519 seed; the key derives deterministically from
-	// it, so a future deterministic entropy source reproduces the identity for replay.
+	// Entropy comes from package ids, the single sanctioned randomness source. A 256-bit
+	// token is exactly an Ed25519 seed, and the key derives deterministically from it.
 	tok, err := ids.Token()
 	if err != nil {
 		return nil, fmt.Errorf("controlplane: generate identity: %w", err)
@@ -73,8 +48,8 @@ func GenerateIdentity() (*Identity, error) {
 // delegations against.
 func (i *Identity) Public() ed25519.PublicKey { return i.pub }
 
-// ID returns the identity's stable principal id, derived from its public key so it is
-// self-certifying: the id and the verifying key are one and the same.
+// ID returns the principal id derived from the public key, so the id is
+// self-certifying.
 func (i *Identity) ID() string { return PrincipalID(i.pub) }
 
 // PrincipalID renders an Ed25519 public key as a stable, self-certifying principal id.
@@ -82,20 +57,18 @@ func PrincipalID(pub ed25519.PublicKey) string {
 	return "ed25519:" + base64.RawURLEncoding.EncodeToString(pub)
 }
 
-// Authority is the effective permission a verified token confers: the leaf subject it
-// was delegated to, the scope, and the capability grant (the intersection of every
-// block in the chain). It is the value a request gate checks an action against.
+// Authority is what a verified token confers: the leaf subject, the minimum scope
+// across the chain, and the intersection of every block's grant.
 type Authority struct {
 	Subject string
 	Scope   Scope
 	Grant   capability.Grant
 }
 
-// capBlock is one link in a delegation chain. The root block is signed by the issuer;
-// each later block attenuates the authority and is signed by the key the previous block
-// named as audience, so the chain is a verifiable delegation path. A block grants its
-// audience either every action (AllowAll, root only) or exactly the listed actions, up
-// to the scope, until NotAfter.
+// capBlock is one link in a delegation chain. The issuer signs the root; each later
+// block is signed by the audience the previous block named. A block grants its
+// audience every action (AllowAll, root only) or exactly the listed actions, up to the
+// scope, until NotAfter.
 type capBlock struct {
 	Scope    Scope    `json:"scope"`
 	AllowAll bool     `json:"allowAll,omitempty"`
@@ -111,9 +84,8 @@ func (b capBlock) grant() capability.Grant {
 	return capability.NewGrant(b.Actions...)
 }
 
-// sealedBlock is a capBlock together with the signature over its exact serialized bytes.
-// The signed bytes are stored verbatim so verification checks the signature over the
-// same bytes that were signed, never a re-serialization that could differ.
+// sealedBlock keeps a capBlock's signed bytes verbatim beside the signature, so
+// verification never depends on a re-serialization matching.
 type sealedBlock struct {
 	Payload []byte `json:"p"`
 	Sig     []byte `json:"s"`
@@ -124,9 +96,9 @@ type capToken struct {
 	Blocks []sealedBlock `json:"b"`
 }
 
-// Issue mints a root capability token: the issuer signs scope and grant to an audience
-// public key (the holder authorized to exercise or further attenuate it), valid until
-// notAfter. The token verifies offline against the issuer's public key.
+// Issue mints a root token: issuer signs scope and grant to audience (the key allowed
+// to use or attenuate it), valid until notAfter. It verifies offline against the
+// issuer's public key.
 func Issue(issuer *Identity, audience ed25519.PublicKey, scope Scope, grant capability.Grant, notAfter time.Time) (string, error) {
 	if issuer == nil {
 		return "", errors.New("controlplane: issue: nil issuer")
@@ -148,11 +120,9 @@ func Issue(issuer *Identity, audience ed25519.PublicKey, scope Scope, grant capa
 	return encodeToken(capToken{Blocks: []sealedBlock{sb}})
 }
 
-// Attenuate appends a narrowing block to a token. The holder must be the token's current
-// leaf audience (it signs with the key that block named), and the new block restricts the
-// scope and names an explicit action subset and the next audience. Attenuation can only
-// shrink authority; Verify rejects any block that tries to widen it. The result is a
-// longer chain delegating a strictly smaller authority to nextAudience.
+// Attenuate appends a narrowing block. holder must be the token's current leaf
+// audience; the block names a scope, an explicit action subset and nextAudience.
+// Verify rejects any block that widens authority.
 func Attenuate(tok string, holder *Identity, nextAudience ed25519.PublicKey, scope Scope, actions []string, notAfter time.Time) (string, error) {
 	if holder == nil {
 		return "", errors.New("controlplane: attenuate: nil holder")
@@ -189,12 +159,11 @@ func Attenuate(tok string, holder *Identity, nextAudience ed25519.PublicKey, sco
 	return encodeToken(t)
 }
 
-// Verify checks a token against the trusted issuer key as of now and returns the
-// effective authority it confers: the leaf subject, the minimum scope across the chain,
-// and the intersection of every block's grant. It fails closed on any broken signature,
-// any block that tries to widen authority (a higher scope or an action the parent did
-// not hold), an expired block, or a malformed token, so a token can never confer more
-// than the issuer delegated.
+// Verify checks tok against the trusted issuer key as of now and returns the authority
+// it confers. It fails closed on a broken signature, a widening block, an expired
+// block or a malformed token, so a token can only have been narrowed in transit. A
+// token is a bearer credential: Verify does not check who presents it, which
+// [RequirePossession] adds.
 func Verify(tok string, issuer ed25519.PublicKey, now time.Time) (Authority, error) {
 	t, err := decodeToken(tok)
 	if err != nil {
@@ -238,14 +207,10 @@ func Verify(tok string, issuer ed25519.PublicKey, now time.Time) (Authority, err
 	return Authority{Subject: PrincipalID(prevAud), Scope: effScope, Grant: effGrant}, nil
 }
 
-// DelegationAuthenticator resolves a presented capability token to a Principal,
-// implementing the Authenticator boundary the server already gates every request
-// through. It is the bridge from the cryptographic delegation layer to the request
-// model: a bearer token is verified offline against the trusted issuer key, and the
-// authority it proves (subject, scope, and the monotonically attenuated Grant)
-// becomes the Principal the action gate later checks. Because Verify fails closed on
-// any forged, widened, expired, or malformed chain, an unverifiable token is simply
-// unauthenticated; nothing here can mint authority the token did not already carry.
+// DelegationAuthenticator is the [Authenticator] for capability tokens: it verifies a
+// bearer token offline against the trusted issuer key and turns the proven authority
+// into a [Principal]. An unverifiable token is unauthenticated, so no authority beyond
+// what the token carried can come out of it.
 //
 //flynn:policy TestFailClosedAuthenticators
 type DelegationAuthenticator struct {
@@ -253,12 +218,9 @@ type DelegationAuthenticator struct {
 	clk    clock.Clock
 }
 
-// NewDelegationAuthenticator builds an authenticator that accepts tokens issued (and
-// transitively delegated) under issuer, reading the current time from clk so expiry
-// is checked against the same clock the rest of the system uses (System in
-// production, Manual in tests). A nil clock falls back to the system clock; an issuer
-// of the wrong size makes every token fail to verify, which is the fail-closed
-// outcome.
+// NewDelegationAuthenticator accepts tokens issued, directly or by delegation, under
+// issuer, checking expiry against clk (nil means the system clock). An issuer key of
+// the wrong size makes every token fail.
 func NewDelegationAuthenticator(issuer ed25519.PublicKey, clk clock.Clock) *DelegationAuthenticator {
 	if clk == nil {
 		clk = clock.System{}
@@ -266,9 +228,8 @@ func NewDelegationAuthenticator(issuer ed25519.PublicKey, clk clock.Clock) *Dele
 	return &DelegationAuthenticator{issuer: issuer, clk: clk}
 }
 
-// Authenticate verifies the request's bearer token and resolves it to a Principal
-// carrying the verified Grant. A missing or unverifiable token is ErrUnauthenticated,
-// never a partial or escalated authority.
+// Authenticate resolves the bearer token to a Principal carrying the verified Grant,
+// or returns ErrUnauthenticated.
 func (a *DelegationAuthenticator) Authenticate(r *http.Request) (Principal, error) {
 	tok := bearerToken(r)
 	if tok == "" {
@@ -276,9 +237,8 @@ func (a *DelegationAuthenticator) Authenticate(r *http.Request) (Principal, erro
 	}
 	auth, err := Verify(tok, a.issuer, a.clk.Now())
 	if err != nil {
-		// A token that does not verify is indistinguishable from no credential: the
-		// caller learns only that it was refused, not why, so a probing client cannot
-		// tell a tampered chain from an expired one from an unknown issuer.
+		// Every verification failure looks like no credential, so a probing client cannot
+		// tell a tampered chain from an expired one or an unknown issuer.
 		return Principal{}, ErrUnauthenticated
 	}
 	return Principal{ID: auth.Subject, Scope: auth.Scope, Grant: auth.Grant}, nil
