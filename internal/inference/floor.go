@@ -2,41 +2,28 @@ package inference
 
 import "sync"
 
-// The advisory floor a runtime is held to is compiled in (Runtime.MinSupported), so a
-// parser flaw disclosed after a release cannot reach an installed Flynn until the user
-// upgrades. The signed notice feed can carry a newer floor, and this is where one lands.
-//
-// A floor learned at runtime may only ever RAISE the gate. Raise takes the maximum of what
-// is compiled in and what arrives, and no function lowers a floor, marks a refused runtime
-// safe, or clears the overlay.
-//
-// That is why a network-delivered security policy is safe: an attacker who compromises the
-// feed origin AND steals the signing key can only make Flynn refuse to run a runtime,
-// never run a vulnerable one. The worst case is a loud, locally recoverable denial of
-// service, where a channel that could relax a gate would be a path to code execution.
+// A runtime's advisory floor is compiled in, so the signed notice feed carries any
+// newer floor and it is recorded here. A floor learned at runtime can only raise the
+// gate: nothing lowers a floor, marks a refused runtime safe, or clears the overlay. An
+// attacker holding both the feed origin and the signing key can therefore only make
+// Flynn refuse a runtime, a locally recoverable denial of service, and never run a
+// vulnerable one.
 var (
 	overlayMu sync.RWMutex
 	overlay   = map[string]overlayFloor{}
 )
 
-// overlayFloor is a floor learned at runtime, and the advisory it came from so a refusal
-// can still name a reason it was not built knowing.
+// overlayFloor is a floor learned at runtime, with the advisory it came from so a
+// refusal can name a reason this build never knew.
 type overlayFloor struct {
 	version  Version
 	advisory string
 }
 
-// Raise records a floor for a runtime, learned from a signed source after this binary was
-// built. It keeps whichever floor is higher, so calling it with an older floor than the
-// one already in force (whether compiled in or previously raised) does nothing at all.
-//
-// It is deliberately a no-op rather than an error in that case. A hostile feed must not be
-// able to make the notice path fail by sending a lower floor, because a caller that
-// reports the failure would be a caller an attacker can make noisy, and one that aborts
-// would be a caller an attacker can use to skip the rest of the feed.
-//
-// An unknown runtime name is ignored: a feed cannot invent a runtime and it cannot gate
-// one Flynn does not drive.
+// Raise records a floor for a runtime learned from a signed source after this binary
+// was built, keeping whichever floor is higher. A lower floor is a silent no-op, so a
+// hostile feed cannot make the notice path noisy or abort it before the rest of the
+// feed is read. An unknown runtime name is ignored, so a feed cannot invent a runtime.
 func Raise(runtime string, v Version, advisoryID string) {
 	if len(v) == 0 {
 		return
@@ -59,10 +46,9 @@ func Raise(runtime string, v Version, advisoryID string) {
 	overlay[runtime] = overlayFloor{version: v, advisory: advisoryID}
 }
 
-// FloorFor returns the floor a runtime is held to right now: the higher of the compiled-in
-// floor and any floor raised since. The second result reports whether a floor is known at
-// all, and the third names the advisory a raised floor came from (empty when the floor is
-// the one this binary was built with).
+// FloorFor returns the floor a runtime is held to now: the higher of the compiled-in
+// floor and any raised since. The second result reports whether a floor is known, and
+// the third names the advisory a raised floor came from (empty for the built-in one).
 func FloorFor(runtime string) (Version, bool, string) {
 	built, hasBuilt := builtinFloor(runtime)
 
@@ -80,7 +66,6 @@ func FloorFor(runtime string) (Version, bool, string) {
 	}
 }
 
-// builtinFloor returns the floor compiled into this binary for a runtime.
 func builtinFloor(runtime string) (Version, bool) {
 	r, ok := runtimeNamed(runtime)
 	if !ok || len(r.MinSupported) == 0 {
@@ -89,7 +74,6 @@ func builtinFloor(runtime string) (Version, bool) {
 	return r.MinSupported, true
 }
 
-// runtimeNamed returns the known runtime with this name.
 func runtimeNamed(name string) (Runtime, bool) {
 	for _, r := range Runtimes() {
 		if r.Name == name {
@@ -99,9 +83,8 @@ func runtimeNamed(name string) (Runtime, bool) {
 	return Runtime{}, false
 }
 
-// resetOverlay clears the raised floors. It exists for tests, which must not leak a raised
-// floor into each other, and is unexported precisely so that no production path can reach
-// it: there is no supported way to lower a gate.
+// resetOverlay clears the raised floors between tests. It is unexported so no
+// production path can lower a gate.
 func resetOverlay() {
 	overlayMu.Lock()
 	defer overlayMu.Unlock()

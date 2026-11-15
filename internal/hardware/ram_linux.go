@@ -7,9 +7,8 @@ import (
 	"os"
 )
 
-// systemRAMBytes reads the total system memory from /proc/meminfo, the kernel-exported
-// source every Linux machine has. It is best-effort: an unreadable file or an
-// unexpected format yields 0, treated by the caller as unknown.
+// systemRAMBytes reads the total from /proc/meminfo. An unreadable file or unexpected
+// format yields 0, read by the caller as unknown.
 func systemRAMBytes(_ context.Context) int64 {
 	contents, err := os.ReadFile("/proc/meminfo")
 	if err != nil {

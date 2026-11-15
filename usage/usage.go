@@ -1,25 +1,21 @@
-// Package usage is the account of what model calls consumed: one [Record] per call
-// (or per external episode, when the agent that ran it reports nothing finer), the
-// tokens it used, what they cost, and how each figure is known.
+// Package usage is the account of what model calls consumed: one [Record] per call (or
+// per external episode, when the agent that ran it reports nothing finer), the tokens it
+// used, what they cost, and how each figure is known.
 //
-// A token count reaches Flynn by different routes. A native adapter reads it from
-// the provider's response; an external agent such as a coding CLI prints it in its
-// stream, sometimes as a running total and sometimes not at all for output; a host
-// restating an old run may rebuild it from a partial split. A figure that was
-// counted and one that was guessed look the same as integers, and a report that
-// sums them without saying which is which states more than it knows. Each figure
-// therefore carries a [Basis], and an [Estimated] figure names its method.
+// A native adapter reads token counts from the provider's response; an external agent
+// such as a coding CLI prints them in its stream, sometimes as a running total and
+// sometimes not at all for output; a host restating an old run may rebuild them from a
+// partial split. A counted figure and a guessed one look the same as integers, so each
+// carries a [Basis], and an [Estimated] figure names its method.
 //
-// Cost is computed, never reported, from a [Table] of dated prices. A call is
-// priced at the rate in force on the day it ran, so a later price change does not
-// rewrite the cost of earlier calls. A call the table cannot price has an unknown
-// cost, which is different from a zero cost: a free local model is priced at zero
-// by a row that says so, and a model nobody priced is reported as unpriced so a
-// total cannot look complete when it is not.
+// Cost is never taken from a report. It is computed from a [Table] of dated prices at the
+// rate in force on the day the call ran, so a later price change leaves earlier costs
+// alone. A call the table cannot price has an unknown cost, distinct from a zero cost: a
+// free local model is priced at zero by a row that says so, and an unpriced call keeps a
+// total from looking complete.
 //
-// Amounts are integer [Nanos] (billionths of the currency unit) so that summing a
-// long run's calls is exact and two hosts summing the same records agree to the
-// last digit, which float arithmetic does not promise.
+// Amounts are integer [Nanos] (billionths of the currency unit), so summing a long run is
+// exact and two hosts summing the same records agree to the last digit.
 package usage
 
 import (

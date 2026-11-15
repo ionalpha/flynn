@@ -1,9 +1,8 @@
-// Package hardware probes the local machine for the resources that decide which
-// models it can run: the GPU and its memory, and the system RAM a CPU-only run draws
-// on. It is a best-effort diagnostic, not part of a governed run: detection shells out
-// to a vendor tool or reads a well-known OS source when present and reports nothing
-// rather than guessing when it is absent, so a caller can fall back to an explicit
-// budget. The parsing is pure and tested; only the probe itself touches the machine.
+// Package hardware probes the local machine for the resources that decide which models
+// it can run: the GPU and its memory, and the system RAM a CPU-only run draws on. It is a
+// best-effort diagnostic outside any governed run. A probe shells out to a vendor tool or
+// reads a well-known OS source, and reports nothing when the source is absent, so a caller
+// falls back to an explicit budget. Parsing is pure; only the probe touches the machine.
 package hardware
 
 import (
@@ -16,8 +15,8 @@ import (
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
-// Box is what was detected about the machine. A zero field means "not detected", so a
-// caller treats it as unknown rather than zero capacity.
+// Box is what was detected about the machine. A zero field means not detected, and a
+// caller treats it as unknown capacity.
 type Box struct {
 	// GPUName is the detected accelerator's name, empty if none was found.
 	GPUName string
@@ -28,13 +27,12 @@ type Box struct {
 	// hold part of the card, so a model sized to VRAMBytes can fail to load; a fit is judged
 	// against this figure when it is set.
 	VRAMFreeBytes int64
-	// RAMBytes is the total system memory in bytes, 0 if it could not be read. A
-	// CPU-only run is bounded by this, not by VRAM, so it decides fit on the common
-	// machine that has no usable GPU.
+	// RAMBytes is the total system memory in bytes, 0 if it could not be read. It bounds a
+	// CPU-only run, so it decides fit on a machine with no usable GPU.
 	RAMBytes int64
 	// ComputeCapability is the GPU's CUDA compute capability ("8.9", "12.0"), empty when
-	// no NVIDIA GPU was detected. It is the precise signal for what a quantized format
-	// needs: the 4-bit floating-point path is only available from Blackwell upward.
+	// no NVIDIA GPU was detected. It decides which quantized formats run: the 4-bit
+	// floating-point path needs Blackwell or later.
 	ComputeCapability string
 	// GPUArch is the architecture family derived from the compute capability ("Ada
 	// Lovelace", "Hopper", "Blackwell"), empty when unknown. It is the human-facing label
@@ -48,8 +46,8 @@ type Box struct {
 	// run, so it gates which runtime build is viable.
 	CUDAVersion string
 	// Containers is what the machine can run a containerized runtime with: which OCI
-	// runtimes are present and whether GPU passthrough is wired. A GPU runtime shipped as
-	// an image needs this; without it that path is refused in favor of a native binary.
+	// runtimes are present and whether GPU passthrough is wired. Without it a GPU runtime
+	// shipped as an image is refused and a native binary is used.
 	Containers ContainerSupport
 }
 
@@ -78,19 +76,18 @@ func (b Box) HasGPU() bool { return b.VRAMBytes > 0 }
 // HasRAM reports whether the system memory total was read.
 func (b Box) HasRAM() bool { return b.RAMBytes > 0 }
 
-// SupportsNVFP4 reports whether the GPU can serve the 4-bit floating-point format, which
-// is a Blackwell-and-up capability (compute capability major 10 or above). A model in
-// that format is refused on an older GPU rather than served on a path it cannot run.
+// SupportsNVFP4 reports whether the GPU can serve the 4-bit floating-point format, a
+// Blackwell-and-up capability (compute capability major 10 or above). A model in that
+// format is refused on an older GPU.
 func (b Box) SupportsNVFP4() bool {
 	major, ok := computeMajor(b.ComputeCapability)
 	return ok && major >= 10
 }
 
-// Detect probes the machine. It is best-effort: an absent or failing probe leaves the
-// corresponding field zero, never an error, so callers degrade to an explicit budget
-// instead of failing. The two probes are independent: a machine with no GPU still
-// reports its RAM, which is what a CPU-only run is judged against. The context bounds
-// each probe so a wedged tool cannot hang the caller.
+// Detect probes the machine. An absent or failing probe leaves its field zero and returns
+// no error, so callers fall back to an explicit budget. The probes are independent, so a
+// machine with no GPU still reports its RAM. The context bounds each probe so a wedged
+// tool cannot hang the caller.
 func Detect(ctx context.Context) Box {
 	var b Box
 	if out, ok := runNvidiaSMI(ctx); ok {
@@ -113,25 +110,21 @@ func Detect(ctx context.Context) Box {
 // against the host on every run and should not pay for the GPU and container probes.
 func RAMBytes(ctx context.Context) int64 { return systemRAMBytes(ctx) }
 
-// runCommand runs a probe tool and returns its standard output. It is a package-level
-// variable so the probe can be pointed at recorded tool output instead of the host, which
-// is how the decision logic above it is tested on a machine that has none of these tools.
-// Production always uses the real process.
+// runCommand runs a probe tool and returns its standard output. It is a variable so a test
+// can feed recorded tool output to the decision logic on a machine that has none of these
+// tools.
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 	//nolint:gosec // name is one of the fixed probe binaries named in this file, never user input
 	return procexec.CommandContext(ctx, name, args...).Output()
 }
 
-// lookPath reports whether an executable is on PATH. It is a package-level variable for the
-// same reason as runCommand: it lets the presence probe be given a chosen set of installed
-// tools rather than whatever the test machine happens to have.
+// lookPath reports whether an executable is on PATH. It is a variable for the same reason
+// as runCommand.
 var lookPath = exec.LookPath
 
-// runNvidiaSMI queries the NVIDIA management tool for the per-GPU fields, returning false
-// when the tool is missing or errors (no GPU, no driver, not installed). Memory and name
-// have always been queried; compute capability and driver version are added so the box's
-// architecture and CUDA reach are known, not just its size. Free memory is the last column,
-// so the positional fields before it keep their order.
+// runNvidiaSMI queries nvidia-smi for the per-GPU fields, returning false when the tool is
+// missing or errors (no GPU, no driver, not installed). Free memory is the last column, so
+// the positional fields before it keep their order.
 func runNvidiaSMI(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -143,11 +136,9 @@ func runNvidiaSMI(ctx context.Context) (string, bool) {
 	return string(out), true
 }
 
-// runNvidiaSMIHeader runs nvidia-smi with no query, whose banner carries the maximum CUDA
-// version the driver supports ("CUDA Version: 12.4", or "CUDA UMD Version: 13.3" on current
-// drivers). That number is not available from
-// the per-GPU query, so it is read from the default output. Returns false when the tool
-// is absent or errors.
+// runNvidiaSMIHeader runs nvidia-smi with no query, because the maximum CUDA version the
+// driver supports appears only in its banner ("CUDA Version: 12.4", or "CUDA UMD Version:
+// 13.3" on current drivers). It returns false when the tool is absent or errors.
 func runNvidiaSMIHeader(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -158,11 +149,10 @@ func runNvidiaSMIHeader(ctx context.Context) (string, bool) {
 	return string(out), true
 }
 
-// parseNvidiaSMI reads the first usable GPU row of the query output
-// ("<MiB>, <name>, <compute_cap>, <driver_version>, <free MiB>") into a Box. Memory is reported in
-// mebibytes with the nounits format, so it is scaled to bytes. Older nvidia-smi builds
-// or a trimmed query may print fewer columns, so the extra fields are read only when
-// present. It returns false when no row yields a memory total.
+// parseNvidiaSMI reads the first usable GPU row of the query output ("<MiB>, <name>,
+// <compute_cap>, <driver_version>, <free MiB>") into a Box, scaling mebibytes to bytes.
+// Older nvidia-smi builds or a trimmed query may print fewer columns, so the extra fields
+// are read only when present. It returns false when no row yields a memory total.
 func parseNvidiaSMI(out string) (Box, bool) {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -185,8 +175,8 @@ func parseNvidiaSMI(out string) (Box, bool) {
 			b.DriverVersion = strings.TrimSpace(cols[3])
 		}
 		if len(cols) > 4 {
-			// A free figure above the total, or a non-positive one, is not a reading this
-			// probe can use, so the field stays unset rather than describing the card wrongly.
+			// A free figure above the total, or a non-positive one, is unusable, so the
+			// field stays unset.
 			if free, err := strconv.ParseInt(strings.TrimSpace(cols[4]), 10, 64); err == nil && free > 0 && free <= mib {
 				b.VRAMFreeBytes = free * 1024 * 1024
 			}
@@ -196,9 +186,9 @@ func parseNvidiaSMI(out string) (Box, bool) {
 	return Box{}, false
 }
 
-// normalizeComputeCap trims a compute-capability field and drops a value nvidia-smi
-// prints when it does not know one ("[N/A]", "[Not Supported]"), so an unknown stays
-// empty rather than becoming a bogus capability.
+// normalizeComputeCap trims a compute-capability field and drops the placeholders
+// nvidia-smi prints when it does not know one ("[N/A]", "[Not Supported]"), so an unknown
+// stays empty.
 func normalizeComputeCap(field string) string {
 	cc := strings.TrimSpace(field)
 	if cc == "" || strings.HasPrefix(cc, "[") {
@@ -219,11 +209,10 @@ func computeMajor(cc string) (int, bool) {
 	return n, true
 }
 
-// archForComputeCap maps a CUDA compute capability to its architecture family name. The
-// mapping is by the capability NVIDIA assigns each generation; an unrecognized or empty
-// capability yields an empty name so a caller treats the architecture as unknown rather
-// than guessing. Consumer and datacenter Blackwell report different majors (12 and 10)
-// but are the same family for runtime-selection purposes.
+// archForComputeCap maps a CUDA compute capability to its architecture family name. An
+// unrecognized or empty capability yields an empty name, which a caller treats as
+// unknown. Consumer and datacenter Blackwell report different majors (12 and 10) but are
+// one family for runtime selection.
 func archForComputeCap(cc string) string {
 	switch cc {
 	case "":
@@ -257,9 +246,8 @@ func archForComputeCap(cc string) string {
 // the order does not change which one matches.
 var cudaLabels = []string{"CUDA Version:", "CUDA UMD Version:"}
 
-// parseCUDAVersion reads the maximum supported CUDA version out of the nvidia-smi banner,
-// which prints it as "CUDA Version: 12.4" or "CUDA UMD Version: 13.3" near the driver
-// version. It returns an empty string when the banner carries neither label.
+// parseCUDAVersion reads the maximum supported CUDA version from the nvidia-smi banner,
+// or returns empty when the banner carries neither of [cudaLabels].
 func parseCUDAVersion(out string) string {
 	for _, label := range cudaLabels {
 		if i := strings.Index(out, label); i >= 0 {
@@ -286,8 +274,8 @@ func cudaVersionAfter(rest string) string {
 	return v
 }
 
-// ociClients are the container clients detectContainers looks for, kept as data so the
-// probe is a thin loop. Each names a tool and where its presence is recorded.
+// ociClients are the container clients detectContainers looks for, each with the field
+// its presence sets.
 var ociClients = []struct {
 	bin string
 	set func(*ContainerSupport)
@@ -300,10 +288,9 @@ var ociClients = []struct {
 // present means a container can be given the GPU.
 var nvidiaToolkitBins = []string{"nvidia-ctk", "nvidia-container-runtime", "nvidia-container-toolkit"}
 
-// detectContainers reports which OCI runtimes and GPU passthrough tooling are on PATH. It
-// is presence-only and best-effort: finding the client is enough to record it, and a
-// missing tool simply stays false, so the probe never blocks or errors. Whether a daemon
-// actually answers is confirmed later by the path that uses it.
+// detectContainers reports which OCI runtimes and GPU passthrough tooling are present.
+// Finding the client is enough to record it and a missing tool stays false, so the probe
+// never blocks or errors. The path that uses a daemon confirms it answers.
 func detectContainers(ctx context.Context) ContainerSupport {
 	var c ContainerSupport
 	for _, p := range ociClients {
@@ -311,11 +298,9 @@ func detectContainers(ctx context.Context) ContainerSupport {
 			p.set(&c)
 		}
 	}
-	// The toolkit may appear as a host binary (a native Linux install puts nvidia-ctk on
-	// PATH) or be wired into the engine itself with no host binary at all (Docker Desktop
-	// runs it inside its own VM). Check both: a host binary, or the engine reporting an
-	// "nvidia" runtime, which is the authoritative signal that a container can be given the
-	// GPU and the only one present in the Docker Desktop case.
+	// The toolkit may be a host binary (a native Linux install puts nvidia-ctk on PATH) or
+	// live inside the engine with no host binary (Docker Desktop runs it in its VM), so both
+	// are checked. The engine's "nvidia" runtime is the only signal in the Docker Desktop case.
 	for _, bin := range nvidiaToolkitBins {
 		if _, err := lookPath(bin); err == nil {
 			c.NVIDIAToolkit = true
@@ -329,10 +314,8 @@ func detectContainers(ctx context.Context) ContainerSupport {
 }
 
 // engineHasNVIDIARuntime asks an available engine whether it has the nvidia runtime
-// registered, the authoritative signal that a container can be given the host GPU. It is the
-// fallback that catches the Docker Desktop case, where the toolkit lives inside the engine's
-// VM and no host binary is on PATH. It is best-effort: an engine that cannot be queried (no
-// daemon) reports false rather than erroring, so detection never blocks the probe.
+// registered, which catches the Docker Desktop case. An engine that cannot be queried (no
+// daemon) reports false, so detection never blocks.
 func engineHasNVIDIARuntime(ctx context.Context, c ContainerSupport) bool {
 	var bins []string
 	if c.Docker {
@@ -351,9 +334,8 @@ func engineHasNVIDIARuntime(ctx context.Context, c ContainerSupport) bool {
 }
 
 // parseMeminfo reads the total memory from the contents of /proc/meminfo on Linux. The
-// "MemTotal:" line reports a count in kibibytes ("MemTotal:  16384256 kB"), which is
-// scaled to bytes. It returns 0 when the line is absent or unparseable, so a caller
-// treats the total as unknown rather than zero.
+// "MemTotal:" line reports kibibytes ("MemTotal:  16384256 kB"), scaled to bytes. It
+// returns 0, read as unknown, when the line is absent or unparseable.
 func parseMeminfo(contents string) int64 {
 	for _, line := range strings.Split(contents, "\n") {
 		rest, ok := strings.CutPrefix(line, "MemTotal:")

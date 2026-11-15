@@ -50,10 +50,6 @@ extension/fetch.go deliberately 1
 extension/release.go deliberately 1
 extension/signerchannel.go deliberately 1
 extension/signing.go matters 1
-externagent/conformance.go filler 1
-externagent/conformance.go matters 1
-externagent/prompt.go length 1
-externagent/spawner.go deliberately 1
 goal/evidence.go deliberately 1
 goal/goal.go deliberately 1
 goal/invariant.go matters 1
@@ -70,15 +66,7 @@ internal/exposure/exposure.go filler 1
 internal/flow/eval.go deliberately 1
 internal/flow/expr.go deliberately 1
 internal/flow/interp.go deliberately 1
-internal/gbnf/gbnf.go deliberately 1
-internal/gbnf/schema.go filler 1
 internal/hostneutral/hostneutral.go matters 1
-internal/inference/floor.go deliberately 1
-internal/inference/inference.go matters 2
-internal/inference/launch/template.go length 1
-internal/inference/modelsource/publishers.go deliberately 1
-internal/inference/modelsource/source.go deliberately 1
-internal/inference/serve/stats.go deliberately 1
 internal/integrations/doer.go deliberately 1
 internal/portregister/portregister.go length 1
 internal/release/bundle.go deliberately 1
@@ -101,10 +89,6 @@ internal/tui/editor/editor.go deliberately 1
 internal/tui/screen/screen.go deliberately 1
 internal/tui/term/term.go deliberately 1
 internal/tui/theme/theme.go deliberately 1
-llm/internal/httpapi/httpapi.go matters 1
-llm/llm.go deliberately 1
-llm/llm.go matters 1
-localmodel/localmodel.go length 1
 memory/consolidate/consolidate.go matters 1
 memory/curate/curate.go filler 1
 memory/digest/builder.go matters 1

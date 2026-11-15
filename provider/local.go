@@ -18,12 +18,10 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// localKind describes a keyless model server on the operator's machine that speaks
-// the OpenAI Chat Completions format. The kinds differ only in where the server
-// listens, the environment variables that move it, and how it takes tools; the grant
-// a run gets is built from the run's toolset and never reads the provider name, so
-// reaching one server as llamacpp, ollama, lmstudio or a configured name offers the
-// model the same tools.
+// localKind describes a keyless model server on the operator's machine that speaks the
+// OpenAI Chat Completions format. Kinds differ in where the server listens, the variables
+// that move it and how it takes tools. The grant a run gets is built from its toolset and
+// never reads the provider name, so every kind offers the model the same tools.
 type localKind struct {
 	name           string
 	baseRef        string // environment or vault reference that overrides the base URL
@@ -101,16 +99,16 @@ type Endpoint struct {
 // Endpoints is the parsed providers file.
 type Endpoints struct {
 	// AllowHosts are the non-loopback hosts a keyless endpoint may point at. A keyless
-	// endpoint sends the conversation to its host unauthenticated, so a host the
-	// operator did not list is refused rather than assumed to be theirs.
+	// endpoint sends the conversation to its host unauthenticated, so a host the operator
+	// did not list is refused.
 	AllowHosts []string            `json:"allow_hosts,omitempty"`
 	Providers  map[string]Endpoint `json:"providers"`
 }
 
 var endpointName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
-// LoadEndpoints reads the providers file from dir. A missing file is no endpoints,
-// not an error. A name that shadows a built-in provider is refused: an entry called
+// LoadEndpoints reads the providers file from dir. A missing file yields no endpoints and
+// no error. A name that shadows a built-in provider is refused, because an entry called
 // openai with another base URL would receive the stored OpenAI key.
 func LoadEndpoints(dir string) (Endpoints, error) {
 	path := filepath.Join(dir, ProvidersFile)
@@ -197,7 +195,6 @@ func EndpointNames(src secret.Source) []string {
 	return names
 }
 
-// resolveEndpoint builds the client for a configured endpoint.
 func resolveEndpoint(ctx context.Context, src secret.Source, eps Endpoints, name, model string) (llm.Model, error) {
 	ep := eps.Providers[name]
 	if ep.Key == "" {

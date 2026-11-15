@@ -6,53 +6,43 @@ import (
 	"github.com/ionalpha/flynn/internal/inference/serve"
 )
 
-// LaunchLevel is how aggressively a launch shrinks a model's footprint to make it fit. It
-// climbs as recovery escalates, so a model that keeps running out of memory is retried
-// smaller before it is given up on.
+// LaunchLevel is how far a launch shrinks a model's footprint. It climbs as recovery
+// escalates, so a model that keeps running out of memory is retried smaller.
 type LaunchLevel int
 
 const (
 	// LaunchFull serves the model at its normal footprint.
 	LaunchFull LaunchLevel = iota
-	// LaunchDegraded serves with a reduced footprint (a smaller context window), the first
-	// response to a memory or wedged-load failure.
+	// LaunchDegraded serves with a smaller context window.
 	LaunchDegraded
-	// LaunchMinimal serves at the smallest viable footprint, including running on the CPU, the
-	// last resort for a model that will not fit in device memory.
+	// LaunchMinimal serves at the smallest viable footprint, including CPU only.
 	LaunchMinimal
 )
 
-// LaunchFunc starts a model by id, resolving and serving it. It is injected because launching
-// a catalog model (resolve, provision, build a plan, serve) is wired above this package; the
-// orchestrator only needs the verb. The level asks for a smaller footprint as recovery
-// escalates.
+// LaunchFunc starts a model by id at a level. It is injected because resolving,
+// provisioning and serving a catalog model is wired above this package.
 type LaunchFunc func(ctx context.Context, modelID string, level LaunchLevel) error
 
-// FootprintFunc returns the device memory a model occupies when resident, in bytes. It is
-// injected from the model catalog, the source of a model's known size.
+// FootprintFunc returns a model's resident device memory in bytes, from the catalog's
+// known size.
 type FootprintFunc func(modelID string) int64
 
-// ServeAdapter implements Server over a serve.Manager: it observes the resident set from the
-// manager's records and live load stats, launches through an injected launcher, and evicts by
-// stopping the manager's server. A model is reported active when it is currently decoding, so
-// the scheduler never evicts in-flight work.
+// ServeAdapter implements [Server] over a serve.Manager. A model is reported active
+// while it is decoding, so the scheduler never evicts in-flight work.
 type ServeAdapter struct {
 	mgr       *serve.Manager
 	launch    LaunchFunc
 	footprint FootprintFunc
 }
 
-// NewServeAdapter builds an adapter over mgr. launch starts a model by id and footprint
-// reports its resident size; both come from the layer that owns the catalog and the serve
-// plan. A nil launch makes Launch a no-op, and a nil footprint reads every model as zero-size.
+// NewServeAdapter builds an adapter over mgr. A nil launch makes Launch a no-op, and a
+// nil footprint reads every model as zero-size.
 func NewServeAdapter(mgr *serve.Manager, launch LaunchFunc, footprint FootprintFunc) *ServeAdapter {
 	return &ServeAdapter{mgr: mgr, launch: launch, footprint: footprint}
 }
 
-// Resident lists the currently serving models with the inputs the scheduler needs. The memory
-// footprint comes from the injected catalog lookup; whether a model is actively decoding comes
-// from its live load stats, so an unreadable runtime is treated as idle (the scheduler may
-// evict it) rather than as busy, which is the safe default for freeing memory.
+// Resident lists the serving models with the inputs the scheduler needs. A runtime whose
+// load stats cannot be read counts as idle, so memory can still be freed.
 func (a *ServeAdapter) Resident(ctx context.Context) ([]Resident, error) {
 	recs, err := a.mgr.Status(ctx)
 	if err != nil {
@@ -81,8 +71,7 @@ func (a *ServeAdapter) footprintOf(id string) int64 {
 	return a.footprint(id)
 }
 
-// Launch starts a model by id through the injected launcher, passing the launch level down so
-// a recovery relaunch can ask for a smaller footprint.
+// Launch starts a model through the injected launcher at the given level.
 func (a *ServeAdapter) Launch(ctx context.Context, modelID string, level LaunchLevel) error {
 	if a.launch == nil {
 		return nil
@@ -90,8 +79,7 @@ func (a *ServeAdapter) Launch(ctx context.Context, modelID string, level LaunchL
 	return a.launch(ctx, modelID, level)
 }
 
-// Evict stops the model's server. Stopping a model that is not running is not an error, so a
-// redundant evict is a safe no-op.
+// Evict stops the model's server. Stopping a model that is not running is a no-op.
 func (a *ServeAdapter) Evict(_ context.Context, modelID string) error {
 	_, err := a.mgr.Stop(modelID)
 	return err

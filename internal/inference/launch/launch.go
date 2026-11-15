@@ -1,16 +1,10 @@
-// Package launch builds the exact command that serves a local model, without running
-// it. It is the boundary between deciding how a model should run and actually running
-// it: this package composes the gated runtime binary, the verified weights, a trusted
-// prompt contract, and a loopback-only listener into a command line and the address the
-// model will answer on. A caller executes that command inside the isolation sandbox and
-// then reaches the model at the plan's base URL.
-//
-// The plan is pure data and the builder does no I/O, so what will be executed is fully
-// determined and testable before anything runs. Two safety properties are enforced here
-// rather than left to the runtime: the server is pinned to a loopback address so the
-// model is never exposed off the machine, and the chat template is forced to a trusted,
-// recognized name so a template embedded in hostile weights cannot set the prompt
-// contract. A plan is refused unless both hold.
+// Package launch builds, without running it, the command that serves a local model: the
+// gated runtime binary, the verified weights, a trusted prompt contract and a
+// loopback-only listener, plus the address the model will answer on. A caller runs the
+// command inside the sandbox. The builder does no I/O, so the plan is testable before
+// anything runs. A plan is refused unless the server binds loopback, so the model is never
+// exposed off the machine, and the chat template is a trusted name, so hostile weights
+// cannot set the prompt contract.
 package launch
 
 import (
@@ -21,17 +15,14 @@ import (
 	"github.com/ionalpha/flynn/internal/catalog"
 )
 
-// loopbackHost is the only address a local model server is bound to. Binding anywhere
-// else would expose a model, and the runtime parsing its weights, to the network.
+// loopbackHost is the only bind address, because any other exposes the model, and the
+// runtime parsing its weights, to the network.
 const loopbackHost = "127.0.0.1"
 
-// knownChatTemplates is the set of trusted chat-template names a plan may pass to the
-// runtime. Restricting to recognized names matters for safety: an unrecognized name
-// could make the runtime silently fall back to the template embedded in the weights,
-// which is exactly the model-controlled contract the override exists to prevent. A new
-// model family is supported by adding its template here once it is known good; see
-// templateArgs for how each name reaches the runtime, since a name llama.cpp does not
-// ship needs its reviewed source embedded as well.
+// knownChatTemplates is the set of trusted template names a plan may pass. An
+// unrecognized name could make the runtime fall back to the template in the weights,
+// the model-controlled contract the override exists to prevent. A name llama.cpp does
+// not ship also needs its reviewed source embedded; see templateArgs.
 var knownChatTemplates = map[string]bool{
 	"chatml":     true,
 	"llama2":     true,
@@ -48,25 +39,21 @@ var knownChatTemplates = map[string]bool{
 // KnownChatTemplate reports whether name is a trusted template a plan may use.
 func KnownChatTemplate(name string) bool { return knownChatTemplates[name] }
 
-// Engine is the inference runtime a serve command is built for. A weight format
-// determines its engine: a different format is a different command vocabulary, so the
-// plan builder dispatches on it rather than assuming one runtime.
+// Engine is the runtime a serve command is built for. Each weight format has its own
+// engine and command vocabulary, so the plan builder dispatches on it.
 type Engine string
 
 const (
-	// EngineLlamaCpp serves GGUF weights with the llama.cpp server (CPU-offload capable,
-	// the portable path). It is also the default for an unspecified format.
+	// EngineLlamaCpp serves GGUF weights with the llama.cpp server, the portable path
+	// with CPU offload. It is the default for an unspecified format.
 	EngineLlamaCpp Engine = "llama.cpp"
-	// EngineVLLM serves safetensors weights with vLLM (the GPU-resident, high-throughput
-	// path). Its command builder is not wired yet, so a plan for it is refused rather than
-	// served with the wrong runtime.
+	// EngineVLLM serves safetensors weights with vLLM, the GPU-resident path.
 	EngineVLLM Engine = "vllm"
 )
 
-// EngineForFormat reports which runtime serves a weight format, and whether the format
-// is one a plan can be built for. An empty format defaults to llama.cpp so a caller that
-// does not record a format still gets the GGUF path it had before. A pickle (code-on-load)
-// format has no serving engine: it is refused at fetch and never reaches here.
+// EngineForFormat reports which runtime serves a weight format, and whether a plan can
+// be built for it. An empty format means llama.cpp. A pickle format has no engine; it is
+// refused at fetch, because loading it runs code.
 func EngineForFormat(f catalog.Format) (Engine, bool) {
 	switch f {
 	case "", catalog.FormatGGUF:
@@ -78,18 +65,15 @@ func EngineForFormat(f catalog.Format) (Engine, bool) {
 	}
 }
 
-// knownKVCacheTypes is the set of KV-cache element types a plan may request. Quantizing
-// the KV cache stretches the context that fits in a fixed VRAM budget; restricting to
-// recognized types keeps an unvalidated string from reaching the runtime's flag.
+// knownKVCacheTypes is the set of KV-cache element types a plan may request, so an
+// unvalidated string never reaches the runtime's flag.
 var knownKVCacheTypes = map[string]bool{
 	"f16": true, "q8_0": true, "q4_0": true, "q4_1": true, "q5_0": true, "q5_1": true,
 }
 
-// knownVLLMQuant is the set of quantization schemes a vLLM plan may pass to
-// --quantization. The list is restricted for the same reason the chat template is: an
-// unrecognized scheme could make the runtime guess or fall back, so only schemes known
-// to map to a real vLLM kernel are allowed. NVFP4 checkpoints are served through the
-// modelopt path ("modelopt_fp4"); add a scheme here once it is known good.
+// knownVLLMQuant is the set of --quantization schemes a vLLM plan may pass. An
+// unrecognized scheme could make the runtime guess or fall back, so only schemes that map
+// to a real vLLM kernel are allowed. NVFP4 checkpoints use "modelopt_fp4".
 var knownVLLMQuant = map[string]bool{
 	"awq": true, "awq_marlin": true, "gptq": true, "gptq_marlin": true, "marlin": true,
 	"fp8": true, "modelopt": true, "modelopt_fp4": true, "compressed-tensors": true,
@@ -99,113 +83,88 @@ var knownVLLMQuant = map[string]bool{
 // KnownVLLMQuant reports whether scheme is a vLLM quantization a plan may request.
 func KnownVLLMQuant(scheme string) bool { return knownVLLMQuant[scheme] }
 
-// knownVLLMKVCacheDtype is the set of KV-cache element types a vLLM plan may request via
-// --kv-cache-dtype. vLLM names these differently from llama.cpp, so it has its own set;
-// "auto" keeps the model's native dtype, the fp8 forms trade a little accuracy for room.
+// knownVLLMKVCacheDtype is the set of --kv-cache-dtype values a vLLM plan may request.
+// vLLM names these differently from llama.cpp, so it has its own set.
 var knownVLLMKVCacheDtype = map[string]bool{
 	"auto": true, "fp8": true, "fp8_e4m3": true, "fp8_e5m2": true,
 }
 
 // Config is everything needed to build a serve command for one local model.
 type Config struct {
-	// BinPath is the gated runtime server executable to run (an installed build).
+	// BinPath is the gated runtime server executable.
 	BinPath string
-	// WeightsPath is the verified GGUF weights file on disk to load.
+	// WeightsPath is the verified weights file.
 	WeightsPath string
-	// Model is the catalog entry being served; its ChatTemplate is the trusted contract.
+	// Model is the catalog entry; its ChatTemplate is the trusted contract.
 	Model catalog.ModelSpec
-	// Format is the weight encoding being served, which selects the runtime engine. Empty
-	// is treated as GGUF/llama.cpp so existing callers keep their behavior.
+	// Format selects the runtime engine. Empty means GGUF on llama.cpp.
 	Format catalog.Format
-	// Port is the loopback TCP port the server listens on. The caller picks a free one.
+	// Port is the loopback TCP port. The caller picks a free one.
 	Port int
-	// CtxSize is the context window to run with; 0 lets the runtime use the model default.
+	// CtxSize is the context window; 0 uses the model default.
 	CtxSize int
-	// CPUOnly forces the model to run entirely on the CPU with no GPU offload, the last-resort
-	// footprint for a model that will not fit in device memory. The default offloads to the GPU
-	// as the runtime sees fit. It overrides GPULayers and MoECPULayers.
+	// CPUOnly keeps the whole model on the CPU, the last-resort footprint for a model
+	// that does not fit in device memory. It overrides GPULayers and MoECPULayers.
 	CPUOnly bool
-	// GPULayers, when positive, is the number of model layers offloaded to the GPU
-	// (llama.cpp -ngl). Zero leaves the offload to the runtime's default. Ignored when
-	// CPUOnly is set.
+	// GPULayers, when positive, is the number of layers offloaded to the GPU (llama.cpp
+	// -ngl).
 	GPULayers int
 	// MoECPULayers, when positive, keeps that many mixture-of-experts layers on the CPU
-	// while the rest of the model stays on the GPU (llama.cpp -ncmoe). This is what lets a
-	// large-total, small-active MoE run on a modest GPU: hot weights in VRAM, the cold
-	// expert pages in system RAM. Ignored when CPUOnly is set.
+	// (llama.cpp -ncmoe), so a large MoE with few active experts runs on a modest GPU.
 	MoECPULayers int
-	// KVCacheType, when set, quantizes the KV cache to this element type (llama.cpp
-	// --cache-type-k/--cache-type-v), trading a little quality for room to hold more
-	// context in the same VRAM. It must be a recognized type or the plan is refused.
+	// KVCacheType quantizes the llama.cpp KV cache (--cache-type-k/-v) to fit more
+	// context in the same VRAM. An unrecognized type is refused.
 	KVCacheType string
-	// DraftWeightsPath, when set, names a small draft model the runtime uses for
-	// speculative decoding: the draft proposes tokens the primary verifies in a batch,
-	// raising throughput at no quality cost. Empty disables speculation.
+	// DraftWeightsPath names a small draft model for speculative decoding: it proposes
+	// tokens the primary verifies in a batch, raising throughput at no quality cost.
 	DraftWeightsPath string
-	// DraftMax and DraftMin bound how many tokens the draft proposes per step (llama.cpp
-	// --draft-max/--draft-min). They apply only when DraftWeightsPath is set; zero leaves
-	// the runtime default.
+	// DraftMax and DraftMin bound the tokens drafted per step (llama.cpp
+	// --draft-max/--draft-min); zero uses the runtime default.
 	DraftMax int
 	DraftMin int
-	// Quantization, when set, names the on-disk quantization scheme the vLLM engine loads
-	// the weights with (vLLM --quantization), for example "awq", "fp8", or "modelopt_fp4"
-	// for an NVFP4 checkpoint. It must be a recognized scheme or the plan is refused. It
-	// applies only to the vLLM engine; the llama.cpp engine reads the quantization from
-	// the GGUF file itself.
+	// Quantization is the vLLM --quantization scheme, for example "awq", "fp8" or
+	// "modelopt_fp4" for NVFP4. An unrecognized scheme is refused. llama.cpp reads the
+	// quantization from the GGUF file.
 	Quantization string
-	// GPUMemoryUtilization, when positive, is the fraction of GPU memory vLLM may reserve
-	// for weights and the KV cache (vLLM --gpu-memory-utilization), a value in (0,1]. Zero
-	// leaves vLLM's default. vLLM engine only.
+	// GPUMemoryUtilization is the fraction of GPU memory vLLM may reserve, in (0,1]
+	// (--gpu-memory-utilization). Zero uses vLLM's default.
 	GPUMemoryUtilization float64
-	// KVCacheDtype, when set, quantizes the vLLM KV cache to this element type (vLLM
-	// --kv-cache-dtype), for example "fp8". It must be a recognized vLLM type or the plan
-	// is refused. This is the vLLM counterpart to KVCacheType, which is llama.cpp's; a plan
-	// uses whichever matches its engine. vLLM engine only.
+	// KVCacheDtype is the vLLM counterpart to KVCacheType (--kv-cache-dtype), for
+	// example "fp8". An unrecognized type is refused.
 	KVCacheDtype string
-	// Containerized records that the vLLM server runs inside a container, so it must bind
-	// all interfaces inside the container's isolated network namespace for the engine's
-	// loopback-only published port to reach it. The off-host exposure stays closed: the
-	// container tier publishes the port bound to the host's loopback only, so binding
-	// 0.0.0.0 inside the container is reachable from the host loopback and nowhere else, and
-	// the client still targets the loopback BaseURL. A non-containerized server binds
-	// loopback directly. vLLM engine only.
+	// Containerized makes vLLM bind all interfaces inside the container's network
+	// namespace, so the engine's published port can reach it. The engine publishes that
+	// port on host loopback only, so the server is still unreachable off the host.
 	Containerized bool
-	// APIKey, when set, is required by the server on every request, so even a local
-	// process cannot reach the model without the token the caller holds. Optional.
+	// APIKey, when set, is required on every request, so another local process cannot
+	// reach the model without the caller's token.
 	APIKey string
-	// APIKeyFile names a file holding the key, for llama.cpp's --api-key-file. Unlike
-	// APIKey it keeps the token out of the command line, which any local user can read
-	// from the process table, so a per-launch token stays private to the account that
-	// owns the file. It is refused for vLLM, which has no equivalent flag and would
-	// otherwise force the key into argv. Optional.
+	// APIKeyFile names a file holding the key (llama.cpp --api-key-file), so the token
+	// stays out of argv, which any local user can read. It is refused for vLLM, which has
+	// no such flag.
 	APIKeyFile string
-	// ModelEmbedsTemplate records that the weights carry their own chat template, a
-	// signal from inspecting the file. The plan overrides it regardless; the field only
-	// surfaces that an override was necessary. Optional.
+	// ModelEmbedsTemplate records that the weights carry their own chat template. The
+	// plan overrides it either way.
 	ModelEmbedsTemplate bool
 }
 
 // Plan is a built, not-yet-run serve command and where it will answer.
 type Plan struct {
-	// Argv is the full command: the binary followed by its flags, ready to execute.
+	// Argv is the binary followed by its flags.
 	Argv []string
 	// Host and Port are the loopback address the server binds.
 	Host string
 	Port int
-	// BaseURL is the OpenAI-compatible endpoint a client targets once the server is up.
+	// BaseURL is the OpenAI-compatible endpoint a client targets.
 	BaseURL string
-	// TemplateOverridden is true when the model shipped its own chat template that this
-	// plan replaced with the trusted one.
+	// TemplateOverridden is true when the plan replaced a template the model shipped.
 	TemplateOverridden bool
 }
 
-// BuildPlan composes the serve command for cfg, or refuses it. It enforces the safety
-// invariants every runtime shares, once and centrally, before handing off to the
-// engine-specific command builder: the weights and binary are named, the port is a
-// usable TCP port, the model carries a trusted recognized chat template, and the format
-// maps to a runtime whose builder exists. So a plan can only ever describe a
-// loopback-bound server running a known prompt contract, whichever engine serves it. It
-// performs no I/O and starts nothing.
+// BuildPlan composes the serve command for cfg, or refuses it. It checks the invariants
+// every engine shares before the engine-specific builder runs: binary and weights named, a
+// usable port, a trusted chat template and a format with a wired engine. So any plan
+// describes a loopback-bound server with a known prompt contract.
 func BuildPlan(cfg Config) (Plan, error) {
 	if err := validateIdentity(cfg); err != nil {
 		return Plan{}, err
@@ -229,8 +188,7 @@ func BuildPlan(cfg Config) (Plan, error) {
 	case EngineVLLM:
 		argv = buildVLLMArgv(cfg)
 	default:
-		// The format selects a runtime whose command builder is not wired here. Refuse
-		// rather than serve it on the wrong engine.
+		// The engine's builder is not wired, so refuse instead of serving on the wrong one.
 		return Plan{}, fault.New(fault.Terminal, "launch_engine_unavailable", "launch: serving "+cfg.Model.ID+" needs the "+string(engine)+" runtime, which is not available yet")
 	}
 
@@ -243,8 +201,6 @@ func BuildPlan(cfg Config) (Plan, error) {
 	}, nil
 }
 
-// validateIdentity refuses a config that does not name a runnable local server: the
-// binary and weights, a local model, and a usable TCP port.
 func validateIdentity(cfg Config) error {
 	if cfg.BinPath == "" {
 		return fault.New(fault.Terminal, "launch_no_binary", "launch: no runtime binary path")
@@ -261,8 +217,7 @@ func validateIdentity(cfg Config) error {
 	return nil
 }
 
-// validateTemplate refuses a model with no trusted, recognized chat template, so no
-// plan can run without a vetted prompt contract.
+// validateTemplate refuses a model with no trusted chat template.
 func validateTemplate(cfg Config) error {
 	tmpl := cfg.Model.ChatTemplate
 	if tmpl == "" {
@@ -274,9 +229,9 @@ func validateTemplate(cfg Config) error {
 	return nil
 }
 
-// validateTuning refuses an efficiency knob outside its recognized range. It runs
-// after the identity and template checks so a structural fault is reported before a
-// tuning one, and before the engine is chosen so a bad knob is refused on either.
+// validateTuning refuses an efficiency knob outside its range. It runs after the identity
+// and template checks so a structural fault is reported first, and before the engine is
+// chosen so a bad knob is refused on either engine.
 func validateTuning(cfg Config) error {
 	if cfg.KVCacheType != "" && !knownKVCacheTypes[cfg.KVCacheType] {
 		return fault.New(fault.Terminal, "launch_bad_kv_cache", "launch: "+cfg.KVCacheType+" is not a recognized KV-cache type")
@@ -304,36 +259,32 @@ func validateTuning(cfg Config) error {
 	return nil
 }
 
-// buildLlamaCppArgv builds the llama.cpp server command for cfg with the trusted
-// template tmpl. The common invariants are already enforced by BuildPlan; this only
-// translates the configuration into llama.cpp's flag vocabulary, including the
-// efficiency levers (GPU/expert offload, KV-cache quantization, speculative decoding)
-// that let a large model run well on a modest GPU.
+// buildLlamaCppArgv translates cfg into llama.cpp flags with the trusted template tmpl.
+// BuildPlan has already enforced the shared invariants.
 func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 	argv := []string{
 		cfg.BinPath,
 		"--model", cfg.WeightsPath,
 		"--host", loopbackHost,
 		"--port", strconv.Itoa(cfg.Port),
-		// No browser UI: a headless agent server needs none, and it is attack surface.
+		// No web UI: an agent server needs none, and it is attack surface.
 		"--no-webui",
 	}
-	// Force the trusted contract; the model's embedded template is never used.
+	// The model's embedded template is never used.
 	argv = append(argv, templateArgs(tmpl)...)
 	if cfg.CtxSize > 0 {
 		argv = append(argv, "--ctx-size", strconv.Itoa(cfg.CtxSize))
 	}
 	switch {
 	case cfg.CPUOnly:
-		// Keep every layer on the CPU, so a model whose weights do not fit in device memory
-		// can still serve rather than failing to start.
+		// A model that does not fit in device memory still serves on the CPU.
 		argv = append(argv, "--n-gpu-layers", "0")
 	default:
 		if cfg.GPULayers > 0 {
 			argv = append(argv, "--n-gpu-layers", strconv.Itoa(cfg.GPULayers))
 		}
 		if cfg.MoECPULayers > 0 {
-			// Push the cold expert layers to system RAM while the rest stays on the GPU.
+			// Cold expert layers go to system RAM; the rest stays on the GPU.
 			argv = append(argv, "--n-cpu-moe", strconv.Itoa(cfg.MoECPULayers))
 		}
 	}
@@ -358,24 +309,17 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 	return argv
 }
 
-// buildVLLMArgv builds the vLLM serve command for cfg. BuildPlan already enforces the
-// safety invariants; this only translates the configuration into vLLM's flags. The server is
-// the same loopback-bound, optionally API-key-gated endpoint the llama.cpp path produces, so
-// a client reaches it the same way.
+// buildVLLMArgv translates cfg into vLLM flags. BuildPlan has already enforced the shared
+// invariants, so the server is the same loopback-bound, optionally key-gated endpoint as
+// the llama.cpp one. The model is served under its catalog id. The first element is an
+// absolute path for a host process, or the in-image command for a container.
 //
-// The model is served under its catalog id rather than its on-disk path, the quantization
-// scheme is passed through (an NVFP4 checkpoint loads via "modelopt_fp4"), and the GPU
-// levers (memory utilization, max model length, KV-cache dtype) are set when requested. The
-// first element is the runtime command: an absolute path for a host process, or the in-image
-// command for a container.
-//
-// It emits no chat-template flag because vLLM applies the model's own tokenizer template.
-// The catalog entry must still name a trusted template (BuildPlan checks it), so an entry
-// with no vetted prompt contract is refused on either engine.
+// It passes no chat-template flag, because vLLM applies the tokenizer's template. The
+// entry must still name a trusted template, so an entry without a vetted contract is
+// refused on either engine.
 func buildVLLMArgv(cfg Config) []string {
-	// Inside a container the server must bind all interfaces in its isolated namespace for
-	// the engine's host-loopback-published port to reach it; the off-host exposure is closed
-	// by that publish, not by this bind. A non-containerized vLLM binds loopback directly.
+	// See Config.Containerized: a container binds all interfaces, a host process binds
+	// loopback.
 	bindHost := loopbackHost
 	if cfg.Containerized {
 		bindHost = "0.0.0.0"
@@ -393,7 +337,7 @@ func buildVLLMArgv(cfg Config) []string {
 		argv = append(argv, "--gpu-memory-utilization", strconv.FormatFloat(cfg.GPUMemoryUtilization, 'f', -1, 64))
 	}
 	if cfg.CtxSize > 0 {
-		// vLLM expresses the context window as the maximum model length.
+		// vLLM calls the context window the maximum model length.
 		argv = append(argv, "--max-model-len", strconv.Itoa(cfg.CtxSize))
 	}
 	if cfg.KVCacheDtype != "" {

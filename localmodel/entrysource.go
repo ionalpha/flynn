@@ -13,14 +13,11 @@ import (
 // overlay gets entries this file can read back.
 const localRegistry = "local"
 
-// entrySource is the source a model that is not [TrustBlessed] is classified by. It is read
-// back from where the entry says its weights come from, the way the same reference typed by
-// hand would be, and is never a catalog source: a catalog source is classified trusted and
-// pinned, and an entry anyone but the curator wrote has earned neither.
-//
-// A claimed origin counts only when the weights are fetched from it. An entry that names a
-// recognized publisher but downloads from elsewhere is classified as the direct URL it is,
-// so the publisher cannot be borrowed by a download link that points somewhere else.
+// entrySource classifies a model that is not [TrustBlessed] by where its weights come
+// from, as the same reference typed by hand would be, and never as a catalog source,
+// because only the curator's entries earn pinned trust. A claimed origin counts only when
+// the weights are fetched from it, so a publisher's name cannot be borrowed by a download
+// link that points elsewhere.
 func entrySource(m Model) modelsource.Source {
 	if m.Source.Registry == localRegistry {
 		return modelsource.Source{Kind: modelsource.KindFile, Raw: m.ID, Path: strings.TrimPrefix(m.Source.URL, "file://")}
@@ -36,11 +33,10 @@ func entrySource(m Model) modelsource.Source {
 	return src
 }
 
-// fetchedFromRepo reports whether every download an entry names is under the Hub repository
-// it claims as its origin. An entry that names no download has no evidence of a fetch, so
-// it does not count. The path is cleaned before it is compared, because a prefix test on the
-// text would accept "/acme/tiny/../other/x.gguf" as a file of acme/tiny while the Hub serves
-// it from other.
+// fetchedFromRepo reports whether every download an entry names is under the Hub
+// repository it claims. An entry with no download does not count. Paths are cleaned
+// first, because a text prefix test would accept "/acme/tiny/../other/x.gguf" as a file
+// of acme/tiny.
 func fetchedFromRepo(m Model, src modelsource.Source) bool {
 	prefix := "/" + src.Owner + "/" + src.Repo + "/"
 	n := 0

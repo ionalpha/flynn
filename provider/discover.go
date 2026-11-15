@@ -14,9 +14,9 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// LocalModel is a model a running local server reports it already has. It comes from
-// the server's own answer, not from Flynn's catalog, so nothing about it is verified:
-// the size and the tool capability are what the server says.
+// LocalModel is a model a running local server reports it has. It comes from the
+// server's answer and nothing about it is verified: the size and the tool capability are
+// the server's claim.
 type LocalModel struct {
 	// Server is the provider kind that serves it: ollama or lmstudio.
 	Server string
@@ -37,9 +37,8 @@ type LocalModel struct {
 func (m LocalModel) Spec() string { return m.Server + ":" + m.ID }
 
 const (
-	// discoverTimeout bounds one probe. A server on the loopback host answers in
-	// milliseconds; a long wait would be a stalled or non-server port, and
-	// discovery runs in a listing command that must not hang on it.
+	// discoverTimeout bounds one probe. A loopback server answers in milliseconds, and
+	// discovery runs in a listing command that must not hang on a stalled port.
 	discoverTimeout = 750 * time.Millisecond
 	// discoverMaxBody caps what is read from a server, so a port that answers with
 	// something other than a model list cannot fill memory.
@@ -48,13 +47,12 @@ const (
 	discoverMaxModels = 64
 )
 
-// DiscoverLocal asks the local servers Flynn knows how to ask which models they
-// already have: Ollama through /api/tags and /api/show, LM Studio through
-// /v1/models. Each server is probed at the address a run would use (its default or
-// its *_BASE_URL reference in src), and only a base URL that is safe to send to is
-// probed. A server that is not running, answers with an error or answers with
-// something unexpected contributes no models; absence is the normal case, so it is
-// not an error. A nil hc uses a client with a short timeout.
+// DiscoverLocal asks the local servers Flynn knows (Ollama through /api/tags and
+// /api/show, LM Studio through /v1/models) which models they already have. Each is probed
+// at the address a run would use, its default or its *_BASE_URL reference in src, and only
+// when that base URL is safe to send to. A server that is down or answers badly
+// contributes no models and no error, because absence is the normal case. A nil hc uses a
+// client with a short timeout.
 func DiscoverLocal(ctx context.Context, src secret.Source, hc *http.Client) []LocalModel {
 	if hc == nil {
 		hc = &http.Client{Timeout: discoverTimeout}
@@ -81,9 +79,8 @@ func localBase(ctx context.Context, src secret.Source, kind string) (string, boo
 	return strings.TrimRight(base, "/"), true
 }
 
-// requestJSON performs one probe and decodes a 200 answer into v. Any failure,
-// including a transport error, reports false: the caller treats it as "no such
-// server".
+// requestJSON performs one probe and decodes a 200 answer into v. Any failure, a
+// transport error included, reports false, which the caller reads as no such server.
 func requestJSON(ctx context.Context, hc *http.Client, method, url string, body io.Reader, v any) bool {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {

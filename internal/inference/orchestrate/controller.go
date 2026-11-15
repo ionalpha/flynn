@@ -10,9 +10,8 @@ import (
 	"github.com/ionalpha/flynn/reconcile"
 )
 
-// DesiredState is what the controller should make true: the models that should be resident
-// and the device-memory budget they share. It is read fresh on every reconcile, so a change
-// in what the system wants is picked up without an event.
+// DesiredState is the models that should be resident and the device-memory budget they
+// share. It is read fresh on every reconcile, so a change needs no event.
 type DesiredState struct {
 	Models []Desired
 	Budget int64
@@ -23,56 +22,48 @@ type Provider interface {
 	Desired(ctx context.Context) (DesiredState, error)
 }
 
-// Server is the orchestrator's view of the running model servers: the resident set it can
-// observe, and the launch and evict it can drive. Launch and evict must be idempotent
-// (launching a running model and evicting an absent one are no-ops), which is what lets a
-// reconcile re-run safely. Launch takes a level: when the recovery policy has decided a model
-// keeps running out of memory or wedging, the controller asks for a smaller footprint, down to
-// a CPU-only run, instead of repeating the launch that failed.
+// Server is the orchestrator's view of the running model servers. Launch and Evict must
+// be idempotent so a reconcile can re-run safely. Launch takes a level, so a model that
+// keeps running out of memory or wedging is relaunched smaller, down to a CPU-only run.
 type Server interface {
 	Resident(ctx context.Context) ([]Resident, error)
 	Launch(ctx context.Context, modelID string, level LaunchLevel) error
 	Evict(ctx context.Context, modelID string) error
 }
 
-// serveKey is the controller's single reconcile key. The orchestrator reconciles the whole
-// resident set at once, because eviction is a global, budget-wide decision, so one key
-// drives one recomputation of the entire plan.
+// serveKey is the controller's single reconcile key. Eviction is a budget-wide decision,
+// so one key drives one recomputation of the whole plan.
 type serveKey struct{}
 
-// Controller drives the resident set toward the desired state on a reconcile loop. Each pass
-// re-reads the desired state and the observed resident set, computes a plan with Schedule,
-// and applies it: evictions first to free memory, then launches. An apply failure is reported
-// as a transient error so the loop backs off and retries, which is what makes the controller
-// self-healing. Because Schedule is a fixed point, a converged set produces an empty plan, so
-// a steady state does no work and cannot thrash.
+// Controller drives the resident set toward the desired state on a reconcile loop. Each
+// pass schedules a plan and applies it, evictions first to free memory. An apply failure
+// is a transient error, so the loop backs off and retries. Because [Schedule] is a fixed
+// point, a converged set does no work and cannot thrash.
 type Controller struct {
 	provider Provider
 	server   Server
 	ctrl     *reconcile.Controller[serveKey]
 	resync   time.Duration
-	// classify maps a launch error to a failure kind, so recovery can react to the cause.
+	// classify maps a launch error to a failure kind, so recovery reacts to the cause.
 	classify func(error) FailureKind
-	// failures is the per-model recovery memory consulted before a relaunch. It is only read
-	// or written inside reconcile, which the work queue runs one-at-a-time for the single
-	// serving key, so it needs no lock.
+	// failures is the per-model recovery memory. Only reconcile touches it, and the work
+	// queue runs that one at a time for the single key, so it needs no lock.
 	failures map[string]RecoveryState
 }
 
 // Option configures a Controller.
 type Option func(*Controller)
 
-// WithResync sets how often the controller re-reconciles without a trigger, the safety net
-// that re-checks desired against observed. A value <= 0 disables periodic resync, leaving
-// only the initial reconcile and explicit Trigger calls.
+// WithResync sets how often the controller reconciles without a trigger, as a safety
+// net. A value <= 0 leaves only the initial reconcile and explicit Trigger calls.
 func WithResync(d time.Duration) Option {
 	return func(c *Controller) { c.resync = d }
 }
 
-// WithClassifier sets how a launch error is mapped to a failure kind, which drives the
-// recovery response. Without one, every launch error is treated as a crash (retried a
-// bounded number of times, then quarantined); the serve layer injects a classifier that
-// recognizes out-of-memory and wedged-load failures so they degrade instead of repeating.
+// WithClassifier sets how a launch error maps to a failure kind. The default treats
+// every error as a crash, retried a bounded number of times and then quarantined; the
+// serve layer injects one that recognizes out-of-memory and wedged loads so they
+// degrade instead.
 func WithClassifier(f func(error) FailureKind) Option {
 	return func(c *Controller) {
 		if f != nil {
@@ -81,8 +72,7 @@ func WithClassifier(f func(error) FailureKind) Option {
 	}
 }
 
-// defaultClassify treats any launch error as a crash, the conservative default that retries
-// a bounded number of times and then quarantines, without assuming a memory cause.
+// defaultClassify treats any launch error as a crash, without assuming a memory cause.
 func defaultClassify(error) FailureKind { return FailureCrash }
 
 // NewController builds a controller that reconciles server toward what provider wants,
@@ -103,20 +93,19 @@ func NewController(provider Provider, server Server, clk clock.Timing, opts ...O
 	return c
 }
 
-// Trigger asks for a reconcile now, for example after the desired state changes. Triggers
-// collapse, so a burst of changes causes a single reconcile.
+// Trigger asks for a reconcile now. Triggers collapse, so a burst of changes causes one
+// reconcile.
 func (c *Controller) Trigger() { c.ctrl.Queue().Add(serveKey{}) }
 
-// Run drives the loop until ctx is cancelled. It triggers an initial reconcile so the current
-// desired state is applied at once, then blocks until every worker has drained.
+// Run drives the loop until ctx is cancelled, with an initial reconcile, then blocks
+// until every worker has drained.
 func (c *Controller) Run(ctx context.Context) {
 	c.Trigger()
 	c.ctrl.Run(ctx)
 }
 
-// reconcile is one pass of the loop: read the desired state and the observed resident set,
-// schedule, and apply. It asks to be re-run after the resync interval on success, so the loop
-// keeps converging even if a trigger is lost.
+// reconcile is one pass of the loop. On success it asks to be re-run after the resync
+// interval, so the loop keeps converging if a trigger is lost.
 func (c *Controller) reconcile(ctx context.Context, _ serveKey) (reconcile.Result, error) {
 	res := reconcile.Result{RequeueAfter: c.resync}
 	ds, err := c.provider.Desired(ctx)
@@ -139,9 +128,8 @@ func (c *Controller) reconcile(ctx context.Context, _ serveKey) (reconcile.Resul
 	return res, nil
 }
 
-// forgetUndesired clears the recovery memory of any model no longer in the desired set, so a
-// model that is removed and later wanted again starts with a clean slate rather than staying
-// quarantined from a previous life.
+// forgetUndesired clears the recovery memory of models no longer desired, so a model
+// wanted again later is not still quarantined.
 func (c *Controller) forgetUndesired(desired []Desired) {
 	if len(c.failures) == 0 {
 		return
@@ -157,13 +145,11 @@ func (c *Controller) forgetUndesired(desired []Desired) {
 	}
 }
 
-// apply carries out a plan, evicting before launching so freed memory is available to the new
-// models. Each launch is shaped by the model's recovery state: a model with no recent failure
-// launches normally, a memory or wedge failure launches degraded, and a model the policy has
-// quarantined is skipped (which is not an apply failure). A launch error is classified and
-// recorded so the next pass escalates; a clean launch clears the model's failure history.
-// Failures are collected into one transient error so a partial apply is retried rather than
-// abandoned, and every action is attempted even if an earlier one fails.
+// apply evicts before launching so freed memory is available to new models. A model's
+// recovery state shapes its launch: normal, degraded after a memory or wedge failure,
+// or skipped when quarantined. A failed launch is recorded so the next pass escalates,
+// and a clean one clears the history. Every action is attempted, and the failures are
+// collected into one transient error so a partial apply is retried.
 func (c *Controller) apply(ctx context.Context, p Plan) error {
 	var failed int
 	var first error
@@ -180,8 +166,7 @@ func (c *Controller) apply(ctx context.Context, p Plan) error {
 		if st, failing := c.failures[id]; failing {
 			switch Recover(st) {
 			case RecoverQuarantine:
-				// Stop launching this model until its desired state changes; a skip is not an
-				// apply failure.
+				// Skip until the desired state changes; a skip is not an apply failure.
 				continue
 			case RecoverFallback:
 				level = LaunchMinimal
@@ -207,8 +192,8 @@ func (c *Controller) apply(ctx context.Context, p Plan) error {
 	return nil
 }
 
-// recordFailure classifies a launch error and advances the model's recovery state, so the
-// next pass escalates the response per the recovery ladder.
+// recordFailure classifies a launch error and advances the model's recovery state, so
+// the next pass escalates.
 func (c *Controller) recordFailure(id string, err error) {
 	st := c.failures[id]
 	st.Kind = c.classify(err)
