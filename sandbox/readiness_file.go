@@ -10,23 +10,17 @@ import (
 	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
-// ErrReadinessFileWritable reports a readiness file path that a confined command could
-// write. A host that trusts the file to decide whether the runner is ready would trust a
-// command's forgery of it.
+// ErrReadinessFileWritable reports a path a confined command could write, and so
+// forge a pass in.
 var ErrReadinessFileWritable = errors.New("sandbox: readiness file is in a path a confined command can write")
 
-// scratchRoots are the locations the confined view leaves writable for ordinary tooling
-// besides the working directory (see confineMounts).
+// scratchRoots are what confineMounts leaves writable besides the working directory.
 var scratchRoots = []string{"/tmp", "/dev/shm", "/var/tmp"}
 
-// WriteReadinessFile records r as JSON at path, atomically and readable only by this
-// user, for a supervisor that gates the runner's readiness on it. It writes the result of
-// every check, refusals included, so a stale pass never outlives the host that earned it.
-//
-// The write fails with [ErrReadinessFileWritable] when path lies under the working
-// directory or a writable directory a confined command is given ([Local.WritableRoots]),
-// or under the scratch areas the confined view leaves writable, since a command could then
-// write a pass. Both sides are compared with symbolic links resolved.
+// WriteReadinessFile writes r as JSON, atomically and owner-only. Refusals are
+// written too, so a stale pass never survives. A path under [Local.WritableRoots]
+// or the scratch areas fails with [ErrReadinessFileWritable]; symlinks are
+// resolved on both sides.
 func WriteReadinessFile(path string, r Readiness, writable ...string) error {
 	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
@@ -48,15 +42,13 @@ func WriteReadinessFile(path string, r Readiness, writable ...string) error {
 	return fsatomic.WriteFile(target, append(b, '\n'), 0o600)
 }
 
-// WritableRoots lists every host directory a command confined by this Local can write:
-// its working directory and the directories granted with [WithWritableDir]. A caller
-// passes it to [WriteReadinessFile] so the readiness file lands outside them.
+// WritableRoots is the working directory plus every [WithWritableDir], for
+// [WriteReadinessFile].
 func (l *Local) WritableRoots() []string {
 	return append([]string{l.root}, l.WritableDirs()...)
 }
 
-// pathWithin reports whether child is parent or a path nested under it, with both
-// already absolute and cleaned.
+// pathWithin takes absolute, cleaned paths; child may equal parent.
 func pathWithin(child, parent string) bool {
 	if child == parent {
 		return true

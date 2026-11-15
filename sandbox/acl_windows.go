@@ -8,15 +8,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// mergeAccessEntry applies entry to path's access list, merged with the list already
-// there so nothing that had access loses it. Every grant and revoke this package
-// performs is the same read-modify-write against a named object, and the entry is the
-// only part that varies: the mask, the inheritance and whether it sets or revokes.
-//
-// Merging rather than replacing is what makes a grant idempotent. windows.ACLFromEntries
-// resolves a second entry for a trustee already present by replacing that trustee's
-// entries, so re-granting on every launch does not stack duplicates, and a REVOKE_ACCESS
-// entry drops the trustee's entries and leaves every other one intact.
+// mergeAccessEntry merges entry into path's list so nothing loses access. The
+// merge makes a grant idempotent: windows.ACLFromEntries replaces a trustee's
+// existing entries, so re-granting does not stack, and REVOKE_ACCESS drops only
+// that trustee's.
 func mergeAccessEntry(path string, entry windows.EXPLICIT_ACCESS) error {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
@@ -36,9 +31,8 @@ func mergeAccessEntry(path string, entry windows.EXPLICIT_ACCESS) error {
 	return nil
 }
 
-// sidTrustee names sid as the subject of an access entry. kind is the trustee type the
-// entry claims sid is: the per-workspace container identities are groups, and the
-// well-known all-application-packages sid must be declared as a well-known group.
+// sidTrustee takes kind because container identities are groups and ALL
+// APPLICATION PACKAGES must be declared a well-known group.
 func sidTrustee(sid *windows.SID, kind windows.TRUSTEE_TYPE) windows.TRUSTEE {
 	return windows.TRUSTEE{
 		TrusteeForm:  windows.TRUSTEE_IS_SID,

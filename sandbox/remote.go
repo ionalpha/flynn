@@ -7,36 +7,27 @@ import (
 	"strings"
 )
 
-// Transport is the minimal set of primitives a remote sandbox backend provides:
-// run a command, move a file in or out, list files, and tear the sandbox down. It
-// is the Flynn-owned port each cloud backend (E2B, Daytona, Modal, ...) implements
-// over its own API or CLI, so a backend writes only this surface and inherits the
-// full Sandbox port through Remote. Paths are relative to the remote sandbox root;
-// the backend confines them server-side, and Remote adds a default-deny check on
-// top so confinement never depends on the backend alone.
+// Transport is what a cloud backend (E2B, Daytona, Modal) implements to get the
+// full Sandbox port through Remote. Paths are relative to the remote root. Remote
+// checks them before the backend does, so confinement never rests on the backend
+// alone.
 type Transport interface {
-	// Exec runs a shell command in the remote working directory. A non-zero exit is
-	// a result (in ExecResult.ExitCode), not an error; an error means the command
-	// could not be run.
+	// Exec reports a non-zero exit in ExecResult.ExitCode; an error means the
+	// command did not run.
 	Exec(ctx context.Context, line string) (ExecResult, error)
-	// ReadFile reads a file from the remote working directory.
+	// ReadFile takes a path Remote has already confined.
 	ReadFile(ctx context.Context, p string) ([]byte, error)
-	// WriteFile writes a file in the remote working directory, creating parents.
+	// WriteFile creates parent directories.
 	WriteFile(ctx context.Context, p string, data []byte) error
-	// List returns the regular-file paths under dir (recursive), relative to the
-	// remote root. It is the primitive Glob and Walk build on, so a backend exposes
-	// one listing call rather than two.
+	// List returns regular files under dir, recursively, relative to the remote
+	// root. Glob and Walk both build on it.
 	List(ctx context.Context, dir string) ([]string, error)
-	// Close tears down the remote sandbox and releases its resources.
+	// Close tears down the remote sandbox.
 	Close(ctx context.Context) error
 }
 
-// Remote is the remote sandbox tier: it implements the Sandbox port by mapping
-// each operation onto a Transport, so isolation runs server-side in a cloud
-// microVM while the host only orchestrates. It is platform-agnostic (the host
-// never executes the work) and the same on Linux, macOS, and Windows. Path
-// confinement is enforced here as defense-in-depth before any call reaches the
-// backend, matching the Local tier's default-deny boundary.
+// Remote runs the work server-side over a Transport, so it behaves the same on
+// every host platform. It confines paths before any call reaches the backend.
 type Remote struct {
 	t Transport
 }
@@ -46,12 +37,12 @@ func NewRemote(t Transport) *Remote { return &Remote{t: t} }
 
 var _ Sandbox = (*Remote)(nil)
 
-// Exec runs a command in the remote sandbox.
+// Exec sends only Command.Line; the other fields are ignored.
 func (r *Remote) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	return r.t.Exec(ctx, cmd.Line)
 }
 
-// ReadFile reads a confined file from the remote sandbox.
+// ReadFile returns [ErrDenied] for a path outside the root.
 func (r *Remote) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	c, err := confine(p)
 	if err != nil {
@@ -60,7 +51,7 @@ func (r *Remote) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	return r.t.ReadFile(ctx, c)
 }
 
-// WriteFile writes a confined file in the remote sandbox.
+// WriteFile returns [ErrDenied] for a path outside the root.
 func (r *Remote) WriteFile(ctx context.Context, p string, data []byte) error {
 	c, err := confine(p)
 	if err != nil {
@@ -69,9 +60,8 @@ func (r *Remote) WriteFile(ctx context.Context, p string, data []byte) error {
 	return r.t.WriteFile(ctx, c, data)
 }
 
-// Glob lists remote paths matching a shell pattern, relative to the root. The
-// pattern is matched against each listed path with path.Match (no "**"), so it
-// behaves consistently across backends rather than depending on a remote shell.
+// Glob matches with path.Match (no "**") on every listed path, so the result does
+// not depend on a backend's shell.
 func (r *Remote) Glob(ctx context.Context, pattern string) ([]string, error) {
 	entries, err := r.t.List(ctx, ".")
 	if err != nil {
@@ -86,8 +76,7 @@ func (r *Remote) Glob(ctx context.Context, pattern string) ([]string, error) {
 	return out, nil
 }
 
-// Walk returns the regular-file paths under a confined root, relative to the
-// sandbox root.
+// Walk returns [ErrDenied] for a root outside the sandbox.
 func (r *Remote) Walk(ctx context.Context, root string) ([]string, error) {
 	c, err := confine(root)
 	if err != nil {
@@ -96,14 +85,11 @@ func (r *Remote) Walk(ctx context.Context, root string) ([]string, error) {
 	return r.t.List(ctx, c)
 }
 
-// Close tears down the remote sandbox.
+// Close tears down the remote sandbox with a background context.
 func (r *Remote) Close() error { return r.t.Close(context.Background()) }
 
-// confine validates that a caller-supplied path stays within the sandbox root and
-// returns it cleaned, in slash form. An absolute path or one that escapes the root
-// via ".." is denied (default-deny), the same boundary the Local tier enforces, so
-// the guarantee holds even if a backend's own confinement is weaker. An empty path
-// is the root itself (".").
+// confine returns p cleaned in slash form, denying an absolute path or a ".."
+// escape so the guarantee holds over a weaker backend. Empty is the root.
 func confine(p string) (string, error) {
 	clean := path.Clean(filepath.ToSlash(p))
 	if clean == "" || clean == "." {

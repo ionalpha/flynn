@@ -6,23 +6,19 @@ import (
 	"path/filepath"
 )
 
-// ErrReadDeny reports that a path named by [WithUnreadablePaths] cannot be hidden from the
-// confined command: the platform has no way to hide it, the Local does not confine the
-// host's filesystem, or the set contradicts the grants. It fails the launch and is never absorbed
-// by [WithBestEffortConfinement]: a command that was to be kept away from a runner's
-// credentials and ran without that is the failure the option exists to prevent.
+// ErrReadDeny reports a [WithUnreadablePaths] path that cannot be hidden: the
+// platform cannot, the host filesystem is not confined, or a grant contains it.
+// [WithBestEffortConfinement] never absorbs it, because running beside exposed
+// credentials is the failure the option prevents.
 var ErrReadDeny = errors.New("sandbox: cannot hide a configured path from the command")
 
-// WithUnreadablePaths hides files and directories from a confined command, for a runner
-// whose data directory, control socket and credential files sit beside the commands it
-// launches; the default confinement leaves the host readable.
-//
-// It requires [WithReadOnlyFS] and a platform that can hide a path ([ReadDenySupported]).
-// Linux covers each path in the command's own mount view, so it reads as empty; macOS
-// denies every access under it, so a read fails with a permission error and a file created
-// there later stays hidden. On Windows, or when a path contains the working directory or a
-// grant, the launch fails with [ErrReadDeny]. Paths are made absolute and symlink-free
-// once; a path reachable under a second name (another bind mount) is not hidden under it.
+// WithUnreadablePaths hides paths from a confined command, for a runner whose
+// credentials sit beside what it launches. It requires [WithReadOnlyFS] and
+// [ReadDenySupported]. On Linux a path reads as empty; on macOS access fails with
+// a permission error, and a file created later stays hidden. On Windows, or when a
+// path contains the working directory or a grant, the launch fails with
+// [ErrReadDeny]. Paths are resolved once, so a second name (another bind mount)
+// is not hidden.
 func WithUnreadablePaths(paths ...string) LocalOption {
 	return func(l *Local) {
 		for _, p := range paths {
@@ -41,19 +37,16 @@ func WithUnreadablePaths(paths ...string) LocalOption {
 	}
 }
 
-// ReadDenySupported reports whether this platform can hide a path from a command it
-// confines, which is whether [WithUnreadablePaths] can launch at all. It is true on Linux
-// and macOS and false on Windows, so a caller can choose what to do there before a launch
-// refuses.
+// ReadDenySupported is true on Linux and macOS, so a caller can decide before a
+// [WithUnreadablePaths] launch refuses.
 func ReadDenySupported() bool { return readDenyEnforceable() }
 
-// UnreadablePaths lists the paths hidden from the commands this Local confines, so a
-// record of the run can show what the command was kept away from.
+// UnreadablePaths returns a copy, for a run record of what was hidden.
 func (l *Local) UnreadablePaths() []string { return append([]string(nil), l.unreadable...) }
 
-// guardLaunch refuses a launch the Local cannot honour before any dispatch: confinement
-// the platform lacks, governed egress without an enforcement leg, a network denial the
-// tier cannot enforce, and a read-deny set that cannot be applied. Every launch path calls it first, so none has a check of its own.
+// guardLaunch refuses, before dispatch, confinement the platform lacks, egress or
+// network denial it cannot enforce, and a read-deny set that cannot apply. Every
+// launch path calls it first.
 func (l *Local) guardLaunch() error {
 	if err := l.guardUnsupported(); err != nil {
 		return err
@@ -88,8 +81,7 @@ func (l *Local) guardReadDeny() error {
 	return nil
 }
 
-// keptVisible lists the paths the command is meant to use: its working directory and every
-// directory granted to it.
+// keptVisible is the working directory and every granted directory.
 func (l *Local) keptVisible() []string {
 	kept := append([]string{l.root}, l.writableDirs...)
 	return append(kept, l.readableDirs...)

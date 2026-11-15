@@ -12,31 +12,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// socketpair is unix.Socketpair, indirected so a test can drive openHandoff's two failure
-// branches. Neither fails in practice: the kernel refuses a socketpair only when the
-// process is out of descriptors, and the pair it returns is always a unix socket. Both
-// branches still promise something a caller relies on, that nothing has been attached to
-// the command and no descriptor leaks, so they are exercised rather than assumed.
+// socketpair is a variable so a test can drive openHandoff's failure branches,
+// which promise that nothing is attached to the command and no descriptor leaks.
 var socketpair = unix.Socketpair
 
-// openHandoff builds the socketpair a launcher hands a listening socket back on, and wires
-// the launcher's end into the command about to be run. A socket keeps the network namespace
-// it was created in, so the only way this process can accept connections made inside the
-// child's namespace is for the launcher to create the listener there and send the descriptor
-// out. kind names the handoff in errors and descriptor names ("egress", "forward"); envOn and
-// envFD are the control variables telling the launcher to build the endpoint and which
-// inherited descriptor to send it back on.
+// openHandoff wires the launcher's end of a socketpair into c, because a socket
+// keeps the namespace it was made in, so only the launcher can create a listener
+// the child's connections reach. kind ("egress", "forward") names the handoff;
+// envOn and envFD tell the launcher to build it and where to send it.
 //
-// The returned parent is this end of the pair. It is a net.UnixConn rather than a bare
-// descriptor because a serve goroutine blocks on it while release may close it (a launcher
-// that dies before sending never unblocks the receive), and only a poller-managed connection
-// makes that safe; closing a raw descriptor mid-read is a use-after-close. child is the
-// launcher's end, owned by the exec.Cmd from here on and closed only by the caller's
-// release. On error both ends are closed and nothing has been attached to c.
+// parent is a net.UnixConn because release may close it while serve blocks on it,
+// and closing a raw descriptor mid-read is a use-after-close. child belongs to the
+// exec.Cmd and is closed only by release. On error nothing is attached to c.
 func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, child *os.File, err error) {
-	// SOCK_CLOEXEC so an unrelated fork does not inherit the handoff. The descriptor the
-	// launcher gets is not this one: exec.Cmd dups ExtraFiles into the child and clears
-	// close-on-exec on the dup, which is what lets it survive the launcher's own exec.
+	// SOCK_CLOEXEC so an unrelated fork does not inherit it. exec.Cmd clears the flag
+	// on the dup it gives the launcher.
 	pair, err := socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sandbox: %s handoff socketpair: %w", kind, err)
@@ -59,12 +49,9 @@ func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, 
 	return parent, child, nil
 }
 
-// unixConnFromFile turns one end of the handoff socketpair into the net.UnixConn the
-// serve and release goroutines share, and takes ownership of f either way: FileConn dups
-// the descriptor, so the original is closed here whether it succeeded or not. kind names
-// the handoff in the errors. A descriptor that is not a socket at all, or is a socket of
-// some other family, is reported rather than used, because everything downstream reads
-// SCM_RIGHTS control messages off it and would otherwise fail somewhere less obvious.
+// unixConnFromFile closes f in every case, because FileConn dups it. A descriptor
+// that is not a unix socket is an error here, because everything downstream reads
+// SCM_RIGHTS off it and would fail less clearly.
 func unixConnFromFile(f *os.File, kind string) (*net.UnixConn, error) {
 	conn, err := net.FileConn(f)
 	_ = f.Close()

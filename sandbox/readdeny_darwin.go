@@ -2,7 +2,5 @@
 
 package sandbox
 
-// readDenyEnforceable reports whether this platform can hide a path from a confined
-// command. macOS can: the seatbelt profile denies reads and writes under each hidden path
-// (see seatbeltHidden).
+// readDenyEnforceable is true because seatbeltHidden denies all access under a path.
 func readDenyEnforceable() bool { return true }
