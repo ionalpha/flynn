@@ -254,8 +254,8 @@ tiers:
 - **Stable surface** (the embedding contract): the root `agent` facade and the ports
   a host implements or consumes: `state`, `observe`, `llm`, `capability`, `fault`,
   `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`,
-  `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, and `chain`
-  (external verifiers import it). Breaking one is a major-version change.
+  `clock`, `ids`, `provider`, `usage`, `storage/sqlite`, `memory/memorytest`, and
+  `chain` (external verifiers import it). Breaking one is a major-version change.
 - **Domain surface** (`goal`, `mission`, `reconcile`, `session`, `runtime`,
   `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
   `orchestration`, `dispatch`, `approval`, ...): importable, and **unstable until
@@ -266,9 +266,11 @@ tiers:
 A port is stable when a conformance suite can say what a correct backend is, and
 every type its exported API names is stable too. `resource.Store` returns a
 `resource.Resource`, which embeds `envelope.Envelope` and is stamped from an
-`hlc.Clock`, so `envelope` and `hlc` are stable with it. The ports a host implements
-are `resource.Store` (with the optional `KeyLister` and `AnyScopeGetter`),
-`spine.Log`, `jobs.Queue` (with `Waker`) and `state.MemoryStore`; a backend must pass
+`hlc.Clock`, so `envelope` and `hlc` are stable with it. `state.ModelUsageStore`
+stores `usage.Record` values, so `usage` is stable with it. The ports a host
+implements are `resource.Store` (with the optional `KeyLister` and `AnyScopeGetter`),
+`spine.Log`, `jobs.Queue` (with `Waker`), `state.MemoryStore` and
+`state.ModelUsageStore` (found through `state.ModelUsageProvider`); a backend must pass
 `resourcetest`, `spinetest`, `jobstest`, `statetest` or `memory/memorytest`. Each
 suite sits under the package it checks, except `memory/memorytest`: `memory` is a
 concrete facade a host calls, its constructor is still changing, and the port it

@@ -37,7 +37,7 @@ ACCEPTED="dev/apidiff-accepted.txt"
 # Stability tiers section of ARCHITECTURE.md and the table in docs/VERSIONING.md;
 # internal/rigor fails when the three disagree, and when a stable package names a
 # type from a package outside this list in its exported API.
-STABLE=". capability chain clock envelope fault hlc ids jobs llm memory/memorytest observe provider resource sandbox secret spine state storage/sqlite tools"
+STABLE=". capability chain clock envelope fault hlc ids jobs llm memory/memorytest observe provider resource sandbox secret spine state storage/sqlite tools usage"
 
 # Conformance suites. Each one is the executable half of a port in STABLE, and a
 # change that makes an implementation which passed fail is a break of that port

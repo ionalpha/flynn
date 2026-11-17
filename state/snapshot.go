@@ -3,6 +3,8 @@ package state
 import (
 	"encoding/json"
 	"sort"
+
+	"github.com/ionalpha/flynn/usage"
 )
 
 // Snapshot is the state projection up to LastSeq, enough to restore the read
@@ -18,7 +20,10 @@ type Snapshot struct {
 	Items      []MemoryItem      `json:"items"`
 	Usage      []MemoryUsage     `json:"usage,omitempty"`
 	Promotions []MemoryPromotion `json:"promotions,omitempty"`
-	SlugToID   map[string]string `json:"slugToID,omitempty"`
+	// ModelUsageRecords are the stored model usage [usage.Record]s, kept so a store
+	// resuming from a snapshot does not lose the records before it.
+	ModelUsageRecords []usage.Record    `json:"modelUsage,omitempty"`
+	SlugToID          map[string]string `json:"slugToID,omitempty"`
 }
 
 // MarshalSnapshot sorts every collection before encoding, so a projection
@@ -29,6 +34,7 @@ func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	sort.Slice(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
 	SortUsage(s.Usage)
 	SortPromotions(s.Promotions)
+	SortModelUsageRecords(s.ModelUsageRecords)
 	sort.Slice(s.Turns, func(i, j int) bool {
 		if s.Turns[i].SessionID != s.Turns[j].SessionID {
 			return s.Turns[i].SessionID < s.Turns[j].SessionID
@@ -64,6 +70,9 @@ func (c *core) snapshotLocked() Snapshot {
 	for _, pr := range c.memPromo {
 		s.Promotions = append(s.Promotions, pr)
 	}
+	for _, r := range c.modelUsageRecs {
+		s.ModelUsageRecords = append(s.ModelUsageRecords, r)
+	}
 	for k, v := range c.slugToID {
 		s.SlugToID[k] = v
 	}
@@ -86,6 +95,10 @@ func (c *core) restoreLocked(s Snapshot) {
 	c.memPromo = make(map[string]MemoryPromotion, len(s.Promotions))
 	for _, pr := range s.Promotions {
 		c.memPromo[pr.MemoryID] = pr
+	}
+	c.modelUsageRecs = make(map[modelUsageIdent]usage.Record, len(s.ModelUsageRecords))
+	for _, r := range s.ModelUsageRecords {
+		c.modelUsageRecs[modelUsageIdent{r.Run, r.Call}] = r
 	}
 	for _, ses := range s.Sessions {
 		c.sessions[ses.ID] = ses
