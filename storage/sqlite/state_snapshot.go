@@ -3,11 +3,9 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
-	"github.com/ionalpha/flynn/usage"
 )
 
 const turnCols = `id, session_id, seq, role, content, created_at,
@@ -112,12 +110,8 @@ func (s *Store) readStateSnapshot(ctx context.Context) (state.Snapshot, error) {
 	}
 
 	if err := s.scanRows(ctx, `SELECT record FROM model_usage ORDER BY at, call_id, run_id`, func(rows *sql.Rows) error {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
-		}
-		var r usage.Record
-		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		r, err := scanUsageRecord(rows)
+		if err != nil {
 			return err
 		}
 		snap.ModelUsageRecords = append(snap.ModelUsageRecords, r)

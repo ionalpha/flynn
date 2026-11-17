@@ -12,19 +12,19 @@ import (
 	"github.com/ionalpha/flynn/usage"
 )
 
-// ModelUsage returns the model usage store, valid until Close. It is offered outside
+// Usage returns the model usage store, valid until Close. It is offered outside
 // [state.Provider], which a host may already implement, and found by asserting
-// [state.ModelUsageProvider].
-func (s *Store) ModelUsage() state.ModelUsageStore { return &modelUsageStore{s} }
+// [state.UsageProvider].
+func (s *Store) Usage() state.UsageStore { return &modelUsageStore{s} }
 
-// modelUsageStore applies the identity rules of [state.PlanModelUsageAppend] inside the
+// modelUsageStore applies the identity rules of [state.PlanUsageAppend] inside the
 // transaction that writes, so two processes appending the same key cannot both
 // find it absent.
 type modelUsageStore struct{ p *Store }
 
 var (
-	_ state.ModelUsageProvider = (*Store)(nil)
-	_ state.ModelUsageStore    = (*modelUsageStore)(nil)
+	_ state.UsageProvider = (*Store)(nil)
+	_ state.UsageStore    = (*modelUsageStore)(nil)
 )
 
 // errNothingNew ends an append whose records were all stored already. It rolls
@@ -32,7 +32,7 @@ var (
 // retry; Append turns it into success.
 var errNothingNew = errors.New("sqlite: usage records already stored")
 
-// modelUsageOrder matches [state.SortModelUsageRecords]. Fixed-width UTC at makes string
+// modelUsageOrder matches [state.SortUsageRecords]. Fixed-width UTC at makes string
 // order time order.
 const modelUsageOrder = ` ORDER BY at, call_id, run_id`
 
@@ -68,7 +68,7 @@ func (u *modelUsageStore) Append(ctx context.Context, records ...usage.Record) e
 		return nil
 	}
 	err := u.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
-		fresh, err := state.PlanModelUsageAppend(records, func(run, call string) (usage.Record, bool, error) {
+		fresh, err := state.PlanUsageAppend(records, func(run, call string) (usage.Record, bool, error) {
 			return lookupModelUsageTx(ctx, tx, run, call)
 		})
 		if err != nil {
@@ -112,12 +112,8 @@ func (u *modelUsageStore) query(ctx context.Context, q string, args ...any) ([]u
 	defer func() { _ = rows.Close() }()
 	out := []usage.Record{}
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var r usage.Record
-		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		r, err := scanUsageRecord(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -125,17 +121,25 @@ func (u *modelUsageStore) query(ctx context.Context, q string, args ...any) ([]u
 	return out, rows.Err()
 }
 
+// scanUsageRecord reads the record column of one row. Every read decodes the
+// JSON and never the indexed columns, so a field added to [usage.Record] after
+// the table was made comes back intact.
+func scanUsageRecord(row interface{ Scan(dest ...any) error }) (usage.Record, error) {
+	var raw []byte
+	err := row.Scan(&raw)
+	var r usage.Record
+	if err == nil {
+		err = json.Unmarshal(raw, &r)
+	}
+	return r, err
+}
+
 func lookupModelUsageTx(ctx context.Context, tx *sql.Tx, run, call string) (usage.Record, bool, error) {
-	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT record FROM model_usage WHERE run_id = ? AND call_id = ?`, run, call).Scan(&raw)
+	r, err := scanUsageRecord(tx.QueryRowContext(ctx, `SELECT record FROM model_usage WHERE run_id = ? AND call_id = ?`, run, call))
 	if errors.Is(err, sql.ErrNoRows) {
 		return usage.Record{}, false, nil
 	}
 	if err != nil {
-		return usage.Record{}, false, err
-	}
-	var r usage.Record
-	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		return usage.Record{}, false, err
 	}
 	return r, true, nil

@@ -82,7 +82,7 @@ one for the binary.
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `governed/assemble.go`, `governed/learning.go` | shipped |
 | `allowance.Policy` | `allowance.Actions` | `governed/allowance.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
-| `state.ModelUsageStore` | `storage/sqlite` (`store.ModelUsage()`), `statetest.NewMemoryModelUsageStore` | none yet: a collector that appends one `usage.Record` per model call, and an entry point that reads totals back | gap |
+| `state.UsageStore` | `storage/sqlite` (`store.Usage()`), `statetest.NewMemoryUsageStore` | none yet: a collector that appends one `usage.Record` per model call, and an entry point that reads totals back | gap |
 
 `allowance.Policy` marks nothing until the operator names an action with
 `--irreversible`. Dispatch sees an action's name and never its arguments, and one name
@@ -390,7 +390,7 @@ injected. Not implementing one is supported; the table gives the fallback.
 | `chain.FlushNodeStore` | the durable node store | a checkpoint is signed without forcing buffered nodes first, so a crash can leave proof nodes short of the size the checkpoint claims |
 | `resource.KeyLister` | both bundled backends | the reconcile resync lists records instead of keys, copying every record of the kind to enqueue names |
 | `resource.AnyScopeGetter` | a backend with a name index | the caller falls back to `ListAll` and a name scan |
-| `state.ModelUsageProvider` | `storage/sqlite.Store` | a caller that records model usage finds no store, says so, and carries on, because losing the account of a call is no reason to fail the run that made it |
+| `state.UsageProvider` | `storage/sqlite.Store` | a caller that records model usage finds no store, says so, and carries on, because losing the account of a call is no reason to fail the run that made it |
 | `sandbox.Contained` | `sandbox.Local` with confinement, the container and microVM backends | the sandbox is treated as the weakest tier, so an unknown tier is never assumed to contain more than it proves |
 | `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
 | `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |

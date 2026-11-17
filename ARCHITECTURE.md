@@ -254,8 +254,8 @@ tiers:
 - **Stable surface** (the embedding contract): the root `agent` facade and the ports
   a host implements or consumes: `state`, `observe`, `llm`, `capability`, `fault`,
   `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`,
-  `clock`, `ids`, `provider`, `usage`, `storage/sqlite`, `memory/memorytest`, and
-  `chain` (external verifiers import it). Breaking one is a major-version change.
+  `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, and `chain`
+  (external verifiers import it). Breaking one is a major-version change.
 - **Domain surface** (`goal`, `mission`, `reconcile`, `session`, `runtime`,
   `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
   `orchestration`, `dispatch`, `approval`, ...): importable, and **unstable until
@@ -266,11 +266,10 @@ tiers:
 A port is stable when a conformance suite can say what a correct backend is, and
 every type its exported API names is stable too. `resource.Store` returns a
 `resource.Resource`, which embeds `envelope.Envelope` and is stamped from an
-`hlc.Clock`, so `envelope` and `hlc` are stable with it. `state.ModelUsageStore`
-stores `usage.Record` values, so `usage` is stable with it. The ports a host
+`hlc.Clock`, so `envelope` and `hlc` are stable with it. The ports a host
 implements are `resource.Store` (with the optional `KeyLister` and `AnyScopeGetter`),
 `spine.Log`, `jobs.Queue` (with `Waker`), `state.MemoryStore` and
-`state.ModelUsageStore` (found through `state.ModelUsageProvider`); a backend must pass
+`state.UsageStore` (found through `state.UsageProvider`); a backend must pass
 `resourcetest`, `spinetest`, `jobstest`, `statetest` or `memory/memorytest`. Each
 suite sits under the package it checks, except `memory/memorytest`: `memory` is a
 concrete facade a host calls, its constructor is still changing, and the port it
@@ -282,14 +281,15 @@ arrives as a separate optional interface found by type assertion, the way
 `KeyLister` and `Waker` extend their ports, and a caller that does not find it
 refuses.
 
-Six places where a stable package exposes an unstable type are listed with reasons
+Seven places where a stable package exposes an unstable type are listed with reasons
 in `internal/rigor` (`ungatedExposures`): `agent.Config.Agent` is an
 `*archetypes.Spec`, `agent.Config` takes `governed` and `mission` types and
 `Agent.GoalResult` returns a `governed.Result`, `tools` hands out `mission.Tool`
-values, `sandbox.WithEgress` takes a `netguard.Policy`, and `capability` implements
-the `dispatch` ports. A break in those packages changes what the stable surface
-means while `dev/apidiff` reports it as a domain change. The test fails on a seventh
-exposure, and on an entry that stops being true.
+values, `sandbox.WithEgress` takes a `netguard.Policy`, `capability` implements
+the `dispatch` ports, and `state.UsageStore` stores and returns `usage.Record`
+values. A break in those packages changes what the stable surface means while
+`dev/apidiff` reports it as a domain change. The test fails on an eighth exposure,
+and on an entry that stops being true.
 
 `dev/apidiff` (a CI job, also runnable locally) compares the exported API of the
 newest release tag with the branch using `golang.org/x/exp/cmd/apidiff`, and gives

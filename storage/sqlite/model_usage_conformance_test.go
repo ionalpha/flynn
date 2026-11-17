@@ -9,15 +9,15 @@ import (
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// TestModelUsageStoreConformance holds the SQLite usage store to the contract the
+// TestUsageStoreConformance holds the SQLite usage store to the contract the
 // in-memory double passes, queries and ordering included.
-func TestModelUsageStoreConformance(t *testing.T) {
-	statetest.RunModelUsageSuite(t, func() state.ModelUsageStore {
+func TestUsageStoreConformance(t *testing.T) {
+	statetest.RunUsageStoreSuite(t, func() state.UsageStore {
 		p, err := sqlite.Open(context.Background(), ":memory:")
 		if err != nil {
 			panic(err)
 		}
 		t.Cleanup(func() { _ = p.Close() })
-		return p.ModelUsage()
+		return p.Usage()
 	})
 }

@@ -17,39 +17,39 @@ import (
 // faultyUsage wraps a correct store and lets a case replace one operation, so
 // each defect is one function and the rest of the store stays correct.
 type faultyUsage struct {
-	state.ModelUsageStore
-	onAppend func(ctx context.Context, in state.ModelUsageStore, rs ...usage.Record) error
-	onByRun  func(ctx context.Context, in state.ModelUsageStore, run string) ([]usage.Record, error)
-	onTree   func(ctx context.Context, in state.ModelUsageStore, root string) ([]usage.Record, error)
-	onWindow func(ctx context.Context, in state.ModelUsageStore, from, to time.Time, principal string) ([]usage.Record, error)
+	state.UsageStore
+	onAppend func(ctx context.Context, in state.UsageStore, rs ...usage.Record) error
+	onByRun  func(ctx context.Context, in state.UsageStore, run string) ([]usage.Record, error)
+	onTree   func(ctx context.Context, in state.UsageStore, root string) ([]usage.Record, error)
+	onWindow func(ctx context.Context, in state.UsageStore, from, to time.Time, principal string) ([]usage.Record, error)
 }
 
 func (f *faultyUsage) Append(ctx context.Context, rs ...usage.Record) error {
 	if f.onAppend != nil {
-		return f.onAppend(ctx, f.ModelUsageStore, rs...)
+		return f.onAppend(ctx, f.UsageStore, rs...)
 	}
-	return f.ModelUsageStore.Append(ctx, rs...)
+	return f.UsageStore.Append(ctx, rs...)
 }
 
 func (f *faultyUsage) ByRun(ctx context.Context, run string) ([]usage.Record, error) {
 	if f.onByRun != nil {
-		return f.onByRun(ctx, f.ModelUsageStore, run)
+		return f.onByRun(ctx, f.UsageStore, run)
 	}
-	return f.ModelUsageStore.ByRun(ctx, run)
+	return f.UsageStore.ByRun(ctx, run)
 }
 
 func (f *faultyUsage) ByTree(ctx context.Context, root string) ([]usage.Record, error) {
 	if f.onTree != nil {
-		return f.onTree(ctx, f.ModelUsageStore, root)
+		return f.onTree(ctx, f.UsageStore, root)
 	}
-	return f.ModelUsageStore.ByTree(ctx, root)
+	return f.UsageStore.ByTree(ctx, root)
 }
 
 func (f *faultyUsage) Window(ctx context.Context, from, to time.Time, principal string) ([]usage.Record, error) {
 	if f.onWindow != nil {
-		return f.onWindow(ctx, f.ModelUsageStore, from, to, principal)
+		return f.onWindow(ctx, f.UsageStore, from, to, principal)
 	}
-	return f.ModelUsageStore.Window(ctx, from, to, principal)
+	return f.UsageStore.Window(ctx, from, to, principal)
 }
 
 // listUsage keeps every record it is given, in a list: no key, no validation.
@@ -69,7 +69,7 @@ func (l *listUsage) all() []usage.Record {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := slices.Clone(l.recs)
-	state.SortModelUsageRecords(out)
+	state.SortUsageRecords(out)
 	return out
 }
 
@@ -88,8 +88,8 @@ func (l *listUsage) Window(context.Context, time.Time, time.Time, string) ([]usa
 func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 	c := func(name, want string, brk func(f *faultyUsage)) conformtest.Case {
 		return conformtest.Case{Name: name, Want: want, Suite: func(t *testing.T) {
-			statetest.RunModelUsageSuite(t, func() state.ModelUsageStore {
-				f := &faultyUsage{ModelUsageStore: statetest.NewMemoryModelUsageStore()}
+			statetest.RunUsageStoreSuite(t, func() state.UsageStore {
+				f := &faultyUsage{UsageStore: statetest.NewMemoryUsageStore()}
 				brk(f)
 				return f
 			})
@@ -98,7 +98,7 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 	// swallow turns one class of error from the inner store into success.
 	swallow := func(target error) func(f *faultyUsage) {
 		return func(f *faultyUsage) {
-			f.onAppend = func(ctx context.Context, in state.ModelUsageStore, rs ...usage.Record) error {
+			f.onAppend = func(ctx context.Context, in state.UsageStore, rs ...usage.Record) error {
 				if err := in.Append(ctx, rs...); err != nil && !errors.Is(err, target) {
 					return err
 				}
@@ -108,12 +108,12 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 	}
 	conformtest.Prove(t, []conformtest.Case{
 		{Name: "keeps every record it is sent", Want: "IdempotentAppend", Suite: func(t *testing.T) {
-			statetest.RunModelUsageSuite(t, func() state.ModelUsageStore { return &listUsage{} })
+			statetest.RunUsageStoreSuite(t, func() state.UsageStore { return &listUsage{} })
 		}},
 		c("a differing record under a stored key is dropped without error", "ConflictRefused", swallow(state.ErrConflict)),
 		c("invalid records are dropped without error", "InvalidRefused", swallow(state.ErrInvalid)),
 		c("a batch stops at the first bad record and keeps the earlier ones", "BatchIsAtomic", func(f *faultyUsage) {
-			f.onAppend = func(ctx context.Context, in state.ModelUsageStore, rs ...usage.Record) error {
+			f.onAppend = func(ctx context.Context, in state.UsageStore, rs ...usage.Record) error {
 				for _, r := range rs {
 					if err := in.Append(ctx, r); err != nil {
 						return err
@@ -123,17 +123,17 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 			}
 		}),
 		c("a run's total includes the runs it spawned", "ByRun", func(f *faultyUsage) {
-			f.onByRun = func(ctx context.Context, in state.ModelUsageStore, run string) ([]usage.Record, error) {
+			f.onByRun = func(ctx context.Context, in state.UsageStore, run string) ([]usage.Record, error) {
 				return in.ByTree(ctx, run)
 			}
 		}),
 		c("a tree is only its root", "ByTree", func(f *faultyUsage) {
-			f.onTree = func(ctx context.Context, in state.ModelUsageStore, root string) ([]usage.Record, error) {
+			f.onTree = func(ctx context.Context, in state.UsageStore, root string) ([]usage.Record, error) {
 				return in.ByRun(ctx, root)
 			}
 		}),
 		c("an empty root selects every run with no parent", "ByTree", func(f *faultyUsage) {
-			f.onTree = func(ctx context.Context, in state.ModelUsageStore, root string) ([]usage.Record, error) {
+			f.onTree = func(ctx context.Context, in state.UsageStore, root string) ([]usage.Record, error) {
 				if root != "" {
 					return in.ByTree(ctx, root)
 				}
@@ -142,7 +142,7 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 			}
 		}),
 		c("a window includes its end", "Window", func(f *faultyUsage) {
-			f.onWindow = func(ctx context.Context, in state.ModelUsageStore, from, to time.Time, p string) ([]usage.Record, error) {
+			f.onWindow = func(ctx context.Context, in state.UsageStore, from, to time.Time, p string) ([]usage.Record, error) {
 				if !to.IsZero() {
 					to = to.Add(time.Nanosecond)
 				}
@@ -150,25 +150,25 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 			}
 		}),
 		c("a window ignores the principal", "Window", func(f *faultyUsage) {
-			f.onWindow = func(ctx context.Context, in state.ModelUsageStore, from, to time.Time, _ string) ([]usage.Record, error) {
+			f.onWindow = func(ctx context.Context, in state.UsageStore, from, to time.Time, _ string) ([]usage.Record, error) {
 				return in.Window(ctx, from, to, "")
 			}
 		}),
 		c("a window drops unpriced records", "SumParity", func(f *faultyUsage) {
-			f.onWindow = func(ctx context.Context, in state.ModelUsageStore, from, to time.Time, p string) ([]usage.Record, error) {
+			f.onWindow = func(ctx context.Context, in state.UsageStore, from, to time.Time, p string) ([]usage.Record, error) {
 				got, err := in.Window(ctx, from, to, p)
 				return slices.DeleteFunc(got, func(r usage.Record) bool { return !r.Cost.Known }), err
 			}
 		}),
 		c("a window returns newest first", "Order", func(f *faultyUsage) {
-			f.onWindow = func(ctx context.Context, in state.ModelUsageStore, from, to time.Time, p string) ([]usage.Record, error) {
+			f.onWindow = func(ctx context.Context, in state.UsageStore, from, to time.Time, p string) ([]usage.Record, error) {
 				got, err := in.Window(ctx, from, to, p)
 				slices.Reverse(got)
 				return got, err
 			}
 		}),
 		c("times come back in a local zone", "TimeZones", func(f *faultyUsage) {
-			f.onByRun = func(ctx context.Context, in state.ModelUsageStore, run string) ([]usage.Record, error) {
+			f.onByRun = func(ctx context.Context, in state.UsageStore, run string) ([]usage.Record, error) {
 				got, err := in.ByRun(ctx, run)
 				for i := range got {
 					got[i].At = got[i].At.In(time.FixedZone("UTC+7", 7*60*60))
@@ -177,7 +177,7 @@ func TestModelUsageSuiteFailsOnBrokenStore(t *testing.T) {
 			}
 		}),
 		c("times lose their sub-second part", "RoundTrip", func(f *faultyUsage) {
-			f.onByRun = func(ctx context.Context, in state.ModelUsageStore, run string) ([]usage.Record, error) {
+			f.onByRun = func(ctx context.Context, in state.UsageStore, run string) ([]usage.Record, error) {
 				got, err := in.ByRun(ctx, run)
 				for i := range got {
 					got[i].At = got[i].At.Truncate(time.Second)

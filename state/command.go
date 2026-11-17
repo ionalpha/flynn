@@ -28,7 +28,7 @@ const (
 	EvMemoryPushed   = "memory.pushed"
 	EvMemoryUsed     = "memory.used"
 	EvMemoryPromoted = "memory.promoted"
-	// EvModelUsageRecorded carries the [usage.Record]s a [ModelUsageStore] newly stored, so
+	// EvModelUsageRecorded carries the [usage.Record]s a [UsageStore] newly stored, so
 	// replay and audit read the figures that were stored and the store can be
 	// rebuilt from the log.
 	EvModelUsageRecorded = "model_usage.recorded"

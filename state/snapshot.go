@@ -34,7 +34,7 @@ func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	sort.Slice(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
 	SortUsage(s.Usage)
 	SortPromotions(s.Promotions)
-	SortModelUsageRecords(s.ModelUsageRecords)
+	SortUsageRecords(s.ModelUsageRecords)
 	sort.Slice(s.Turns, func(i, j int) bool {
 		if s.Turns[i].SessionID != s.Turns[j].SessionID {
 			return s.Turns[i].SessionID < s.Turns[j].SessionID

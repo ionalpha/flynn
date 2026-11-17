@@ -29,7 +29,7 @@ func modelUsageRec(run, parent, call string, at time.Time, n int64) usage.Record
 // modelUsageView reads every stored record as JSON, so two states compare byte for byte.
 func modelUsageView(t *testing.T, s *Store) string {
 	t.Helper()
-	got, err := s.ModelUsage().Window(context.Background(), time.Time{}, time.Time{}, "")
+	got, err := s.Usage().Window(context.Background(), time.Time{}, time.Time{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestModelUsageAppendLogsOneEventPerNewBatch(t *testing.T) {
 	b := modelUsageRec("r1", "", "c2", testAt.Add(time.Second), 2)
 
 	for _, rs := range [][]usage.Record{{a}, {a}, {a, b}, {a, b}} {
-		if err := s.ModelUsage().Append(ctx, rs...); err != nil {
+		if err := s.Usage().Append(ctx, rs...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,7 +82,7 @@ func TestModelUsageAppendLogsOneEventPerNewBatch(t *testing.T) {
 		t.Fatalf("second event carries %+v (%v), want only the new call c2", second, err)
 	}
 
-	if err := s.ModelUsage().Append(ctx, modelUsageRec("r1", "", "c1", testAt, 9)); err == nil {
+	if err := s.Usage().Append(ctx, modelUsageRec("r1", "", "c1", testAt, 9)); err == nil {
 		t.Fatal("a conflicting append succeeded")
 	}
 	if got := len(modelUsageEvents(t, s)); got != 2 {
@@ -105,7 +105,7 @@ func TestModelUsageRebuildReprojectsFromLog(t *testing.T) {
 		{modelUsageRec("root", "", "c1", testAt, 1)},
 		{modelUsageRec("kid", "root", "c1", testAt.Add(time.Second), 2), modelUsageRec("kid", "root", "c2", testAt.Add(2*time.Second), 3)},
 	} {
-		if err := s.ModelUsage().Append(ctx, rs...); err != nil {
+		if err := s.Usage().Append(ctx, rs...); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -123,7 +123,7 @@ func TestModelUsageRebuildReprojectsFromLog(t *testing.T) {
 	if after := modelUsageView(t, s); after != before {
 		t.Fatalf("rebuild changed the records\n before: %s\n after:  %s", before, after)
 	}
-	tree, err := s.ModelUsage().ByTree(ctx, "root")
+	tree, err := s.Usage().ByTree(ctx, "root")
 	if err != nil || len(tree) != 3 {
 		t.Fatalf("ByTree after rebuild = %d records (%v), want 3", len(tree), err)
 	}
@@ -141,13 +141,13 @@ func TestModelUsageRebuildReprojectsFromLog(t *testing.T) {
 func TestModelUsageSnapshotCarriesRecords(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
-	if err := s.ModelUsage().Append(ctx, modelUsageRec("r1", "", "before", testAt, 1)); err != nil {
+	if err := s.Usage().Append(ctx, modelUsageRec("r1", "", "before", testAt, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SnapshotState(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ModelUsage().Append(ctx, modelUsageRec("r1", "", "after", testAt.Add(time.Second), 2)); err != nil {
+	if err := s.Usage().Append(ctx, modelUsageRec("r1", "", "after", testAt.Add(time.Second), 2)); err != nil {
 		t.Fatal(err)
 	}
 	want := modelUsageView(t, s)
@@ -188,20 +188,20 @@ func TestModelUsageFailsClosed(t *testing.T) {
 
 	t.Run("table missing", func(t *testing.T) {
 		s := newStore(t)
-		if err := s.ModelUsage().Append(ctx, rec); err != nil {
+		if err := s.Usage().Append(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
 		dropTables(t, s, "model_usage")
-		if err := s.ModelUsage().Append(ctx, modelUsageRec("r2", "", "c1", testAt, 1)); err == nil {
+		if err := s.Usage().Append(ctx, modelUsageRec("r2", "", "c1", testAt, 1)); err == nil {
 			t.Error("Append succeeded with no table")
 		}
-		if _, err := s.ModelUsage().ByRun(ctx, "r1"); err == nil {
+		if _, err := s.Usage().ByRun(ctx, "r1"); err == nil {
 			t.Error("ByRun succeeded with no table")
 		}
-		if _, err := s.ModelUsage().ByTree(ctx, "r1"); err == nil {
+		if _, err := s.Usage().ByTree(ctx, "r1"); err == nil {
 			t.Error("ByTree succeeded with no table")
 		}
-		if _, err := s.ModelUsage().Window(ctx, time.Time{}, time.Time{}, ""); err == nil {
+		if _, err := s.Usage().Window(ctx, time.Time{}, time.Time{}, ""); err == nil {
 			t.Error("Window succeeded with no table")
 		}
 		if err := s.Rebuild(ctx); err == nil {
@@ -211,7 +211,7 @@ func TestModelUsageFailsClosed(t *testing.T) {
 
 	t.Run("table missing at snapshot", func(t *testing.T) {
 		s := newStore(t)
-		if err := s.ModelUsage().Append(ctx, rec); err != nil {
+		if err := s.Usage().Append(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
 		dropTables(t, s, "model_usage")
@@ -222,7 +222,7 @@ func TestModelUsageFailsClosed(t *testing.T) {
 
 	t.Run("table missing at restore", func(t *testing.T) {
 		s := newStore(t)
-		if err := s.ModelUsage().Append(ctx, rec); err != nil {
+		if err := s.Usage().Append(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.SnapshotState(ctx); err != nil {
@@ -236,16 +236,16 @@ func TestModelUsageFailsClosed(t *testing.T) {
 
 	t.Run("corrupt row", func(t *testing.T) {
 		s := newStore(t)
-		if err := s.ModelUsage().Append(ctx, rec); err != nil {
+		if err := s.Usage().Append(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE model_usage SET record = 'not json'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ModelUsage().ByRun(ctx, "r1"); err == nil {
+		if _, err := s.Usage().ByRun(ctx, "r1"); err == nil {
 			t.Error("ByRun returned a row it could not decode")
 		}
-		if err := s.ModelUsage().Append(ctx, rec); err == nil {
+		if err := s.Usage().Append(ctx, rec); err == nil {
 			t.Error("Append compared against a stored row it could not decode")
 		}
 	})
@@ -289,7 +289,7 @@ func TestModelUsageQueriesUseTheirIndexes(t *testing.T) {
 func TestModelUsageSnapshotRefusesAnUndecodableRow(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
-	if err := s.ModelUsage().Append(ctx, modelUsageRec("r1", "", "c1", testAt, 1)); err != nil {
+	if err := s.Usage().Append(ctx, modelUsageRec("r1", "", "c1", testAt, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE model_usage SET record = 'not json'`); err != nil {

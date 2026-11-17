@@ -9,26 +9,26 @@ import (
 	"github.com/ionalpha/flynn/usage"
 )
 
-// NewMemoryModelUsageStore returns a [state.ModelUsageStore] held in memory, for tests
+// NewMemoryUsageStore returns a [state.UsageStore] held in memory, for tests
 // that need a usage store without a database and as the reference
-// [RunModelUsageSuite] holds other stores to. It shares the append rules of
-// [state.PlanModelUsageAppend] with the durable stores; the queries are its own, so
+// [RunUsageStoreSuite] holds other stores to. It shares the append rules of
+// [state.PlanUsageAppend] with the durable stores; the queries are its own, so
 // the suite is what proves they agree.
-func NewMemoryModelUsageStore() state.ModelUsageStore {
-	return &memoryModelUsageStore{recs: map[modelUsageIdent]usage.Record{}}
+func NewMemoryUsageStore() state.UsageStore {
+	return &memoryUsageStore{recs: map[modelUsageIdent]usage.Record{}}
 }
 
 type modelUsageIdent struct{ run, call string }
 
-type memoryModelUsageStore struct {
+type memoryUsageStore struct {
 	mu   sync.Mutex
 	recs map[modelUsageIdent]usage.Record
 }
 
-func (m *memoryModelUsageStore) Append(_ context.Context, records ...usage.Record) error {
+func (m *memoryUsageStore) Append(_ context.Context, records ...usage.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	fresh, err := state.PlanModelUsageAppend(records, func(run, call string) (usage.Record, bool, error) {
+	fresh, err := state.PlanUsageAppend(records, func(run, call string) (usage.Record, bool, error) {
 		r, ok := m.recs[modelUsageIdent{run, call}]
 		return r, ok, nil
 	})
@@ -42,24 +42,24 @@ func (m *memoryModelUsageStore) Append(_ context.Context, records ...usage.Recor
 }
 
 // pick returns the records keep accepts, in store order. The caller holds mu.
-func (m *memoryModelUsageStore) pick(keep func(usage.Record) bool) []usage.Record {
+func (m *memoryUsageStore) pick(keep func(usage.Record) bool) []usage.Record {
 	out := []usage.Record{}
 	for _, r := range m.recs {
 		if keep(r) {
 			out = append(out, r)
 		}
 	}
-	state.SortModelUsageRecords(out)
+	state.SortUsageRecords(out)
 	return out
 }
 
-func (m *memoryModelUsageStore) ByRun(_ context.Context, run string) ([]usage.Record, error) {
+func (m *memoryUsageStore) ByRun(_ context.Context, run string) ([]usage.Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pick(func(r usage.Record) bool { return r.Run == run }), nil
 }
 
-func (m *memoryModelUsageStore) ByTree(_ context.Context, root string) ([]usage.Record, error) {
+func (m *memoryUsageStore) ByTree(_ context.Context, root string) ([]usage.Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if root == "" {
@@ -80,7 +80,7 @@ func (m *memoryModelUsageStore) ByTree(_ context.Context, root string) ([]usage.
 	return m.pick(func(r usage.Record) bool { return in[r.Run] }), nil
 }
 
-func (m *memoryModelUsageStore) Window(_ context.Context, from, to time.Time, principal string) ([]usage.Record, error) {
+func (m *memoryUsageStore) Window(_ context.Context, from, to time.Time, principal string) ([]usage.Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pick(func(r usage.Record) bool {

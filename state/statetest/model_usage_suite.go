@@ -13,11 +13,11 @@ import (
 	"github.com/ionalpha/flynn/usage"
 )
 
-// RunModelUsageSuite runs the [state.ModelUsageStore] contract against stores built by
+// RunUsageStoreSuite runs the [state.UsageStore] contract against stores built by
 // newStore. Each subtest gets a fresh, empty store. A host that stores usage in
 // its own database runs it to show its store returns the same records, in the
 // same order, and so the same [usage.Sum] totals, as every other.
-func RunModelUsageSuite(t *testing.T, newStore func() state.ModelUsageStore) {
+func RunUsageStoreSuite(t *testing.T, newStore func() state.UsageStore) {
 	t.Helper()
 	for _, c := range usageCases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newStore()) })
@@ -26,7 +26,7 @@ func RunModelUsageSuite(t *testing.T, newStore func() state.ModelUsageStore) {
 
 var usageCases = []struct {
 	name string
-	run  func(*testing.T, state.ModelUsageStore)
+	run  func(*testing.T, state.UsageStore)
 }{
 	{"RoundTrip", testUsageRoundTrip},
 	{"IdempotentAppend", testUsageIdempotent},
@@ -61,14 +61,14 @@ func urec(run, parent, call, principal string, at time.Time, n int64) usage.Reco
 	}
 }
 
-func mustAppend(t *testing.T, s state.ModelUsageStore, rs ...usage.Record) {
+func mustAppend(t *testing.T, s state.UsageStore, rs ...usage.Record) {
 	t.Helper()
 	if err := s.Append(context.Background(), rs...); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 }
 
-func mustRun(t *testing.T, s state.ModelUsageStore, run string) []usage.Record {
+func mustRun(t *testing.T, s state.UsageStore, run string) []usage.Record {
 	t.Helper()
 	got, err := s.ByRun(context.Background(), run)
 	if err != nil {
@@ -89,13 +89,13 @@ func wantCalls(t *testing.T, what string, got []usage.Record, calls ...string) {
 	}
 }
 
-func testUsageRoundTrip(t *testing.T, s state.ModelUsageStore) {
+func testUsageRoundTrip(t *testing.T, s state.UsageStore) {
 	in := urec("r1", "root", "c1", "alice", usageT0.Add(123456789*time.Nanosecond), 3)
 	in.Cost.Reason = "kept"
 	in.Tokens.Output = usage.Count{N: 7, Basis: usage.Estimated, Method: "recounted from stream deltas"}
 	mustAppend(t, s, in)
 	got := mustRun(t, s, "r1")
-	if len(got) != 1 || !state.SameModelUsageRecord(got[0], in) {
+	if len(got) != 1 || !state.SameUsageRecord(got[0], in) {
 		t.Fatalf("ByRun = %+v, want the appended record %+v", got, in)
 	}
 	if !got[0].At.Equal(in.At) {
@@ -106,7 +106,7 @@ func testUsageRoundTrip(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageIdempotent(t *testing.T, s state.ModelUsageStore) {
+func testUsageIdempotent(t *testing.T, s state.UsageStore) {
 	r := urec("r1", "", "c1", "alice", usageT0, 1)
 	mustAppend(t, s, r)
 	mustAppend(t, s, r)
@@ -114,7 +114,7 @@ func testUsageIdempotent(t *testing.T, s state.ModelUsageStore) {
 	wantCalls(t, "ByRun after the same record four times", mustRun(t, s, "r1"), "c1")
 }
 
-func testUsageConflict(t *testing.T, s state.ModelUsageStore) {
+func testUsageConflict(t *testing.T, s state.UsageStore) {
 	first := urec("r1", "", "c1", "alice", usageT0, 1)
 	mustAppend(t, s, first)
 	for name, other := range map[string]usage.Record{
@@ -128,12 +128,12 @@ func testUsageConflict(t *testing.T, s state.ModelUsageStore) {
 		}
 	}
 	got := mustRun(t, s, "r1")
-	if len(got) != 1 || !state.SameModelUsageRecord(got[0], first) {
+	if len(got) != 1 || !state.SameUsageRecord(got[0], first) {
 		t.Errorf("a refused append changed the stored record: %+v", got)
 	}
 }
 
-func testUsageInvalid(t *testing.T, s state.ModelUsageStore) {
+func testUsageInvalid(t *testing.T, s state.UsageStore) {
 	noProvider := urec("r1", "", "c1", "", usageT0, 1)
 	noProvider.Provider = ""
 	noBasis := urec("r1", "", "c1", "", usageT0, 1)
@@ -155,7 +155,7 @@ func testUsageInvalid(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageBatchAtomic(t *testing.T, s state.ModelUsageStore) {
+func testUsageBatchAtomic(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	mustAppend(t, s, urec("r1", "", "c1", "", usageT0, 1))
 
@@ -172,7 +172,7 @@ func testUsageBatchAtomic(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageBatchDuplicates(t *testing.T, s state.ModelUsageStore) {
+func testUsageBatchDuplicates(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	a := urec("r1", "", "c1", "", usageT0, 1)
 	mustAppend(t, s, a, urec("r1", "", "c2", "", usageT0.Add(time.Second), 2), a)
@@ -186,7 +186,7 @@ func testUsageBatchDuplicates(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageByRun(t *testing.T, s state.ModelUsageStore) {
+func testUsageByRun(t *testing.T, s state.UsageStore) {
 	mustAppend(t, s,
 		urec("r1", "", "c1", "", usageT0, 1),
 		urec("r1", "", "c2", "", usageT0.Add(time.Second), 1),
@@ -203,7 +203,7 @@ func testUsageByRun(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageByTree(t *testing.T, s state.ModelUsageStore) {
+func testUsageByTree(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	at := func(i int) time.Time { return usageT0.Add(time.Duration(i) * time.Second) }
 	mustAppend(t, s,
@@ -243,7 +243,7 @@ func testUsageByTree(t *testing.T, s state.ModelUsageStore) {
 	wantCalls(t, "ByTree(loop-a)", tree("loop-a"), "a-1", "b-1")
 }
 
-func testUsageWindow(t *testing.T, s state.ModelUsageStore) {
+func testUsageWindow(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	at := func(i int) time.Time { return usageT0.Add(time.Duration(i) * time.Hour) }
 	mustAppend(t, s,
@@ -272,7 +272,7 @@ func testUsageWindow(t *testing.T, s state.ModelUsageStore) {
 	wantCalls(t, "Window(a nanosecond either side of h1)", win(at(1).Add(-time.Nanosecond), at(1).Add(time.Nanosecond), ""), "h1")
 }
 
-func testUsageOrder(t *testing.T, s state.ModelUsageStore) {
+func testUsageOrder(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	// Appended out of order, with ties on time and on call id across runs.
 	mustAppend(t, s, urec("rb", "", "c2", "", usageT0.Add(time.Second), 1))
@@ -294,7 +294,7 @@ func testUsageOrder(t *testing.T, s state.ModelUsageStore) {
 	}
 }
 
-func testUsageTimeZones(t *testing.T, s state.ModelUsageStore) {
+func testUsageTimeZones(t *testing.T, s state.UsageStore) {
 	local := usageT0.In(time.FixedZone("UTC+7", 7*60*60))
 	mustAppend(t, s, urec("r1", "", "c1", "", local, 1))
 	// The same instant reported in UTC is the same record, not a conflict.
@@ -315,7 +315,7 @@ func testUsageTimeZones(t *testing.T, s state.ModelUsageStore) {
 
 // testUsageSumParity is the guarantee a budget relies on: totals taken from the
 // store equal totals taken from what was put in, whichever query reads them.
-func testUsageSumParity(t *testing.T, s state.ModelUsageStore) {
+func testUsageSumParity(t *testing.T, s state.UsageStore) {
 	ctx := context.Background()
 	var all []usage.Record
 	for i := range 12 {
@@ -368,7 +368,7 @@ func testUsageSumParity(t *testing.T, s state.ModelUsageStore) {
 
 // testUsageConcurrentRetry has several collectors send the same records at once,
 // as a retrying fleet would. The call must be counted once.
-func testUsageConcurrentRetry(t *testing.T, s state.ModelUsageStore) {
+func testUsageConcurrentRetry(t *testing.T, s state.UsageStore) {
 	batch := []usage.Record{
 		urec("r1", "", "c1", "", usageT0, 1),
 		urec("r1", "", "c2", "", usageT0.Add(time.Second), 2),

@@ -1,4 +1,4 @@
--- Usage records: one row per model call, as the state package's ModelUsageStore
+-- Usage records: one row per model call, as the state package's UsageStore
 -- defines them.
 --
 -- The row is keyed by (run_id, call_id) because that pair is what a collector
