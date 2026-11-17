@@ -319,6 +319,23 @@ backoff, modelled on client-go) is drained and then `ShutDown()`. Whoever starts
 loop owns its lifetime and ties it to the context it was given. New long-lived
 goroutines follow the same rule. The race detector runs in CI.
 
+## Vocabulary
+
+Words that name two things in this repository. Use the qualified term in code, comments
+and issues, so a reader does not have to infer which one is meant.
+
+- **Model usage** is the tokens and cost of model calls. Package `usage` owns it:
+  `usage.Tokens` holds the four counters, `usage.Tokens.Total` is the one definition of a
+  total (input, which already contains cache reads, plus cache writes, plus output), and
+  `usage.Tokens.Add` is how counters accumulate. `llm.Usage` and `session.Usage` carry
+  the raw counters and convert to `usage.Tokens` to be added or totalled. Avoid
+  "consumption", "spend" (a budget's charge, in `budget`) and "metering" (what dispatch
+  charges) for the counters themselves.
+- **Memory usage** is how an instance has pushed and used a memory item: push counts,
+  organic and primed uses, and the times of each, as `state.MemoryUsage`. It has no tokens
+  in it. Avoid "access count" and "hits". The word comes from the row recording use of an
+  item, not from model calls.
+
 ## Package map
 
 - **`cmd/flynn`** the binary. `flynn` with no arguments starts an interactive session,
