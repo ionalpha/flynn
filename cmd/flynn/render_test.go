@@ -166,7 +166,7 @@ func TestUsageFormatProperty(t *testing.T) {
 			m.add(tu)
 			in, outT, cr, cw = in+tu.InputTokens, outT+tu.OutputTokens, cr+tu.CacheReadTokens, cw+tu.CacheWriteTokens
 		}
-		if m.input != in || m.output != outT || m.cacheRead != cr || m.cacheWrite != cw {
+		if m.total.InputTokens != in || m.total.OutputTokens != outT || m.total.CacheReadTokens != cr || m.total.CacheWriteTokens != cw {
 			rt.Fatalf("meter totals drifted: got %+v, want in=%d out=%d cr=%d cw=%d", m, in, outT, cr, cw)
 		}
 		// summary is empty exactly when there is nothing worth showing.

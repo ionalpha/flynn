@@ -21,8 +21,7 @@ func renderTokens(w io.Writer, u session.Usage, turns int) {
 	_, _ = fmt.Fprintf(tw, "tokens this run (%d turns):\n", turns)
 	_, _ = fmt.Fprintf(tw, "  input\t%s\n", humanTokens(u.InputTokens))
 	if u.InputTokens > 0 && u.CacheReadTokens > 0 {
-		pct := u.CacheReadTokens * 100 / u.InputTokens
-		_, _ = fmt.Fprintf(tw, "  from cache\t%s\t%d%% of input, reused not reprocessed\n", humanTokens(u.CacheReadTokens), pct)
+		_, _ = fmt.Fprintf(tw, "  from cache\t%s\t%d%% of input, reused not reprocessed\n", humanTokens(u.CacheReadTokens), u.Tokens().CacheHitPercent())
 	}
 	if u.CacheWriteTokens > 0 {
 		_, _ = fmt.Fprintf(tw, "  cache write\t%s\n", humanTokens(u.CacheWriteTokens))

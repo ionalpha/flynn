@@ -139,6 +139,30 @@ func TestExecutorAttributesSpendToModelTier(t *testing.T) {
 	}
 }
 
+// TestExecutorMetersCacheWritesButNotCacheReadsTwice pins what a model call charges the
+// pool: input (cache reads are inside it), plus cache writes, plus output.
+func TestExecutorMetersCacheWritesButNotCacheReadsTwice(t *testing.T) {
+	ctx := context.Background()
+	store := budgetStore(t)
+	led := budget.NewLedger(store)
+	if _, err := led.Open(ctx, "g", resource.Scope{}, budget.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	turn := llmtest.SayText("done")
+	turn.Usage = llm.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60, CacheWriteTokens: 7}
+	exec := NewExecutor(llmtest.NewScripted(turn), WithBudget(budget.NewHook(store)))
+	if _, err := exec.Execute(ctx, goalRes(t, "g", "")); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	st, err := led.Spend(ctx, "g", resource.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Spent.Tokens != 127 {
+		t.Fatalf("spend = %d tokens, want 127 (input 100 + cache writes 7 + output 20)", st.Spent.Tokens)
+	}
+}
+
 // TestExecutorUnbudgetedRunIsUnlimited proves the always-wired budget hook is inert
 // when no budget resource is bound: a run whose pool has no budget spends freely, so
 // wiring the hook does not change the zero-config posture.

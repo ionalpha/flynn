@@ -140,6 +140,29 @@ func (t Tokens) Validate() error {
 // caller that sums the four fields itself counts cache reads twice.
 func (t Tokens) Total() int64 { return t.Input.N + t.CacheWrite.N + t.Output.N }
 
+// Add returns the field-wise sum of t and o. Each summed figure takes the weakest
+// basis of its parts, as in [Sum], so a total that includes one estimate is itself
+// an estimate. Accumulating through Add keeps the [Tokens.Total] of the sum equal to
+// the sum of the totals; a caller that adds the four counters itself can fold cache
+// reads into the wrong field.
+func (t Tokens) Add(o Tokens) Tokens {
+	t.Input.add(o.Input)
+	t.Output.add(o.Output)
+	t.CacheRead.add(o.CacheRead)
+	t.CacheWrite.add(o.CacheWrite)
+	return t
+}
+
+// CacheHitPercent is the share of Input served from cache as a whole percent,
+// rounded down, and zero when nothing was read from cache. Cache writes are not
+// in the denominator because they are not part of Input.
+func (t Tokens) CacheHitPercent() int {
+	if t.Input.N <= 0 || t.CacheRead.N <= 0 {
+		return 0
+	}
+	return int(t.CacheRead.N * 100 / t.Input.N)
+}
+
 // Cost is what a call cost, or the fact that it could not be priced. Known false
 // means unpriced: Amount is then zero and means nothing, and Reason says why
 // (no row for the model, a figure the row has no rate for). Price names the row

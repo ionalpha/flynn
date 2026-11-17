@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/approval"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/usage"
 )
 
 // Kind classifies a session event. A renderer switches on it to draw the live
@@ -230,6 +232,28 @@ type Usage struct {
 	OutputTokens     int `json:"outputTokens,omitempty"`
 	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+}
+
+// Tokens is u as a [usage.Tokens], the one place token figures are defined, so a
+// consumer asks it for a total or a cache hit rate instead of recomputing either.
+func (u Usage) Tokens() usage.Tokens {
+	return usage.FromLLM(llm.Usage{
+		InputTokens:      u.InputTokens,
+		OutputTokens:     u.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
+	})
+}
+
+// Add returns the sum of u and o, accumulated through [usage.Tokens.Add].
+func (u Usage) Add(o Usage) Usage {
+	t := u.Tokens().Add(o.Tokens())
+	return Usage{
+		InputTokens:      int(t.Input.N),
+		OutputTokens:     int(t.Output.N),
+		CacheReadTokens:  int(t.CacheRead.N),
+		CacheWriteTokens: int(t.CacheWrite.N),
+	}
 }
 
 // payloadKey holds the whole event body as one JSON string, which survives any

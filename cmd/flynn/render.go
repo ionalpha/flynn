@@ -85,36 +85,32 @@ func projectContextLine(ev session.Event) string {
 	return line
 }
 
-// usageMeter accumulates per-turn token usage across a run so the renderer can
-// print a running session total. It is the live counterpart of the per-turn lines:
-// the same numbers the spine records, summed for the whole run.
+// usageMeter is a run's token total and turn count, printed as a closing line. The
+// sum is [session.Usage.Add], the same one a replayed [session.Projection] uses.
 type usageMeter struct {
-	turns                                int
-	input, output, cacheRead, cacheWrite int
+	turns int
+	total session.Usage
 }
 
 // add folds one turn's usage into the running total.
 func (m *usageMeter) add(u session.Usage) {
 	m.turns++
-	m.input += u.InputTokens
-	m.output += u.OutputTokens
-	m.cacheRead += u.CacheReadTokens
-	m.cacheWrite += u.CacheWriteTokens
+	m.total = m.total.Add(u)
 }
 
 // summary renders the run total as a single line, or "" if no turn reported usage
 // (a backend that does not surface token counts), so the line is shown only when it
 // carries real numbers.
 func (m *usageMeter) summary() string {
-	if m.turns == 0 || (m.input == 0 && m.output == 0) {
+	if m.turns == 0 || (m.total.InputTokens == 0 && m.total.OutputTokens == 0) {
 		return ""
 	}
-	return "tokens: " + formatUsage(session.Usage{
-		InputTokens:      m.input,
-		OutputTokens:     m.output,
-		CacheReadTokens:  m.cacheRead,
-		CacheWriteTokens: m.cacheWrite,
-	})
+	return "tokens: " + formatUsage(m.total)
+}
+
+// inOut is the "X in / Y out" pair shared by the per-turn line and the badge.
+func inOut(u session.Usage) string {
+	return fmt.Sprintf("%s in / %s out", humanTokens(u.InputTokens), humanTokens(u.OutputTokens))
 }
 
 // formatUsage renders one usage record compactly: input and output token counts,
@@ -122,10 +118,9 @@ func (m *usageMeter) summary() string {
 // tokens written to cache when any. A backend that reports no counts renders as
 // zeros, so the line is only emitted by callers that have real usage to show.
 func formatUsage(u session.Usage) string {
-	s := fmt.Sprintf("%s in / %s out", humanTokens(u.InputTokens), humanTokens(u.OutputTokens))
+	s := inOut(u)
 	if u.InputTokens > 0 && u.CacheReadTokens > 0 {
-		pct := u.CacheReadTokens * 100 / u.InputTokens
-		s += fmt.Sprintf(" (%d%% cached)", pct)
+		s += fmt.Sprintf(" (%d%% cached)", u.Tokens().CacheHitPercent())
 	}
 	if u.CacheWriteTokens > 0 {
 		s += fmt.Sprintf(" (+%s cache write)", humanTokens(u.CacheWriteTokens))

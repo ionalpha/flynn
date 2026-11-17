@@ -170,10 +170,7 @@ func Reduce(p Projection, ev Event) Projection {
 	case KindTurnCompleted:
 		p.Turns++
 		if ev.Usage != nil {
-			p.Usage.InputTokens += ev.Usage.InputTokens
-			p.Usage.OutputTokens += ev.Usage.OutputTokens
-			p.Usage.CacheReadTokens += ev.Usage.CacheReadTokens
-			p.Usage.CacheWriteTokens += ev.Usage.CacheWriteTokens
+			p.Usage = p.Usage.Add(*ev.Usage)
 		}
 		// A root turn matches no child and only bumps the run total.
 		if ev.Goal != "" {
