@@ -54,10 +54,7 @@ func Sum(records []Record) (Summary, error) {
 		if err := r.Tokens.Validate(); err != nil {
 			return Summary{}, fmt.Errorf("usage: record %d (%s): %w", i, r.Call, err)
 		}
-		s.Tokens.Input.add(r.Tokens.Input)
-		s.Tokens.Output.add(r.Tokens.Output)
-		s.Tokens.CacheRead.add(r.Tokens.CacheRead)
-		s.Tokens.CacheWrite.add(r.Tokens.CacheWrite)
+		s.Tokens = s.Tokens.Add(r.Tokens)
 		if !r.Cost.Known {
 			s.Unpriced++
 			continue
