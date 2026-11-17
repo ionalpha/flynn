@@ -99,6 +99,10 @@ jobs:
           args: release --clean --release-header ${{ env.RELEASE_HEADER }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pushes the Homebrew cask and Scoop manifest to ionalpha/homebrew-tap and
+          # ionalpha/scoop-bucket, and opens the WinGet pull request from the
+          # ionalpha/winget-pkgs fork. Unset, those channels are skipped.
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
       - name: Attest build provenance
         id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
