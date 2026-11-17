@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
+	"github.com/ionalpha/flynn/usage"
 )
 
 // NameSingleShot is one model turn with no tools, converging on the answer. It suits an
@@ -107,7 +108,7 @@ func (e *singleShotExec) Execute(ctx context.Context, r resource.Resource) (json
 				System:   e.system,
 				Messages: []llm.Message{llm.Text(llm.RoleUser, prompt(spec))},
 			})
-			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
+			return dispatch.Metering{Tokens: int(usage.FromLLM(resp.Usage).Total())}, gerr
 		})
 	if err != nil {
 		return nil, err

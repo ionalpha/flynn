@@ -28,6 +28,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
+	"github.com/ionalpha/flynn/usage"
 )
 
 // Tool is a capability the model may call. An Invoke error goes back to the model as a
@@ -438,7 +439,7 @@ func (e *Executor) generate(ctx context.Context, r resource.Resource, spec goal.
 				Cache:    llm.CacheHint{Prefix: true, StableMessages: len(reqMessages), Key: r.Name},
 				Sampling: e.sampling,
 			})
-			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
+			return dispatch.Metering{Tokens: int(usage.FromLLM(resp.Usage).Total())}, gerr
 		})
 	return resp, err
 }
