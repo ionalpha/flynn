@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/usage"
 )
 
 // StateStream is the one spine stream every state mutation is recorded on, so
@@ -27,6 +28,10 @@ const (
 	EvMemoryPushed   = "memory.pushed"
 	EvMemoryUsed     = "memory.used"
 	EvMemoryPromoted = "memory.promoted"
+	// EvModelUsageRecorded carries the [usage.Record]s a [UsageStore] newly stored, so
+	// replay and audit read the figures that were stored and the store can be
+	// rebuilt from the log.
+	EvModelUsageRecorded = "model_usage.recorded"
 )
 
 // Payload keys under which a state event carries its post-image record(s).
@@ -37,6 +42,8 @@ const (
 	keyItem    = "item"
 	keyUsage   = "usage"
 	keyPromo   = "promotion"
+
+	keyModelUsage = "modelUsage"
 )
 
 // core is the in-memory read model. Every mutation appends to the log and then
@@ -58,6 +65,11 @@ type core struct {
 	memUsage   map[string]MemoryUsage     // usageKey(memoryID, instanceID) -> usage row
 	memPromo   map[string]MemoryPromotion // memoryID -> the current push decision
 
+	// modelUsageRecs holds stored usage records so a snapshot of this projection
+	// carries them: a durable store resuming from that snapshot would otherwise
+	// lose every record before it. Nothing reads them here.
+	modelUsageRecs map[modelUsageIdent]usage.Record
+
 	// snapCodec seals and verifies snapshots; snapEvery and snapPending drive
 	// the automatic cadence. Set after construction, read under mu.
 	snapCodec   spine.SnapshotCodec
@@ -67,14 +79,15 @@ type core struct {
 
 func newCore(st *Stamper, log spine.Log) *core {
 	return &core{
-		st:         st,
-		log:        log,
-		sessions:   map[string]Session{},
-		turns:      map[string][]Turn{},
-		skillsByID: map[string]Skill{},
-		slugToID:   map[string]string{},
-		memUsage:   map[string]MemoryUsage{},
-		memPromo:   map[string]MemoryPromotion{},
+		st:             st,
+		log:            log,
+		sessions:       map[string]Session{},
+		turns:          map[string][]Turn{},
+		skillsByID:     map[string]Skill{},
+		slugToID:       map[string]string{},
+		memUsage:       map[string]MemoryUsage{},
+		memPromo:       map[string]MemoryPromotion{},
+		modelUsageRecs: map[modelUsageIdent]usage.Record{},
 	}
 }
 
@@ -152,12 +165,24 @@ type payloadRecords struct {
 	Usage []MemoryUsage `json:"usage"`
 	// Promotion is singular: a bulk approval is one decision repeated.
 	Promotion *MemoryPromotion `json:"promotion"`
+	// ModelUsageRecords is the batch an [EvModelUsageRecorded] event stored.
+	ModelUsageRecords []usage.Record `json:"modelUsage"`
 }
 
 // projectRecords is the only projection logic, shared by record and Replay,
 // so a provider rebuilt from the log is identical to a live one. Callers hold
-// mu.
+// mu. Model usage records are split off because they share no state with the
+// session and memory projection below, and keeping them apart holds that
+// function under the complexity limit.
 func (c *core) projectRecords(evType string, w payloadRecords) error {
+	if evType == EvModelUsageRecorded {
+		return c.projectModelUsage(evType, w.ModelUsageRecords)
+	}
+	return c.projectConversationRecords(evType, w)
+}
+
+// projectConversationRecords projects the session, turn, skill and memory events.
+func (c *core) projectConversationRecords(evType string, w payloadRecords) error {
 	missing := func(key string) error {
 		return fmt.Errorf("state: event %q payload is missing %q", evType, key)
 	}
@@ -264,6 +289,13 @@ func (c *core) apply(e spine.Event) error {
 			return err
 		}
 		w.Promotion = &promo
+	}
+	if ur, ok := e.Payload[keyModelUsage]; ok {
+		recs, err := decodeAs[[]usage.Record](ur)
+		if err != nil {
+			return err
+		}
+		w.ModelUsageRecords = recs
 	}
 	return c.projectRecords(e.Type, w)
 }
@@ -385,4 +417,19 @@ func decodeRecord(payload map[string]any, key string, dst any) error {
 		return err
 	}
 	return json.Unmarshal(b, dst)
+}
+
+// projectModelUsage keeps the first record under each (Run, Call), as a store that
+// refuses a differing one would have, so a replayed log and a live store agree.
+func (c *core) projectModelUsage(evType string, records []usage.Record) error {
+	if len(records) == 0 {
+		return fmt.Errorf("state: event %q payload is missing %q", evType, keyModelUsage)
+	}
+	for _, r := range records {
+		k := modelUsageIdent{r.Run, r.Call}
+		if _, ok := c.modelUsageRecs[k]; !ok {
+			c.modelUsageRecs[k] = r
+		}
+	}
+	return nil
 }

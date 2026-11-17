@@ -340,6 +340,12 @@ func (s *Store) applyEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error
 			return err
 		}
 		return projectMemoryPromotion(ctx, tx, p)
+	case state.EvModelUsageRecorded:
+		rs, err := state.DecodeModelUsageRecords(e.Payload)
+		if err != nil {
+			return err
+		}
+		return projectModelUsage(ctx, tx, rs)
 	default:
 		return fmt.Errorf("sqlite: unknown state event %q", e.Type)
 	}
