@@ -299,3 +299,22 @@ func TestModelUsageSnapshotRefusesAnUndecodableRow(t *testing.T) {
 		t.Fatal("SnapshotState succeeded over a row that does not decode, want an error")
 	}
 }
+
+// TestProjectModelUsageRefusesAnUnencodableRecord: every read decodes the record
+// column, so a projection that ignored an encoding error would store an empty
+// record that no query can read back, and the indexed columns would still count
+// the row.
+func TestProjectModelUsageRefusesAnUnencodableRecord(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// encoding/json refuses a time outside years 0 to 9999.
+	rec := modelUsageRec("r1", "", "c1", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), 1)
+	if err := projectModelUsage(ctx, tx, []usage.Record{rec}); err == nil {
+		t.Fatal("projectModelUsage stored a record that cannot be encoded, want an error")
+	}
+}
