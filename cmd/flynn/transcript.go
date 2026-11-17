@@ -273,7 +273,7 @@ func badgeTokens(u session.Usage) string {
 	if u.InputTokens == 0 && u.OutputTokens == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s in / %s out", humanTokens(u.InputTokens), humanTokens(u.OutputTokens))
+	return inOut(u)
 }
 
 // activity is the shell's in-flight indicator: the one-line live region shown
