@@ -354,14 +354,16 @@ func decodeResponse(ar apiResponse) (llm.Response, error) {
 			blocks = append(blocks, llm.Block{Kind: llm.KindOpaque, Raw: raw})
 		}
 	}
-	// This API reports input_tokens as uncached input only, so cache reads and writes
-	// are added back to give the port's total.
+	// This API reports input_tokens as the input after the last cache breakpoint, with
+	// cache reads and cache writes in separate counters. llm.Usage counts reads inside
+	// InputTokens and writes on top of it, so only reads are added back: adding writes
+	// too would charge them at the input rate and again at the write rate.
 	u := ar.Usage
 	return llm.Response{
 		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},
 		StopReason: mapStopReason(ar.StopReason),
 		Usage: llm.Usage{
-			InputTokens:      u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+			InputTokens:      u.InputTokens + u.CacheReadInputTokens,
 			OutputTokens:     u.OutputTokens,
 			CacheReadTokens:  u.CacheReadInputTokens,
 			CacheWriteTokens: u.CacheCreationInputTokens,

@@ -135,7 +135,9 @@ func (t Tokens) Validate() error {
 }
 
 // Total is input plus cache writes plus output: every token the call was billed
-// for in some form. Cache reads are already inside Input.
+// for in some form. Cache reads are already inside Input and cache writes are not,
+// so each token is counted once. This is the one definition of a call's total; a
+// caller that sums the four fields itself counts cache reads twice.
 func (t Tokens) Total() int64 { return t.Input.N + t.CacheWrite.N + t.Output.N }
 
 // Cost is what a call cost, or the fact that it could not be priced. Known false

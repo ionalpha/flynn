@@ -151,7 +151,9 @@ const (
 // counters into them. InputTokens is all input processed, including any served from
 // cache. CacheReadTokens is the part of InputTokens served from a prompt cache, so the
 // hit rate is CacheReadTokens over InputTokens. CacheWriteTokens is input written to the
-// cache for later reuse, counted on top of InputTokens.
+// cache for later reuse, counted on top of InputTokens: a provider that reports its writes
+// inside its input counter has them subtracted by the adapter, because pricing charges
+// InputTokens at the input rate and CacheWriteTokens at the write rate.
 type Usage struct {
 	InputTokens     int `json:"inputTokens"`
 	OutputTokens    int `json:"outputTokens"`

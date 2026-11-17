@@ -389,14 +389,15 @@ func TestNoCacheHintLeavesRequestUnmarked(t *testing.T) {
 
 func TestCacheUsageNormalized(t *testing.T) {
 	// This API reports uncached input only, with cache reads and writes separate.
-	// The port's InputTokens must be the reconstructed total.
+	// The port's InputTokens is that plus the reads; writes stay a separate count
+	// on top of it.
 	m := &mockTransport{status: 200, respBody: `{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":20,"cache_read_input_tokens":70}}`}
 	resp, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Usage.InputTokens != 100 {
-		t.Fatalf("InputTokens should be total processed (10+20+70=100), got %d", resp.Usage.InputTokens)
+	if resp.Usage.InputTokens != 80 {
+		t.Fatalf("InputTokens should be input plus cache reads (10+70=80) without the 20 written, got %d", resp.Usage.InputTokens)
 	}
 	if resp.Usage.CacheReadTokens != 70 || resp.Usage.CacheWriteTokens != 20 {
 		t.Fatalf("cache tokens not normalized: %+v", resp.Usage)
