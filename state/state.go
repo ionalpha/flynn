@@ -172,7 +172,19 @@ type Skill struct {
 	Reads  int `json:"Reads"`
 	Wins   int `json:"ReadWins"`
 	// Check is an optional shell command that re-grades the skill.
-	Check     string
+	Check string
+	// PackDigest fingerprints the pack-authored fields (name, description, body,
+	// tags, check) as the pack last wrote them, so a later pack update can tell
+	// an untouched skill from one a host edited. Only the pack seeder sets it. A
+	// host that edits a seeded skill reads it, changes fields and writes it back,
+	// so the record rides along; a record dropped by a rewrite from scratch reads
+	// as a skill seeded before records existed. Empty on every skill no pack
+	// seeded. A store must return it unchanged.
+	PackDigest string `json:",omitempty"`
+	// Diverged is set by the pack seeder while a pack update is withheld because
+	// the stored copy no longer holds what the pack last wrote, and cleared when
+	// the two agree again. A host reads it to ask a person which version to keep.
+	Diverged  bool `json:",omitempty"`
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -95,3 +95,95 @@ func TestProp_ReconcileMakesTheScopeExact(t *testing.T) {
 		}
 	})
 }
+
+// Property: after a pack update, no body a host wrote is lost. A skill the host
+// edited to something other than what the pack now ships keeps the host's body, in
+// the bundled scope if the pack still ships the skill and in the host's own scope if
+// not; a skill the host did not edit holds the pack's new body or is gone with the
+// pack's. A second run with the same pack changes nothing.
+func TestProp_AHostEditSurvivesAPackUpdate(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		ctx := context.Background()
+		slugs := rapid.StringMatching(`[a-z]{1,3}`)
+		body := rapid.StringMatching(`[a-z]{1,3}`)
+		store := newStore(t)
+
+		v1 := map[string]string{}
+		for _, slug := range rapid.SliceOfN(slugs, 1, 5).Draw(rt, "v1") {
+			v1[slug] = body.Draw(rt, "v1Body")
+		}
+		reconcileMap := func(m map[string]string) Result {
+			var pack []state.Skill
+			for slug, b := range m {
+				pack = append(pack, bundledSkill(slug, b))
+			}
+			res, err := reconcile(ctx, store, pack)
+			if err != nil {
+				rt.Fatalf("reconcile: %v", err)
+			}
+			return res
+		}
+		reconcileMap(v1)
+
+		edited := map[string]string{}
+		for slug := range v1 {
+			if rapid.Bool().Draw(rt, "edit "+slug) {
+				sk, err := store.Get(ctx, slug)
+				if err != nil {
+					rt.Fatalf("get %s: %v", slug, err)
+				}
+				sk.Body = body.Draw(rt, "hostBody")
+				if _, err := store.Upsert(ctx, sk); err != nil {
+					rt.Fatalf("edit %s: %v", slug, err)
+				}
+				edited[slug] = sk.Body
+			}
+		}
+
+		v2 := map[string]string{}
+		for _, slug := range rapid.SliceOfN(slugs, 0, 5).Draw(rt, "v2") {
+			v2[slug] = body.Draw(rt, "v2Body")
+		}
+		reconcileMap(v2)
+
+		bundledNow := map[string]string{}
+		for _, sk := range mustList(rt, store, state.BundledScope) {
+			bundledNow[sk.Slug] = sk.Body
+		}
+		ownNow := map[string]string{}
+		for _, sk := range mustList(rt, store, state.Scope{}) {
+			ownNow[sk.Slug] = sk.Body
+		}
+
+		for slug := range v1 {
+			hostBody, wasEdited := edited[slug]
+			newBody, stillShipped := v2[slug]
+			switch {
+			case wasEdited && hostBody != v1[slug] && stillShipped && hostBody != newBody && newBody != v1[slug]:
+				if bundledNow[slug] != hostBody {
+					rt.Errorf("%s: host edit %q lost, bundled body is %q", slug, hostBody, bundledNow[slug])
+				}
+			case wasEdited && hostBody != v1[slug] && !stillShipped:
+				if ownNow[slug] != hostBody {
+					rt.Errorf("%s: host edit %q not released, own scope holds %q", slug, hostBody, ownNow[slug])
+				}
+			case stillShipped && (!wasEdited || hostBody == v1[slug]):
+				if bundledNow[slug] != newBody {
+					rt.Errorf("%s: untouched skill holds %q, pack ships %q", slug, bundledNow[slug], newBody)
+				}
+			}
+		}
+
+		if again := reconcileMap(v2); len(again.Added)+len(again.Updated)+len(again.Removed)+len(again.Released)+len(again.Cleared)+len(again.Diverged) != 0 {
+			rt.Errorf("a second run with the same pack changed the store: %+v", again)
+		}
+	})
+}
+
+func mustList(rt *rapid.T, store state.SkillStore, scope state.Scope) []state.Skill {
+	list, err := store.List(context.Background(), scope)
+	if err != nil {
+		rt.Fatalf("list %v: %v", scope, err)
+	}
+	return list
+}

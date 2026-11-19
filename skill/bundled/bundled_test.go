@@ -7,22 +7,16 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/skill"
 	"github.com/ionalpha/flynn/skill/skillmd"
 	"github.com/ionalpha/flynn/state"
 )
 
+// newStore is the in-memory provider's store, which keeps the pack's record of
+// what it wrote. The resource-backed skill.Store does not yet.
 func newStore(t *testing.T) state.SkillStore {
 	t.Helper()
-	reg := resource.NewRegistry()
-	if err := resource.RegisterCoreKinds(reg); err != nil {
-		t.Fatalf("register core kinds: %v", err)
-	}
-	if err := skill.RegisterKind(reg); err != nil {
-		t.Fatalf("register skill kind: %v", err)
-	}
-	return skill.NewStore(resource.NewMemory(reg))
+	return state.NewMemory().Skills()
 }
 
 // bundledSkill is a skill as the pack would produce it: already in the reserved
@@ -377,4 +371,93 @@ func (f failingStore) Delete(context.Context, string) error {
 		return errStore
 	}
 	return nil
+}
+
+// The case the contract exists for, on the shipped pack: a host edits a seeded skill,
+// a later binary ships a different version of it, and the edit survives the start that
+// brings the update. Every other skill still takes its update.
+func TestSeedKeepsAHostEditToAShippedSkill(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	pack, err := Skills()
+	if err != nil {
+		t.Fatalf("skills: %v", err)
+	}
+	if len(pack) < 2 {
+		t.Fatalf("the pack ships %d skills, the test needs two", len(pack))
+	}
+	if _, err := Seed(ctx, store); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	edited, other := pack[0], pack[1]
+	mine, err := store.Get(ctx, edited.Slug)
+	if err != nil {
+		t.Fatalf("get %s: %v", edited.Slug, err)
+	}
+	mine.Body = "the host's own wording"
+	if _, err := store.Upsert(ctx, mine); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+
+	next := make([]state.Skill, len(pack))
+	copy(next, pack)
+	next[0].Body += "\nA line the next release adds."
+	next[1].Body += "\nA line the next release adds."
+	res, err := Reconcile(ctx, store, next)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !equalStrings(res.Diverged, []string{edited.Slug}) || !equalStrings(res.Updated, []string{other.Slug}) {
+		t.Fatalf("update reported %+v, want %s diverged and %s updated", res, edited.Slug, other.Slug)
+	}
+
+	got, err := store.Get(ctx, edited.Slug)
+	if err != nil {
+		t.Fatalf("get %s: %v", edited.Slug, err)
+	}
+	if got.Body != mine.Body || !got.Diverged {
+		t.Errorf("%s holds %q (diverged %v), want the host's edit kept and flagged", edited.Slug, got.Body, got.Diverged)
+	}
+	if again, err := Reconcile(ctx, store, next); err != nil || again.Changed() {
+		t.Errorf("the next start reported %+v (err %v), want it silent", again, err)
+	}
+}
+
+// Pruning is how a baseline run removes the pack. A skill the host edited is the
+// host's work, so it moves into the host's scope instead of being deleted.
+func TestPruneReleasesAHostEdit(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	sk, err := store.Get(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	sk.Body = "the host's own wording"
+	if _, err := store.Upsert(ctx, sk); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+
+	res, err := Prune(ctx, store)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if !equalStrings(res.Released, []string{"alpha"}) || !equalStrings(res.Removed, []string{"beta"}) {
+		t.Fatalf("prune reported %+v, want alpha released and beta removed", res)
+	}
+	if got := slugsIn(t, store, state.BundledScope); len(got) != 0 {
+		t.Errorf("bundled scope still holds %v", got)
+	}
+	kept, err := store.Get(ctx, "alpha")
+	if err != nil {
+		t.Fatalf("the host's skill is gone: %v", err)
+	}
+	if kept.Body != "the host's own wording" || kept.Scope != (state.Scope{}) {
+		t.Errorf("released skill is %q in %+v, want the edit in the host's scope", kept.Body, kept.Scope)
+	}
 }
