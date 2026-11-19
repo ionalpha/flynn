@@ -3,7 +3,9 @@ package bundled
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/ionalpha/flynn/state"
 )
@@ -165,5 +167,71 @@ func TestReleaseFailuresAreReported(t *testing.T) {
 	store.upsertErr = errStore
 	if _, err := reconcile(ctx, store, nil); !errors.Is(err, errStore) {
 		t.Fatalf("error %v, want the store's own", err)
+	}
+}
+
+// TestDigestCoversExactlyThePackOwnedFields classifies every field of [state.Skill] as
+// owned by the pack or by the host and checks the digest agrees. A field added to the
+// struct fails here until someone decides which side it is on: left unclassified, a
+// pack-owned field would never register as an edit, and a host-owned one would read as
+// an edit on every run.
+func TestDigestCoversExactlyThePackOwnedFields(t *testing.T) {
+	packOwned := map[string]bool{"Slug": true, "Name": true, "Description": true, "Body": true, "Check": true, "Tags": true}
+	hostOwned := map[string]bool{
+		"ID": true, "Scope": true, "Offers": true, "Reads": true, "Wins": true,
+		"PackDigest": true, "Diverged": true, "Version": true, "CreatedAt": true,
+		"UpdatedAt": true, "Envelope": true,
+	}
+	typ := reflect.TypeOf(state.Skill{})
+	base := state.Skill{Slug: "s", Name: "n", Description: "d", Body: "b", Check: "c", Tags: []string{"t"}}
+	want := digest(base)
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if packOwned[name] == hostOwned[name] {
+			t.Errorf("state.Skill.%s is not classified as exactly one of pack-owned or host-owned in this test", name)
+			continue
+		}
+		changed := base
+		field := reflect.ValueOf(&changed).Elem().Field(i)
+		fillNonZero(field)
+		if field.IsZero() {
+			t.Errorf("state.Skill.%s: the test could not set a value, extend fillNonZero", name)
+			continue
+		}
+		got := digest(changed) != want
+		if got != packOwned[name] {
+			t.Errorf("state.Skill.%s changes the digest = %v, but it is classified pack-owned = %v", name, got, packOwned[name])
+		}
+	}
+}
+
+// fillNonZero sets v, or the first settable leaf inside it, to a value that differs
+// from the one it holds.
+func fillNonZero(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(v.String() + "x")
+	case reflect.Int, reflect.Int64:
+		v.SetInt(v.Int() + 7)
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.Slice:
+		v.Set(reflect.Append(v, reflect.New(v.Type().Elem()).Elem()))
+		if v.Type().Elem().Kind() == reflect.String {
+			v.Index(v.Len() - 1).SetString("extra")
+		}
+	case reflect.Struct:
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			v.Set(reflect.ValueOf(time.Unix(1, 0)))
+			return
+		}
+		for i := range v.NumField() {
+			if v.Field(i).CanSet() {
+				fillNonZero(v.Field(i))
+				if !v.IsZero() {
+					return
+				}
+			}
+		}
 	}
 }
