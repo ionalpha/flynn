@@ -2,11 +2,13 @@ package bundled
 
 import (
 	"context"
+	"encoding/base64"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -106,22 +108,49 @@ func TestEveryBundledSkillHasAnExerciseSet(t *testing.T) {
 	}
 }
 
-// A verifier is one command line handed to sh on macOS and Linux and cmd.exe on
-// Windows. These characters mean something to one shell and not the other, and `#` is
-// cut off by the loader as a comment, so a check using any of them grades a different
-// program than the author read.
-func TestExerciseVerifiersArePortable(t *testing.T) {
+// verifierForm is the only verifier shape the sets use: the logic is Python read from a
+// base64 argument, so no quoting rule of sh or cmd.exe can change what it means, and
+// `#` and `|`, which the loader treats as comment and column, cannot cut it short.
+var verifierForm = regexp.MustCompile(`^python3 -c "import base64;exec\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\)"$`)
+
+// encodeVerifier is the line a set holds for the Python source src.
+func encodeVerifier(src string) string {
+	return `python3 -c "import base64;exec(base64.b64decode('` + base64.StdEncoding.EncodeToString([]byte(src)) + `'))"`
+}
+
+func normalise(s string) string {
+	return strings.TrimRight(strings.ReplaceAll(s, "\r\n", "\n"), "\n") + "\n"
+}
+
+// A verifier nobody can read is a verifier nobody reviews. Each row's Python source is
+// kept readable in testdata/exercise_verifiers and the row must be exactly its
+// encoding, so editing one without the other fails here and prints the line to paste.
+func TestExerciseVerifiersMatchTheirSource(t *testing.T) {
 	forEachExercise(t, func(t *testing.T, slug string, e skillab.Exercise) {
-		if !strings.HasPrefix(e.Verify, "python3 ") {
-			t.Errorf("%s: verifier must start with python3, which all three hosts have: %.60s", exerciseLabel(slug, e), e.Verify)
+		if !verifierForm.MatchString(e.Verify) {
+			t.Errorf("%s: verifier must be `python3 -c \"import base64;exec(base64.b64decode('...'))\"`", exerciseLabel(slug, e))
+			return
 		}
-		for _, bad := range []string{"$", "%", "`", "^", "\t"} {
-			if strings.Contains(e.Verify, bad) {
-				t.Errorf("%s: verifier holds %q, which sh and cmd.exe read differently", exerciseLabel(slug, e), bad)
-			}
+		src, err := os.ReadFile(filepath.Join("testdata", "exercise_verifiers", slug, e.Fixture+".py"))
+		if err != nil {
+			t.Errorf("%s: the verifier's source is missing: %v", exerciseLabel(slug, e), err)
+			return
 		}
+		if want := encodeVerifier(normalise(string(src))); e.Verify != want {
+			t.Errorf("%s: exercises.txt does not hold the encoding of testdata/exercise_verifiers/%s/%s.py; the row should end with:\n%s",
+				exerciseLabel(slug, e), slug, e.Fixture, want)
+		}
+		if len(e.Verify) > 7000 {
+			t.Errorf("%s: verifier is %d bytes; cmd.exe stops at 8191", exerciseLabel(slug, e), len(e.Verify))
+		}
+	})
+}
+
+// Every row needs a fixture, because an exercise here starts from a working tree.
+func TestExercisesHaveFixtures(t *testing.T) {
+	forEachExercise(t, func(t *testing.T, slug string, e skillab.Exercise) {
 		if e.Fixture == "" {
-			t.Errorf("%s: no fixture; an exercise here starts from a working tree", exerciseLabel(slug, e))
+			t.Errorf("%s: no fixture", exerciseLabel(slug, e))
 		}
 	})
 }
