@@ -142,6 +142,7 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 		_, serr := fs.Stat(testdata, solution)
 		hasSolution := serr == nil
 
+		var lastOutput string
 		verdict := func(overlayDir string) bool {
 			work := t.TempDir()
 			if err := set.Materialise(e, work); err != nil {
@@ -150,7 +151,9 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 			if overlayDir != "" {
 				overlay(t, testdata, overlayDir, work)
 			}
-			return passes(t, work, e.Verify)
+			ok, out := passes(t, work, e.Verify)
+			lastOutput = out
+			return ok
 		}
 
 		pristine := verdict("")
@@ -159,7 +162,8 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 				t.Errorf("%s: the verifier passes on the fixture as shipped, so the solution in %s is not what it grades", exerciseLabel(slug, e), solution)
 			}
 			if !verdict(solution) {
-				t.Errorf("%s: the verifier fails on the reference solution %s", exerciseLabel(slug, e), solution)
+				t.Errorf("%s: the verifier fails on the reference solution %s:
+%s", exerciseLabel(slug, e), solution, lastOutput)
 			}
 		} else if !pristine {
 			t.Errorf("%s: no solution overlay and the fixture as shipped fails: add testdata/%s, or fix the verifier", exerciseLabel(slug, e), solution)
@@ -255,8 +259,9 @@ func overlay(t *testing.T, src fs.FS, dir, dest string) {
 	}
 }
 
-// passes runs line in dir the way a trial's verifier is run.
-func passes(t *testing.T, dir, line string) bool {
+// passes runs line in dir the way a trial's verifier is run, and returns what it
+// printed so a failure on a reference solution says why.
+func passes(t *testing.T, dir, line string) (bool, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), verifierTimeout)
 	defer cancel()
@@ -269,5 +274,5 @@ func passes(t *testing.T, dir, line string) bool {
 	if err != nil {
 		t.Fatalf("verifier did not run: %v", err)
 	}
-	return res.ExitCode == 0
+	return res.ExitCode == 0, res.Output
 }
