@@ -28,27 +28,6 @@ const minExercises = 3
 // verifierTimeout bounds one verifier run; a hung check must fail the build, not stall it.
 const verifierTimeout = 90 * time.Second
 
-// readSlugList reads testdata/<file>: one `slug reason` per line, `#` comments.
-func readSlugList(t *testing.T, file string) map[string]string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", file))
-	if err != nil {
-		t.Fatalf("read %s: %v", file, err)
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
-		if h := strings.Index(line, "#"); h >= 0 {
-			line = line[:h]
-		}
-		slug, reason, _ := strings.Cut(strings.TrimSpace(line), " ")
-		if slug == "" {
-			continue
-		}
-		out[slug] = strings.TrimSpace(reason)
-	}
-	return out
-}
-
 func bundledSlugs(t *testing.T) []string {
 	t.Helper()
 	entries, err := fs.ReadDir(FS(), Root)
@@ -65,35 +44,17 @@ func bundledSlugs(t *testing.T) []string {
 }
 
 // A skill that ships without an exercise set is unmeasured, and the instrument exists
-// to measure it. The exemption list is the backlog: it may only shrink, so a new
-// skill arrives with its set or this test fails, and an exemption for a skill that
-// has since gained a set is refused so the list cannot go stale.
+// to measure it. There is no exemption: a new skill arrives with its set, its
+// reference solutions and its wrong answers, or this test fails.
 func TestEveryBundledSkillHasAnExerciseSet(t *testing.T) {
-	exempt := readSlugList(t, "exercise_exempt.txt")
 	slugs := bundledSlugs(t)
-
-	for slug := range exempt {
-		if !slices.Contains(slugs, slug) {
-			t.Errorf("exercise_exempt.txt names %q, which is not a bundled skill: delete the line", slug)
-		}
-	}
 	for _, slug := range slugs {
 		set, err := skillab.LoadDir(filepath.Join(evalRoot, slug), slug)
-		_, isExempt := exempt[slug]
 		switch {
-		case err != nil && isExempt:
 		case err != nil:
-			t.Errorf("bundled skill %q has no usable exercise set: %v\nwrite evals/%s/exercises.txt; the exemption list is for the existing backlog only", slug, err, slug)
-		case isExempt:
-			t.Errorf("%q has an exercise set now: delete its line from testdata/exercise_exempt.txt", slug)
+			t.Errorf("bundled skill %q has no usable exercise set: %v\nwrite evals/%s/exercises.txt", slug, err, slug)
 		case len(set.Exercises) < minExercises:
 			t.Errorf("%q has %d exercises; a set under %d cannot separate two arms", slug, len(set.Exercises), minExercises)
-		}
-	}
-
-	for slug := range readSlugList(t, "exercise_unproven.txt") {
-		if _, err := skillab.LoadDir(filepath.Join(evalRoot, slug), slug); err != nil {
-			t.Errorf("exercise_unproven.txt names %q, which has no exercise set: delete the line", slug)
 		}
 	}
 
@@ -161,9 +122,13 @@ func TestExercisesHaveFixtures(t *testing.T) {
 // solution from testdata/exercise_solutions, and each tempting wrong answer from
 // testdata/exercise_wrong. A fixture with no solution is an exercise whose right
 // answer is to change nothing: the shipped tree must pass, and at least one wrong
-// answer must exist to fail it.
+// answer must exist to fail it. CI must run it: a skip there would report every
+// verifier as checked when none was.
 func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
+		if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+			t.Fatal("python3 is not on PATH on CI: the verifiers need it, so install it on the runner")
+		}
 		t.Skip("python3 is not on PATH: the verifiers need it, so nothing here was checked")
 	}
 	testdata := os.DirFS("testdata")
@@ -238,15 +203,12 @@ func exerciseLabel(slug string, e skillab.Exercise) string {
 	return slug + "/" + e.Fixture
 }
 
-// forEachExercise runs fn once per exercise of every bundled skill that has a set and
-// is not on the unproven list.
+// forEachExercise runs fn once per exercise of every bundled skill. A skill whose set
+// does not load is skipped here because [TestEveryBundledSkillHasAnExerciseSet] fails
+// on it.
 func forEachExercise(t *testing.T, fn func(t *testing.T, slug string, e skillab.Exercise)) {
 	t.Helper()
-	unproven := readSlugList(t, "exercise_unproven.txt")
 	for _, slug := range bundledSlugs(t) {
-		if _, skip := unproven[slug]; skip {
-			continue
-		}
 		set, err := skillab.LoadDir(filepath.Join(evalRoot, slug), slug)
 		if err != nil {
 			continue
