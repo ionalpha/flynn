@@ -5,26 +5,36 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/ionalpha/flynn/skill/bundled"
 	"github.com/ionalpha/flynn/state"
 )
 
-// RunPackReconcileSuite runs the pack-update contract against stores built by
-// newStore: [bundled.Reconcile] never overwrites a bundled skill a host edited,
+// PackOutcome is what a reconciliation reports. Its fields match the engine's result
+// type one for one, so a caller converts that result directly; state may not import
+// the engine, which is why the suite takes the reconciler as a parameter.
+type PackOutcome struct {
+	Added, Updated, Unchanged, Removed, Diverged, Released, Adopted, Cleared []string
+}
+
+// PackReconciler is the pack-update operation under test: make the bundled scope
+// hold want.
+type PackReconciler func(ctx context.Context, store state.SkillStore, want []state.Skill) (PackOutcome, error)
+
+// RunPackReconcileSuite runs the pack-update contract through reconcile against
+// stores built by newStore: it never overwrites a bundled skill a host edited,
 // records that it withheld the update, and clears the record when the stored copy
 // and the pack agree again. A host that keeps skills in its own database runs it
 // to show its store returns the fields [state.Skill] adds for this, unchanged.
 // Each subtest gets a fresh, empty store.
-func RunPackReconcileSuite(t *testing.T, newStore func() state.SkillStore) {
+func RunPackReconcileSuite(t *testing.T, newStore func() state.SkillStore, reconcile PackReconciler) {
 	t.Helper()
 	for _, c := range packReconcileCases {
-		t.Run(c.name, func(t *testing.T) { c.run(t, newStore()) })
+		t.Run(c.name, func(t *testing.T) { c.run(t, newStore(), reconcile) })
 	}
 }
 
 var packReconcileCases = []struct {
 	name string
-	run  func(*testing.T, state.SkillStore)
+	run  func(*testing.T, state.SkillStore, PackReconciler)
 }{
 	{"UneditedSkillIsUpdated", testPackUneditedUpdated},
 	{"EditedSkillKeepsTheEditAndIsDiverged", testPackEditedWithheld},
@@ -52,9 +62,9 @@ func packSkill(slug, body string) state.Skill {
 	}
 }
 
-func reconcileOK(t *testing.T, store state.SkillStore, want ...state.Skill) bundled.Result {
+func reconcileOK(t *testing.T, reconcile PackReconciler, store state.SkillStore, want ...state.Skill) PackOutcome {
 	t.Helper()
-	res, err := bundled.Reconcile(context.Background(), store, want)
+	res, err := reconcile(context.Background(), store, want)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -107,10 +117,10 @@ func wantBody(t *testing.T, store state.SkillStore, slug, want string) {
 	}
 }
 
-func testPackUneditedUpdated(t *testing.T, store state.SkillStore) {
-	res := reconcileOK(t, store, packSkill("a", "v1"))
+func testPackUneditedUpdated(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	wantSlugs(t, "first Added", res.Added, "a")
-	res = reconcileOK(t, store, packSkill("a", "v2"))
+	res = reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 	wantSlugs(t, "Updated", res.Updated, "a")
 	wantSlugs(t, "Diverged", res.Diverged)
 	wantBody(t, store, "a", "v2")
@@ -119,11 +129,11 @@ func testPackUneditedUpdated(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackEditedWithheld(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackEditedWithheld(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "host edit" })
 
-	res := reconcileOK(t, store, packSkill("a", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	wantSlugs(t, "Diverged", res.Diverged, "a")
 	wantSlugs(t, "Updated", res.Updated)
@@ -133,12 +143,12 @@ func testPackEditedWithheld(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackDivergenceStanding(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackDivergenceStanding(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "host edit" })
-	reconcileOK(t, store, packSkill("a", "v2"))
+	reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
-	res := reconcileOK(t, store, packSkill("a", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	wantSlugs(t, "Diverged on the second run", res.Diverged)
 	wantSlugs(t, "Updated on the second run", res.Updated)
@@ -148,11 +158,11 @@ func testPackDivergenceStanding(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackEditPackUnchanged(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackEditPackUnchanged(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "host edit" })
 
-	res := reconcileOK(t, store, packSkill("a", "v1"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 
 	wantSlugs(t, "Diverged", res.Diverged)
 	wantSlugs(t, "Unchanged", res.Unchanged, "a")
@@ -162,13 +172,13 @@ func testPackEditPackUnchanged(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackClearsOnAgreement(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackClearsOnAgreement(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "host edit" })
-	reconcileOK(t, store, packSkill("a", "v2"))
+	reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "v2" })
-	res := reconcileOK(t, store, packSkill("a", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	wantSlugs(t, "Cleared", res.Cleared, "a")
 	wantSlugs(t, "Diverged", res.Diverged)
@@ -176,18 +186,18 @@ func testPackClearsOnAgreement(t *testing.T, store state.SkillStore) {
 		t.Error("the divergence record stayed after the copies agreed")
 	}
 	// The record now holds v2, so the next pack version is an ordinary update.
-	res = reconcileOK(t, store, packSkill("a", "v3"))
+	res = reconcileOK(t, reconcile, store, packSkill("a", "v3"))
 	wantSlugs(t, "Updated after agreement", res.Updated, "a")
 	wantBody(t, store, "a", "v3")
 }
 
-func testPackRevertThenUpdate(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackRevertThenUpdate(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "host edit" })
-	reconcileOK(t, store, packSkill("a", "v2"))
+	reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "v1" })
-	res := reconcileOK(t, store, packSkill("a", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	wantSlugs(t, "Updated", res.Updated, "a")
 	wantBody(t, store, "a", "v2")
@@ -196,12 +206,12 @@ func testPackRevertThenUpdate(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackCountersSurvive(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackCountersSurvive(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Offers, sk.Reads, sk.Wins = 7, 5, 3 })
 
 	// Counters are the host's, so changing them is not an edit.
-	res := reconcileOK(t, store, packSkill("a", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v2"))
 
 	wantSlugs(t, "Updated", res.Updated, "a")
 	got := getBundled(t, store, "a")
@@ -210,25 +220,25 @@ func testPackCountersSurvive(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackSteadyState(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"))
+func testPackSteadyState(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 	before := getBundled(t, store, "a")
 
-	res := reconcileOK(t, store, packSkill("a", "v1"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 
 	wantSlugs(t, "Unchanged", res.Unchanged, "a")
-	if res.Changed() {
-		t.Errorf("Changed() = true on a steady-state run: %+v", res)
+	if n := len(res.Added) + len(res.Updated) + len(res.Removed) + len(res.Diverged) + len(res.Released) + len(res.Cleared); n != 0 {
+		t.Errorf("a steady-state run reported changes: %+v", res)
 	}
 	if after := getBundled(t, store, "a"); after.Version != before.Version {
 		t.Errorf("version went %d to %d on a steady-state run", before.Version, after.Version)
 	}
 }
 
-func testPackRetiredDeleted(t *testing.T, store state.SkillStore) {
-	reconcileOK(t, store, packSkill("a", "v1"), packSkill("b", "v1"))
+func testPackRetiredDeleted(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"), packSkill("b", "v1"))
 
-	res := reconcileOK(t, store, packSkill("a", "v1"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 
 	wantSlugs(t, "Removed", res.Removed, "b")
 	wantSlugs(t, "Released", res.Released)
@@ -237,12 +247,12 @@ func testPackRetiredDeleted(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackRetiredReleased(t *testing.T, store state.SkillStore) {
+func testPackRetiredReleased(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
 	ctx := context.Background()
-	reconcileOK(t, store, packSkill("a", "v1"), packSkill("b", "v1"))
+	reconcileOK(t, reconcile, store, packSkill("a", "v1"), packSkill("b", "v1"))
 	hostEdit(t, store, "b", func(sk *state.Skill) { sk.Body = "host edit"; sk.Reads = 4 })
 
-	res := reconcileOK(t, store, packSkill("a", "v1"))
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v1"))
 
 	wantSlugs(t, "Released", res.Released, "b")
 	wantSlugs(t, "Removed", res.Removed)
@@ -265,15 +275,15 @@ func testPackRetiredReleased(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackReleaseCollision(t *testing.T, store state.SkillStore) {
+func testPackReleaseCollision(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
 	ctx := context.Background()
-	reconcileOK(t, store, packSkill("b", "v1"))
+	reconcileOK(t, reconcile, store, packSkill("b", "v1"))
 	hostEdit(t, store, "b", func(sk *state.Skill) { sk.Body = "host edit" })
 	if _, err := store.Upsert(ctx, state.Skill{Slug: "b", Body: "the user's own b"}); err != nil {
 		t.Fatal(err)
 	}
 
-	res := reconcileOK(t, store)
+	res := reconcileOK(t, reconcile, store)
 
 	wantSlugs(t, "Released", res.Released)
 	wantSlugs(t, "Diverged", res.Diverged, "b")
@@ -287,7 +297,7 @@ func testPackReleaseCollision(t *testing.T, store state.SkillStore) {
 	}
 }
 
-func testPackLegacyAdopted(t *testing.T, store state.SkillStore) {
+func testPackLegacyAdopted(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
 	ctx := context.Background()
 	// Seeded before records existed: stored with no record of what the pack wrote.
 	for _, sk := range []state.Skill{packSkill("same", "v2"), packSkill("old", "v1")} {
@@ -296,7 +306,7 @@ func testPackLegacyAdopted(t *testing.T, store state.SkillStore) {
 		}
 	}
 
-	res := reconcileOK(t, store, packSkill("same", "v2"), packSkill("old", "v2"))
+	res := reconcileOK(t, reconcile, store, packSkill("same", "v2"), packSkill("old", "v2"))
 
 	wantSlugs(t, "Adopted", res.Adopted, "old", "same")
 	wantSlugs(t, "Updated", res.Updated, "old")
@@ -306,7 +316,7 @@ func testPackLegacyAdopted(t *testing.T, store state.SkillStore) {
 
 	// From here on the records are held, so an edit is protected.
 	hostEdit(t, store, "old", func(sk *state.Skill) { sk.Body = "host edit" })
-	res = reconcileOK(t, store, packSkill("same", "v2"), packSkill("old", "v3"))
+	res = reconcileOK(t, reconcile, store, packSkill("same", "v2"), packSkill("old", "v3"))
 	wantSlugs(t, "Diverged after adoption", res.Diverged, "old")
 	wantSlugs(t, "Adopted after adoption", res.Adopted)
 	wantBody(t, store, "old", "host edit")

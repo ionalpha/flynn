@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ionalpha/flynn/skill/bundled"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/state/statetest"
 	"github.com/ionalpha/flynn/storage/sqlite"
@@ -19,5 +20,8 @@ func TestSQLitePackReconcile(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = p.Close() })
 		return p.Skills()
+	}, func(ctx context.Context, store state.SkillStore, want []state.Skill) (statetest.PackOutcome, error) {
+		res, err := bundled.Reconcile(ctx, store, want)
+		return statetest.PackOutcome(res), err
 	})
 }
