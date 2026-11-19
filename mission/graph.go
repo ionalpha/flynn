@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
@@ -75,14 +76,19 @@ type resultSlot struct {
 	ChildID   string `json:"childID,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"isError,omitempty"`
+	// ElapsedMs is how long a tool call ran, kept so the brief built when the children
+	// fold in sees the timings the first pass measured.
+	ElapsedMs int64 `json:"elapsedMs,omitempty"`
 }
 
 // dispatchToolUses returns blocks for a turn with no live spawn and pending slots otherwise.
-// A failed spawn is an error result for the model, so it does not fail the step.
-func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, turn int, calls []llm.ToolUse) (blocks []llm.Block, pending []resultSlot, err error) {
+// A failed spawn is an error result for the model, so it does not fail the step. observed
+// lists the calls that settled, for [Briefer].
+func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, turn int, calls []llm.ToolUse) (blocks []llm.Block, observed []ObservedCall, pending []resultSlot, err error) {
 	scope := state.Scope(r.Scope)
 	if e.fanout == nil || !containsSpawn(calls) {
-		return e.runTools(ctx, r.Name, scope, turn, calls), nil, nil
+		blocks, observed = e.runTools(ctx, r.Name, scope, turn, calls)
+		return blocks, observed, nil, nil
 	}
 
 	slots := make([]resultSlot, 0, len(calls))
@@ -101,8 +107,8 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 			e.reporter.Report(ctx, Event{Kind: EventChildSpawned, Goal: r.Name, Child: id, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Text: objective})
 			continue
 		}
-		content, terr := e.invokeTool(ctx, r.Name, scope, c)
-		slot := resultSlot{ToolUseID: c.ID, Content: content}
+		content, elapsed, terr := e.invoke(ctx, r.Name, scope, c)
+		slot := resultSlot{ToolUseID: c.ID, Content: content, ElapsedMs: elapsed.Milliseconds()}
 		if terr != nil {
 			slot.IsError, slot.Content = true, terr.Error()
 		}
@@ -111,9 +117,9 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 	}
 	// Every spawn was rejected, so there is nothing to wait for.
 	if !live {
-		return slotsToBlocks(slots), nil, nil
+		return slotsToBlocks(slots), observedFromSlots(slots, calls), nil, nil
 	}
-	return nil, slots, nil
+	return nil, nil, slots, nil
 }
 
 // spawnChild returns the objective too, so the caller can record the parent-to-child edge.
@@ -156,9 +162,33 @@ func (e *Executor) advanceFanout(ctx context.Context, r resource.Resource, cp ch
 			e.reporter.Report(ctx, Event{Kind: EventChildCompleted, Goal: r.Name, Child: id, Tool: ActionSpawn, ToolUseID: cp.Pending[i].ToolUseID, Result: cr.Result, IsError: cr.Failed})
 		}
 	}
-	cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: slotsToBlocks(cp.Pending)})
+	blocks := slotsToBlocks(cp.Pending)
+	if n := len(cp.Messages); n > 0 {
+		// The assistant message that issued these calls is the last one stored.
+		calls := cp.Messages[n-1].ToolUses()
+		blocks = append(blocks, e.brief(ctx, r.Name, cp.Turns, &cp, false, observedFromSlots(cp.Pending, calls))...)
+	}
+	cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: blocks})
 	cp.Pending = nil
 	return encodeCheckpoint(cp)
+}
+
+// observedFromSlots pairs each settled slot with the call that produced it. A spawn is
+// left out: it is a delegation, not a command the run ran.
+func observedFromSlots(slots []resultSlot, calls []llm.ToolUse) []ObservedCall {
+	byID := make(map[string]llm.ToolUse, len(calls))
+	for _, c := range calls {
+		byID[c.ID] = c
+	}
+	var out []ObservedCall
+	for _, s := range slots {
+		c, ok := byID[s.ToolUseID]
+		if !ok || s.ChildID != "" || c.Name == ActionSpawn {
+			continue
+		}
+		out = append(out, ObservedCall{Tool: c.Name, Input: c.Input, Elapsed: time.Duration(s.ElapsedMs) * time.Millisecond, IsError: s.IsError})
+	}
+	return out
 }
 
 func containsSpawn(calls []llm.ToolUse) bool {

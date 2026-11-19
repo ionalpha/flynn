@@ -82,6 +82,11 @@ type Executor struct {
 	approvalHost   string
 	approvalGrace  time.Duration
 	approvalClock  clock.Clock
+
+	// toolClock times tool calls for [ObservedCall.Elapsed]; briefers are the tools
+	// that implement [Briefer].
+	toolClock clock.Clock
+	briefers  []namedBriefer
 }
 
 // Option configures an [Executor].
@@ -260,7 +265,7 @@ func WithGenerationRecorder(r GenerationRecorder) Option {
 // NewExecutor routes every model and tool call through one dispatcher so governance,
 // recording and tracing apply in one place.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
-	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}, recorder: nopGenerationRecorder{}}
+	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}, recorder: nopGenerationRecorder{}, toolClock: clock.System{}}
 	// Seeded first so a bound grant is enforced with no extra wiring and a caller's
 	// WithAdmitter overrides it.
 	e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(capability.Admitter{}))
@@ -276,6 +281,7 @@ func NewExecutor(model llm.Model, opts ...Option) *Executor {
 			e.defs[i] = simplifyTool(e.defs[i])
 		}
 	}
+	e.briefers = findBriefers(e.tools)
 	e.dispatcher = dispatch.New(e.dispatchOpts...)
 	return e
 }
@@ -328,7 +334,10 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		return e.advanceFanout(ctx, r, cp)
 	}
 	if len(cp.Messages) == 0 {
-		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
+		first := userTurn(e.prompt(spec), spec.Attachments)
+		// In the first message, so it is stored with the objective it accompanies.
+		first.Blocks = append(first.Blocks, e.brief(ctx, r.Name, cp.Turns+1, &cp, true, nil)...)
+		cp.Messages = []llm.Message{first}
 	}
 	briefTurn(&cp, spec, status)
 	// A reopened conversation ends on the assistant; with nothing briefed it needs a user
@@ -456,7 +465,7 @@ func (e *Executor) reportResponse(ctx context.Context, goalID string, turn int, 
 func (e *Executor) settleTurn(ctx context.Context, r resource.Resource, turn int, cp *checkpoint, resp llm.Response) error {
 	switch resp.StopReason {
 	case llm.StopToolUse:
-		blocks, pending, err := e.dispatchToolUses(ctx, r, turn, resp.Message.ToolUses())
+		blocks, observed, pending, err := e.dispatchToolUses(ctx, r, turn, resp.Message.ToolUses())
 		if err != nil {
 			return err
 		}
@@ -465,6 +474,7 @@ func (e *Executor) settleTurn(ctx context.Context, r resource.Resource, turn int
 			cp.Pending = pending
 			return nil
 		}
+		blocks = append(blocks, e.brief(ctx, r.Name, turn, cp, false, observed)...)
 		cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: blocks})
 	case llm.StopMaxTokens:
 		// The step budget bounds a turn that keeps truncating.
@@ -573,11 +583,12 @@ func (e *Executor) summarizerFor(tool string) ResultSummarizer {
 
 // runTools turns a rejected, unknown or failing call into an error result so the model can
 // recover next turn.
-func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scope, turn int, calls []llm.ToolUse) []llm.Block {
+func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scope, turn int, calls []llm.ToolUse) ([]llm.Block, []ObservedCall) {
 	out := make([]llm.Block, 0, len(calls))
+	observed := make([]ObservedCall, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
-		content, err := e.invokeTool(ctx, goalID, scope, c)
+		content, elapsed, err := e.invoke(ctx, goalID, scope, c)
 		if err != nil {
 			res.IsError, res.Content = true, err.Error()
 		} else {
@@ -588,25 +599,38 @@ func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scop
 			Result: res.Content, IsError: res.IsError,
 		})
 		out = append(out, llm.Block{Kind: llm.KindToolResult, ToolResult: res})
+		observed = append(observed, ObservedCall{Tool: c.Name, Input: c.Input, Elapsed: elapsed, IsError: res.IsError})
 	}
-	return out
+	return out, observed
 }
 
 // invokeTool is the only place a tool runs, so sandbox isolation attaches here. Arguments
 // and results never reach dispatch.
 func (e *Executor) invokeTool(ctx context.Context, goalID string, scope state.Scope, c llm.ToolUse) (string, error) {
-	var content string
+	content, _, err := e.invoke(ctx, goalID, scope, c)
+	return content, err
+}
+
+// invoke also returns how long the tool ran. The clock starts inside the governed span,
+// so a wait for approval does not read as a slow tool.
+func (e *Executor) invoke(ctx context.Context, goalID string, scope state.Scope, c llm.ToolUse) (string, time.Duration, error) {
+	var (
+		content string
+		elapsed time.Duration
+	)
 	err := e.governWithApproval(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name]), Goal: goalID},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			tool, ok := e.tools[c.Name]
 			if !ok {
 				return dispatch.Metering{}, fault.New(fault.Terminal, "unknown_tool", "unknown tool: "+c.Name)
 			}
+			start := e.toolClock.Now()
 			out, err := tool.Invoke(ctx, c.Input)
+			elapsed = e.toolClock.Now().Sub(start)
 			content = out
 			return dispatch.Metering{}, err
 		})
-	return content, err
+	return content, elapsed, err
 }
 
 func (e *Executor) prompt(spec goal.Spec) string {
@@ -694,6 +718,9 @@ type checkpoint struct {
 	Pending    []resultSlot
 	Turns      int
 	Item       string
+	// Briefs holds each [Briefer]'s state by tool name, so a resumed run keeps what it
+	// loaded and counted.
+	Briefs map[string]json.RawMessage
 
 	// encoded caches each message's JSON so a write marshals only the new turn.
 	encoded []json.RawMessage
@@ -707,6 +734,8 @@ type checkpointWire struct {
 	Pending    []resultSlot      `json:"pending,omitempty"`
 	Turns      int               `json:"turns,omitempty"`
 	Item       string            `json:"item,omitempty"`
+
+	Briefs map[string]json.RawMessage `json:"briefs,omitempty"`
 }
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
@@ -719,6 +748,7 @@ func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
 		return cp, err
 	}
 	cp.Done, cp.Result, cp.VerifyUsed, cp.Pending, cp.Turns, cp.Item = wire.Done, wire.Result, wire.VerifyUsed, wire.Pending, wire.Turns, wire.Item
+	cp.Briefs = wire.Briefs
 	cp.Messages = make([]llm.Message, len(wire.Messages))
 	for i := range wire.Messages {
 		if err := json.Unmarshal(wire.Messages[i], &cp.Messages[i]); err != nil {
@@ -765,6 +795,7 @@ func encodeCheckpoint(cp checkpoint) (json.RawMessage, error) {
 		Pending:    cp.Pending,
 		Turns:      cp.Turns,
 		Item:       cp.Item,
+		Briefs:     cp.Briefs,
 	})
 }
 

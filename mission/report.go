@@ -27,6 +27,9 @@ const (
 	// EventChildCompleted closes the edge [EventChildSpawned] opened, with the answer in
 	// Result.
 	EventChildCompleted EventKind = "child.completed"
+	// EventSkill records a skill the host offered, loaded or declined to load: Skill names
+	// it, Via says how (offered, start, trigger, skipped or suppressed) and Result says why.
+	EventSkill EventKind = "skill"
 )
 
 // Event is reported live so a caller renders progress without polling. Only the fields
@@ -47,6 +50,9 @@ type Event struct {
 	IsError    bool
 	StopReason string
 	Usage      llm.Usage
+	// Skill and Via are set on [EventSkill].
+	Skill string
+	Via   string
 }
 
 // Reporter streams a mission's events. The loop never depends on it. Report runs on the
