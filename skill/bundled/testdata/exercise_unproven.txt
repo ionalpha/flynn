@@ -1,0 +1,8 @@
+# Skills whose exercise sets predate TestExerciseVerifiersTellAnswersApart: their
+# verifiers have not been run against a reference solution and a wrong answer, and
+# some use characters the portability check refuses.
+#
+# One line per skill: "<slug> <reason>". The list may only shrink. Give a set its
+# overlays under testdata/exercise_solutions and testdata/exercise_wrong, then delete
+# its line. Never add a skill here.
+systematic-debugging verifiers predate the check; two use a percent sign
