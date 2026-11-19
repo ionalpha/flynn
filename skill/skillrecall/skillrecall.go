@@ -11,6 +11,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/learn"
@@ -32,15 +34,50 @@ const fallbackOfferLen = 240
 const candidatePool = 4
 
 // Recall returns the skills an objective is offered, best first, at most limit
-// (limit <= 0 uses [DefaultLimit]). It searches each of the objective's [Keywords]
-// and ranks the union. A store error drops that term, so a failing search offers
-// less and never stops a run.
+// (limit <= 0 uses [DefaultLimit]). It searches the objective's content words
+// (see [Keywords]), ranks the union, and lets [Rank] keep the terms that tell the
+// candidates apart. A store error drops that term, so a failing search offers less
+// and never stops a run.
 func Recall(ctx context.Context, skills state.SkillStore, objective string, limit int) []state.Skill {
-	terms := Keywords(objective)
+	terms := contentWords(objective, maxProbe)
 	if len(terms) == 0 {
 		return nil
 	}
-	return Rank(terms, Gather(ctx, skills, terms, limit), limit)
+	found := Gather(ctx, skills, terms, limit)
+	cands := make([]Candidate, len(found))
+	for i, s := range found {
+		cands[i] = candidateOf(s)
+	}
+	picked := rank(terms, cands, limit)
+	out := make([]state.Skill, len(picked))
+	for i, at := range picked {
+		out[i] = found[at]
+	}
+	return out
+}
+
+// Candidate is what [Rank] reads of a skill, so a host can rank without building
+// storage values.
+type Candidate struct {
+	Slug string
+	Name string
+	// Offer is the text shown at discovery (see [Offer]). A term is scored against
+	// this and not the body, because a match the model cannot see makes the offer
+	// look irrelevant.
+	Offer string
+	Tags  []string
+	// Evidence is how far the host trusts the skill. It only breaks ties between
+	// equally relevant candidates and never outweighs a better match.
+	Evidence float64
+}
+
+// candidateOf is Flynn's call site for [Rank]: evidence is a passing check (the
+// "verified" tag) plus the confidence of the read and win record.
+func candidateOf(s state.Skill) Candidate {
+	return Candidate{
+		Slug: s.Slug, Name: s.Name, Offer: Offer(s), Tags: s.Tags,
+		Evidence: float64(verifiedBoost(s.Tags)) + learn.Confidence(s.Reads, s.Wins),
+	}
 }
 
 // Gather unions per-term search hits, deduped. The store matches a query as one
@@ -67,53 +104,94 @@ func Gather(ctx context.Context, skills state.SkillStore, terms []string, limit 
 }
 
 // Rank orders candidates by relevance and returns at most limit (limit <= 0 uses
-// [DefaultLimit]). Verification and confidence only break relevance ties. Each term
-// is weighted by how few candidates carry it, so a wordy skill cannot take another's
-// objectives on common words.
-func Rank(terms []string, cands []state.Skill, limit int) []state.Skill {
+// [DefaultLimit]). A term counts when it appears as a whole word of the candidate's
+// slug, name, offer or tags (see [MatchScore]). Each term is weighted by how few
+// candidates carry it, so a wordy skill cannot take another's objectives on common
+// words, and only the eight heaviest terms score, so a long input is judged on the
+// words that separate these candidates and not on the ones it opened with.
+// Evidence breaks relevance ties.
+func Rank(terms []string, cands []Candidate, limit int) []Candidate {
+	picked := rank(terms, cands, limit)
+	out := make([]Candidate, len(picked))
+	for i, at := range picked {
+		out[i] = cands[at]
+	}
+	return out
+}
+
+// rank returns indexes into cands, so a caller holding richer values than
+// [Candidate] can map the order back without assuming slugs are unique.
+func rank(terms []string, cands []Candidate, limit int) []int {
 	if limit <= 0 {
 		limit = DefaultLimit
 	}
-	type scored struct {
-		s         state.Skill
-		relevance float64
-		evidence  float64
-	}
-	// Scored on the offered text, because a match in the body is invisible to the
-	// model and the offer would look irrelevant.
 	hays := make([]string, len(cands))
-	for i, s := range cands {
-		hays[i] = strings.ToLower(s.Slug + " " + s.Name + " " + Offer(s) + " " + strings.Join(s.Tags, " "))
+	for i, c := range cands {
+		hays[i] = strings.ToLower(c.Slug + " " + c.Name + " " + c.Offer + " " + strings.Join(c.Tags, " "))
 	}
+	terms = normalise(terms)
 	weights := termWeights(terms, hays)
+	terms = heaviest(terms, weights, maxKeywords)
 
+	type scored struct {
+		at        int
+		relevance float64
+	}
 	ss := make([]scored, len(cands))
-	for i, s := range cands {
+	for i := range cands {
 		relevance := 0.0
 		for _, t := range terms {
-			if strings.Contains(hays[i], t) {
+			if hasWord(hays[i], t) {
 				relevance += weights[t]
 			}
 		}
-		ss[i] = scored{s, relevance, float64(verifiedBoost(s.Tags)) + learn.Confidence(s.Reads, s.Wins)}
+		ss[i] = scored{i, relevance}
 	}
 	sort.SliceStable(ss, func(i, j int) bool {
-		if ss[i].relevance != ss[j].relevance {
-			return ss[i].relevance > ss[j].relevance
+		a, b := ss[i], ss[j]
+		if a.relevance != b.relevance {
+			return a.relevance > b.relevance
 		}
-		if ss[i].evidence != ss[j].evidence {
-			return ss[i].evidence > ss[j].evidence
+		if ca, cb := cands[a.at].Evidence, cands[b.at].Evidence; ca != cb {
+			return ca > cb
 		}
-		return ss[i].s.Slug < ss[j].s.Slug
+		return cands[a.at].Slug < cands[b.at].Slug
 	})
-	out := make([]state.Skill, 0, limit)
-	for _, x := range ss {
-		if len(out) >= limit {
-			break
-		}
-		out = append(out, x.s)
+	if len(ss) > limit {
+		ss = ss[:limit]
+	}
+	out := make([]int, len(ss))
+	for i, x := range ss {
+		out[i] = x.at
 	}
 	return out
+}
+
+// normalise lowercases terms and drops empty and repeated ones, so a caller's
+// literal cannot score one word twice.
+func normalise(terms []string) []string {
+	seen := make(map[string]bool, len(terms))
+	out := make([]string, 0, len(terms))
+	for _, t := range terms {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// heaviest keeps the n terms with the greatest weight, in their given order among
+// equals. A term no candidate carries weighs nothing, so it goes first.
+func heaviest(terms []string, weights map[string]float64, n int) []string {
+	if len(terms) <= n {
+		return terms
+	}
+	ordered := append([]string(nil), terms...)
+	sort.SliceStable(ordered, func(i, j int) bool { return weights[ordered[i]] > weights[ordered[j]] })
+	return ordered[:n]
 }
 
 // Offer returns the text shown at discovery: the description, or the head of the
@@ -134,7 +212,7 @@ func termWeights(terms []string, hays []string) map[string]float64 {
 	for _, t := range terms {
 		df := 0
 		for _, h := range hays {
-			if strings.Contains(h, t) {
+			if hasWord(h, t) {
 				df++
 			}
 		}
@@ -147,17 +225,49 @@ func termWeights(terms []string, hays []string) map[string]float64 {
 	return weights
 }
 
-// MatchScore counts the terms that appear in text. text must be lowercased, as the
-// terms are.
+// MatchScore counts the terms that appear in text as whole words (see [Keywords]
+// for what a term is). text must be lowercased, as the terms are.
 func MatchScore(terms []string, text string) int {
 	n := 0
 	for _, t := range terms {
-		if strings.Contains(text, t) {
+		if hasWord(text, t) {
 			n++
 		}
 	}
 	return n
 }
+
+// hasWord reports whether term occurs in hay with a word boundary at each end of the
+// term whose own character is a letter or digit. Terms are as often paths and
+// identifiers as words (`core/`, `render.js`), and an end that is punctuation has
+// nothing to be a boundary of: `core/` must still match `core/animation`. Both
+// arguments are lowercased by the caller.
+func hasWord(hay, term string) bool {
+	if term == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(term)
+	last, _ := utf8.DecodeLastRuneInString(term)
+	for from := 0; from <= len(hay)-len(term); {
+		at := strings.Index(hay[from:], term)
+		if at < 0 {
+			return false
+		}
+		at += from
+		end := at + len(term)
+		before, _ := utf8.DecodeLastRuneInString(hay[:at])
+		after, _ := utf8.DecodeRuneInString(hay[end:])
+		leftOK := !isWordRune(first) || at == 0 || !isWordRune(before)
+		rightOK := !isWordRune(last) || end == len(hay) || !isWordRune(after)
+		if leftOK && rightOK {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 func verifiedBoost(tags []string) int {
 	for _, t := range tags {
@@ -168,32 +278,51 @@ func verifiedBoost(tags []string) int {
 	return 0
 }
 
-// stopwords would match nearly every skill.
+// stopwords are function words that carry no subject. Rarity cannot drop them: the
+// candidates are gathered by the terms themselves, so every term has at least one
+// carrier and "not" in a short objective would otherwise count as much as its topic.
 var stopwords = map[string]bool{
 	"the": true, "and": true, "for": true, "with": true, "that": true, "this": true,
 	"into": true, "from": true, "your": true, "you": true, "use": true, "run": true,
 	"add": true, "all": true, "are": true, "its": true, "out": true, "via": true,
+	"not": true, "yet": true, "but": true, "what": true, "should": true, "was": true,
+	"were": true, "has": true, "have": true, "had": true, "can": true, "will": true,
+	"our": true, "how": true, "when": true, "does": true, "did": true, "just": true,
+	"any": true, "get": true, "got": true, "would": true, "could": true,
 }
 
+// maxKeywords is how many terms [Keywords] returns and how many [Rank] scores on.
 const maxKeywords = 8
 
-// Keywords returns up to eight distinct lowercased words of three or more letters or
-// digits, without stopwords.
-func Keywords(s string) []string {
-	seen := map[string]bool{}
-	var out []string
+// maxProbe is how many content words [Recall] searches for. It is wider than
+// maxKeywords so the terms that tell candidates apart can be chosen after the search,
+// and bounded because each is one store query. Past it, a word the input says once
+// and late is not searched for.
+const maxProbe = 32
+
+// Keywords returns up to eight distinct lowercased content words of three or more
+// letters or digits, without stopwords. A word the text repeats comes first, since a
+// repeated word is more likely its subject; words repeated equally keep their order.
+func Keywords(s string) []string { return contentWords(s, maxKeywords) }
+
+func contentWords(s string, limit int) []string {
+	count := map[string]int{}
+	var order []string
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
 	for _, f := range fields {
-		if len(f) < 3 || stopwords[f] || seen[f] {
+		if len(f) < 3 || stopwords[f] {
 			continue
 		}
-		seen[f] = true
-		out = append(out, f)
-		if len(out) >= maxKeywords {
-			break
+		if count[f] == 0 {
+			order = append(order, f)
 		}
+		count[f]++
 	}
-	return out
+	sort.SliceStable(order, func(i, j int) bool { return count[order[i]] > count[order[j]] })
+	if len(order) > limit {
+		order = order[:limit]
+	}
+	return order
 }
