@@ -21,7 +21,7 @@ try:
             fails.append("an unknown status was read as " + e.status)
     except Exception as ex:
         fails.append("an event with a status the parser has not seen is rejected: %r" % (ex,))
-    for bad in (dict(base, amount_cents="500"), {"id": "e1", "status": "paid"}, dict(base, amount_cents=None)):
+    for bad in (dict(base, amount_cents="500"), {"id": "e1", "status": "paid"}, dict(base, amount_cents=None), dict(base, amount_cents=True), dict(base, amount_cents=5.5)):
         try:
             events.parse_event(bad)
             fails.append("a malformed amount_cents is accepted: %r" % (bad.get("amount_cents", "missing"),))
@@ -29,7 +29,7 @@ try:
             pass
 except Exception as e:
     fails.append("events.parse_event is not usable: %r" % (e,))
-p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, text=True, timeout=60)
+p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, encoding="utf-8", errors="replace", timeout=60)
 if p.returncode != 0:
     fails.append("the tests fail: " + p.stderr[-300:])
 for f in fails:

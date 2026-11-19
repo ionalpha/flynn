@@ -14,7 +14,7 @@ def h(p):
 if h("requirements.txt") != "4b8183101fd19f071771805a42a31fbb234a7961921fdb8b783a279755a1b5d5":
     fails.append("requirements.txt changed; the standard library parses these timestamps")
 std = set(sys.stdlib_module_names)
-for node in ast.walk(ast.parse(open("events.py").read())):
+for node in ast.walk(ast.parse(open("events.py", encoding="utf-8").read())):
     names = []
     if isinstance(node, ast.Import):
         names = [a.name for a in node.names]
@@ -28,6 +28,9 @@ cases = {
     "2026-03-01T09:30:00-08:00": datetime(2026, 3, 1, 17, 30, tzinfo=timezone.utc),
     "2026-03-01T09:30:00+00:00": datetime(2026, 3, 1, 9, 30, tzinfo=timezone.utc),
     "2026-03-01T09:30:00": datetime(2026, 3, 1, 9, 30, tzinfo=timezone.utc),
+    "2026-03-01T09:30:00-03:30": datetime(2026, 3, 1, 13, 0, tzinfo=timezone.utc),
+    "2026-03-01T09:30:00Z": datetime(2026, 3, 1, 9, 30, tzinfo=timezone.utc),
+    "2026-03-01T09:30:00.250+01:00": datetime(2026, 3, 1, 8, 30, 0, 250000, tzinfo=timezone.utc),
 }
 try:
     import events

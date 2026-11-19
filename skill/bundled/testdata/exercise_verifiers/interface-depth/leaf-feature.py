@@ -27,6 +27,20 @@ try:
     got = reports.top_customers(5)
     if [tuple(p) for p in got] != [("c1", 3500), ("c3", 900), ("c2", 400)]:
         fails.append("top_customers(5) is %r, want all three customers" % (got,))
+    if reports.top_customers(0) != [] or [tuple(p) for p in reports.top_customers(1)] != [("c1", 3500)]:
+        fails.append("top_customers(0) and top_customers(1) are %r and %r" % (reports.top_customers(0), reports.top_customers(1)))
+    probe = "_probe_orders.json"
+    with open(probe, "w", encoding="utf-8", newline=chr(10)) as f:
+        f.write('{"orders": [{"id": "x1", "customer_id": "z1", "month": "2026-03", "total_cents": 50}, {"id": "x2", "customer_id": "z2", "month": "2026-03", "total_cents": 70}, {"id": "x3", "customer_id": "z1", "month": "2026-04", "total_cents": 40}]}')
+    keep = reports.DB
+    reports.DB = probe
+    try:
+        got = [tuple(p) for p in reports.top_customers(2)]
+    finally:
+        reports.DB = keep
+        os.remove(probe)
+    if got != [("z1", 90), ("z2", 70)]:
+        fails.append("top_customers on other orders is %r, want [('z1', 90), ('z2', 70)]: it reads the orders it is given" % (got,))
     if reports.revenue_by_month() != {"2026-01": 2400, "2026-02": 2400}:
         fails.append("revenue_by_month changed: %r" % (reports.revenue_by_month(),))
 except Exception as e:

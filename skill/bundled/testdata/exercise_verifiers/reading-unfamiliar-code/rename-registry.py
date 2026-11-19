@@ -23,20 +23,32 @@ for d, dirs, files in os.walk("."):
             continue
         if "parse_amount" in text:
             fails.append("the old name is still in " + os.path.normpath(p))
+for name in ("test_amounts.py", "test_importer.py"):
+    if not os.path.exists(name):
+        fails.append(name + " was removed: a rename that deletes its tests proves nothing")
+if os.path.exists("test_amounts.py"):
+    tests = open("test_amounts.py", encoding="utf-8").read()
+    if tests.count("def test_") < 3 or "parse_cents" not in tests:
+        fails.append("test_amounts.py lost tests or no longer tests parse_cents")
 try:
     import amounts
 
     for text, want in (("12.50", 1250), ("0.99", 99), ("3", 300), ("100.05", 10005)):
         if amounts.parse_cents(text) != want:
             fails.append("parse_cents(%r) is not %d" % (text, want))
+    try:
+        amounts.parse_cents("abc")
+        fails.append("parse_cents('abc') did not raise ValueError")
+    except ValueError:
+        pass
 except Exception as e:
     fails.append("amounts.parse_cents is not usable: %r" % (e,))
-p = subprocess.run([sys.executable, "importer.py", "rows.csv"], capture_output=True, text=True, timeout=30)
+p = subprocess.run([sys.executable, "importer.py", "rows.csv"], capture_output=True, encoding="utf-8", errors="replace", timeout=30)
 if p.stdout.strip() != "imported 4 skipped 1":
     fails.append("the importer printed %r, want 'imported 4 skipped 1'" % p.stdout.strip())
 p = subprocess.run(
     [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test*.py"],
-    capture_output=True, text=True, timeout=60,
+    capture_output=True, encoding="utf-8", errors="replace", timeout=60,
 )
 if p.returncode != 0:
     fails.append("the project's own tests fail: " + p.stderr[-300:])

@@ -39,6 +39,8 @@ def identifiers(tree):
             yield node.lineno, node.id
         elif isinstance(node, ast.Attribute):
             yield node.lineno, node.attr
+        elif isinstance(node, ast.keyword) and node.arg:
+            yield node.value.lineno, node.arg
 
 
 def contains(parts, phrase):

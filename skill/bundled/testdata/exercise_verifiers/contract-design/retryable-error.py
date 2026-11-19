@@ -21,6 +21,18 @@ def behaviour(tag):
         fails.append(tag + ": a timeout is not retried: %r" % (e,))
     calls.clear()
 
+    def down(amount):
+        calls.append(amount)
+        raise payments.gateway_error("timeout")
+
+    try:
+        checkout.pay(down, 700)
+        fails.append(tag + ": a timeout that repeats did not reach the caller")
+    except Exception:
+        if len(calls) != 2:
+            fails.append(tag + ": a timeout is tried %d times, want one retry and then the error" % len(calls))
+    calls.clear()
+
     def declined(amount):
         calls.append(amount)
         raise payments.gateway_error("declined")

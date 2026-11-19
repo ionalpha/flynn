@@ -26,7 +26,9 @@ try:
         m.send("ben@example.com", "Hello", "second")
     except Exception as e:
         fails.append("a new Mailer cannot send without being told to connect first: %r; the next caller will forget too" % (e,))
-    if len(smtp.OUTBOX) == 2 and len(smtp.CONNECTIONS) != 1:
+    if [m[3] for m in smtp.OUTBOX] != ["first", "second"]:
+        fails.append("two sends from one Mailer delivered %r" % ([m[3] for m in smtp.OUTBOX],))
+    elif len(smtp.CONNECTIONS) != 1:
         fails.append("two sends from one Mailer opened %d connections, want 1" % len(smtp.CONNECTIONS))
     reset()
     try:

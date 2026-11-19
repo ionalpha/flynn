@@ -39,7 +39,7 @@ def balance_after(principal_cents, annual_rate_percent, months):
 def run(d):
     p = subprocess.run(
         [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test*.py"],
-        cwd=d, capture_output=True, text=True, timeout=30,
+        cwd=d, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
     )
     return p.returncode, p.stderr
 
@@ -50,7 +50,7 @@ if rc != 0:
 else:
     d = "_mut_original"
     shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
-    with open(os.path.join(d, "interest.py"), "w", newline="\n") as f:
+    with open(os.path.join(d, "interest.py"), "w", newline="\n", encoding="utf-8") as f:
         f.write(BUGGY)
     rc, out = run(d)
     if rc == 0:

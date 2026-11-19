@@ -23,10 +23,12 @@ else:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        if slugs.legacy_slug("Hello, World") != "hello_world":
-            fails.append("legacy_slug changed behaviour")
-if slugs.slugify("Hello, World") != "hello-world":
-    fails.append("slugify changed behaviour")
+        for text, want in (("Hello, World", "hello_world"), ("  a  b c ", "a_b_c")):
+            if slugs.legacy_slug(text) != want:
+                fails.append("legacy_slug(%r) changed behaviour" % (text,))
+for text, want in (("Hello, World", "hello-world"), ("  a  b c ", "a-b-c")):
+    if slugs.slugify(text) != want:
+        fails.append("slugify(%r) changed behaviour" % (text,))
 for f in fails:
     print(f, file=sys.stderr)
 sys.exit(1 if fails else 0)

@@ -27,7 +27,7 @@ sys.exit(0 if r.wasSuccessful() else 1)
 
 
 def run(mode, cwd="."):
-    p = subprocess.run([sys.executable, "-c", RUN, mode], cwd=cwd, capture_output=True, text=True, timeout=60)
+    p = subprocess.run([sys.executable, "-c", RUN, mode], cwd=cwd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -46,10 +46,10 @@ def mutant(name, old, new):
     d = "_mut_" + name
     shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
     path = os.path.join(d, "registry.py")
-    src = open(path).read()
+    src = open(path, encoding="utf-8").read()
     if old not in src:
         return None
-    with open(path, "w", newline="\n") as f:
+    with open(path, "w", newline="\n", encoding="utf-8") as f:
         f.write(src.replace(old, new))
     return run("sorted", d)
 

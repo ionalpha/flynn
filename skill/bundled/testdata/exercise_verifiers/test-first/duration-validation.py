@@ -67,7 +67,7 @@ MUTANTS = {
 def run(d):
     p = subprocess.run(
         [sys.executable, "-m", "unittest", "test_duration"],
-        cwd=d, capture_output=True, text=True, timeout=30,
+        cwd=d, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
     )
     return p.returncode, p.stderr
 
@@ -85,7 +85,7 @@ else:
         for what, (tpl, parts) in MUTANTS.items():
             d = "_mut_%d" % len(os.listdir("."))
             shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
-            with open(os.path.join(d, "duration.py"), "w", newline="\n") as f:
+            with open(os.path.join(d, "duration.py"), "w", newline="\n", encoding="utf-8") as f:
                 f.write(tpl % parts)
             if run(d)[0] == 0:
                 fails.append("the tests still pass when the code " + what)

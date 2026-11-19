@@ -162,8 +162,7 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 				t.Errorf("%s: the verifier passes on the fixture as shipped, so the solution in %s is not what it grades", exerciseLabel(slug, e), solution)
 			}
 			if !verdict(solution) {
-				t.Errorf("%s: the verifier fails on the reference solution %s:
-%s", exerciseLabel(slug, e), solution, lastOutput)
+				t.Errorf("%s: the verifier fails on the reference solution %s:\n%s", exerciseLabel(slug, e), solution, lastOutput)
 			}
 		} else if !pristine {
 			t.Errorf("%s: no solution overlay and the fixture as shipped fails: add testdata/%s, or fix the verifier", exerciseLabel(slug, e), solution)

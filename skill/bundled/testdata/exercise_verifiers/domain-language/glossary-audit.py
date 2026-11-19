@@ -8,7 +8,7 @@ fails = []
 
 def run(d):
     p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test*.py"],
-                       cwd=d, capture_output=True, text=True, timeout=60)
+                       cwd=d, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -23,6 +23,10 @@ else:
         ("shop/zz_case.py", "def purchaser_name(c):\n    return c\n", None, True, "a function named purchaser_name"),
         ("shop/zz_case.py", "def total(buyOrder):\n    return buyOrder\n", None, True, "an argument named buyOrder"),
         ("shop/zz_case.py", "po_number = 7\n", None, True, "a variable named po_number"),
+        ("shop/zz_case.py", "def f(o):\n    return o.purchaser\n", None, True, "an attribute named purchaser"),
+        ("shop/zz_case.py", "x = dict(client=1)\n", None, True, "a keyword argument named client"),
+        ("shop/deep/zz_case.py", "class ClientRecord:\n    pass\n", None, True, "a class named ClientRecord two directories down"),
+        ("zz_case.py", "class ClientRecord:\n    pass\n", None, True, "a class named ClientRecord at the top of the tree"),
         ("shop/zz_case.py", "def vendor_list():\n    return []\n",
          "\n## Supplier\n\nA business we buy stock from.\n\nDisplaces: vendor.\n\nSource: the purchasing team.\n",
          True, "a function named vendor_list after the glossary gains Supplier, displacing vendor"),
@@ -33,10 +37,11 @@ else:
     for i, (path, code, entry, should_fail, what) in enumerate(cases):
         d = "_mut_%d" % i
         shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
-        with open(os.path.join(d, path), "w", newline="\n") as f:
+        os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+        with open(os.path.join(d, path), "w", newline="\n", encoding="utf-8") as f:
             f.write(code)
         if entry:
-            with open(os.path.join(d, "GLOSSARY.md"), "a", newline="\n") as f:
+            with open(os.path.join(d, "GLOSSARY.md"), "a", newline="\n", encoding="utf-8") as f:
                 f.write(entry)
         rc, out = run(d)
         if should_fail and rc == 0:

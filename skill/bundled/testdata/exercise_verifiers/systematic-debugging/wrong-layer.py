@@ -21,7 +21,7 @@ try:
         fails.append("format_total no longer adds up the provider's amounts")
 except Exception as e:
     fails.append("report.format_total is not usable: %r" % (e,))
-p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, text=True, timeout=60)
+p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, encoding="utf-8", errors="replace", timeout=60)
 if p.returncode != 0:
     fails.append("the tests fail: " + p.stderr[-300:])
 for f in fails:

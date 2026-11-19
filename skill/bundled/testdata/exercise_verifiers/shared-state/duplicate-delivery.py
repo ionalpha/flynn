@@ -1,11 +1,10 @@
 import importlib
 import os
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
-path = os.path.join(tempfile.mkdtemp(), "ledger.json")
+path = os.path.join(os.getcwd(), "_probe_ledger.json")
 
 
 def msg(mid, account, cents):

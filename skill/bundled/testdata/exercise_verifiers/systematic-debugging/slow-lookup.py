@@ -23,12 +23,12 @@ if e >= 2.0:
     sys.exit(1)
 """
 try:
-    p = subprocess.run([sys.executable, "-c", TIMED], capture_output=True, text=True, timeout=20)
+    p = subprocess.run([sys.executable, "-c", TIMED], capture_output=True, encoding="utf-8", errors="replace", timeout=20)
     if p.returncode != 0:
         fails.append(p.stderr.strip()[-400:])
 except subprocess.TimeoutExpired:
     fails.append("match did not finish 20,000 lines in 20 seconds")
-p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, text=True, timeout=60)
+p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-q"], capture_output=True, encoding="utf-8", errors="replace", timeout=60)
 if p.returncode != 0:
     fails.append("the tests fail: " + p.stderr[-300:])
 for f in fails:

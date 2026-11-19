@@ -24,6 +24,11 @@ try:
         fails.append("the cart line changed: %r" % (cart.cart_line("Mug", 899, "USD"),))
     if invoice.invoice_total([1250, 899], "CAD") != "Total due: CA$21.49":
         fails.append("the invoice total changed: %r" % (invoice.invoice_total([1250, 899], "CAD"),))
+    if money.format_price(0, "USD") != "$0.00" or money.format_price(5, "CAD") != "CA$0.05":
+        fails.append("format_price on small amounts gives %r and %r" % (money.format_price(0, "USD"), money.format_price(5, "CAD")))
+    cad = [x for x in receipt.receipt_lines({"currency": "CAD", "items": [("Mug", 899)]}) if "Mug" in x]
+    if not cad or "8.99" not in cad[0] or "$" in cad[0] or "CA" in cad[0]:
+        fails.append("the receipt line for a sale in CAD is %r, want the amount 8.99 with no symbol or prefix" % (cad,))
     lines = receipt.receipt_lines(SALE)
     if not any("USD" in line for line in lines):
         fails.append("the receipt header no longer names the currency: %r" % (lines,))

@@ -44,19 +44,26 @@ for mod in ("customers", "orders") + tuple(f[:-3] for f in os.listdir(".") if f.
     except Exception:
         continue
     import customers
+    import orders
 
     for n, f in vars(m).items():
         if not callable(f) or n in ORIGINAL or n.startswith("_") or getattr(f, "__module__", "") != mod:
             continue
         for arg in (lambda c: c, lambda c: customers.find_customer(c)):
             try:
-                if [f(arg(c)) for c in ("c1", "c2", "c3")] == [3500, 1200, 0]:
-                    found.append(mod + "." + n)
-                    break
+                if [f(arg(c)) for c in ("c1", "c2", "c3")] != [3500, 1200, 0]:
+                    continue
+                orders.ORDERS.append({"id": "o9", "customer_id": "c3", "total_cents": 700})
+                try:
+                    if [f(arg(c)) for c in ("c1", "c2", "c3")] == [3500, 1200, 700]:
+                        found.append(mod + "." + n)
+                        break
+                finally:
+                    orders.ORDERS.pop()
             except Exception:
                 pass
 if not found:
-    fails.append("no new function returns what a customer has spent: c1 3500, c2 1200, c3 0")
+    fails.append("no new function returns what a customer has spent, from the orders as they stand: c1 3500, c2 1200, c3 0, and c3 700 after an order of 700 is added")
 fails = list(dict.fromkeys(fails))
 for f in fails:
     print(f, file=sys.stderr)

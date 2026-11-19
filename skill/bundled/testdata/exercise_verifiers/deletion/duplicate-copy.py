@@ -35,7 +35,7 @@ def probe(name, rel):
         clean = suite(d)
         target = os.path.join(d, rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w") as f:
+        with open(target, "w", encoding="utf-8", newline="\n") as f:
             f.write("def parse_money(text):\n    return 0\n")
         dirty = suite(d)
     finally:
@@ -58,7 +58,17 @@ try:
         fails.append("parenthesised negatives, which only the deleted copy handled, were lost")
 except Exception as e:
     fails.append("import or call failed: %r" % (e,))
-for name, rel in (("same_place", "ingest/amounts.py"), ("elsewhere", "reports/money_helpers.py")):
+tests = open("tests/test_money.py", encoding="utf-8").read() if os.path.exists("tests/test_money.py") else ""
+for name in ("test_plain", "test_thousands", "test_whole", "test_invoice", "test_refund"):
+    if "def " + name not in tests:
+        fails.append("tests/test_money.py lost %s: the suite passes with fewer checks" % name)
+PROBES = (
+    ("same_place", "ingest/amounts.py"),
+    ("elsewhere", "reports/money_helpers.py"),
+    ("top_level", "money_copy.py"),
+    ("nested", "lib/text/money.py"),
+)
+for name, rel in PROBES:
     clean, dirty = probe(name, rel)
     if clean != 0:
         fails.append("the tree copy used to probe %s does not pass its own suite" % name)

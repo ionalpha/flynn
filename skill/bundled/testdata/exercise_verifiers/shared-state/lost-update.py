@@ -98,7 +98,7 @@ except Exception as e:
 
 def run(d):
     p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test*.py"],
-                       cwd=d, capture_output=True, text=True, timeout=60)
+                       cwd=d, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -107,7 +107,7 @@ if rc != 0:
     fails.append("the tests fail on the result: " + out[-300:])
 d = "_mut_original"
 shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
-with open(os.path.join(d, "inventory.py"), "w", newline="\n") as f:
+with open(os.path.join(d, "inventory.py"), "w", newline="\n", encoding="utf-8") as f:
     f.write(ORIGINAL)
 rc, out = run(d)
 if rc == 0 or "AssertionError" not in out:

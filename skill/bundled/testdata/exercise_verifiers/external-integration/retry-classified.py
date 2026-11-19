@@ -45,6 +45,8 @@ try:
         fails.append("two 503s and then a 200 should return the report; got %r, error %r" % (got, err))
     elif len(calls) != 3:
         fails.append("two 503s and then a 200 took %d calls, want 3" % len(calls))
+    elif len(sleeps) < 2:
+        fails.append("two 503s were retried with %d waits between attempts; a retry with no wait hammers a service that is already down" % len(sleeps))
     got, err = case([(503, {})])
     if err is None:
         fails.append("a service that answers 503 every time should end in an error")
@@ -61,6 +63,9 @@ try:
         fails.append("a 429 with Retry-After: 7 and then a 200 should return the report; error %r" % (err,))
     elif not sleeps or max(sleeps) < 7:
         fails.append("a 429 asked for 7 seconds and the client waited %r" % (sleeps,))
+    got, err = case([(429, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}), (200, {})])
+    if err is not None or not isinstance(got, dict):
+        fails.append("a 429 whose Retry-After is a date and then a 200 should return the report; error %r" % (err,))
     got, err = case([(429, {"Retry-After": "86400"}), (200, {})])
     if sleeps and max(sleeps) > 300:
         fails.append("a Retry-After of a day held the call for %.0f seconds; cap the wait" % max(sleeps))

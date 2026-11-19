@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 
 sys.path.insert(0, ".")
@@ -18,8 +19,10 @@ try:
         new = [k for k, v in p.items() if k not in ("id", "total", "currency") and type(v) is int and v == cents]
         if not new:
             fails.append("no field carries the total as integer cents")
-        elif not any(k in open("PARTNERS.md").read() for k in new):
-            fails.append("the new field " + new[0] + " is not documented in PARTNERS.md")
+        else:
+            doc = open("PARTNERS.md", encoding="utf-8").read()
+            if not any(re.search(r"^\|\s*`?%s`?\s*\|" % re.escape(k), doc, re.M) for k in new):
+                fails.append("the new field " + new[0] + " has no row in the PARTNERS.md field table")
 except Exception as e:
     fails.append("orders.order_payload is not usable: %r" % (e,))
 fails = list(dict.fromkeys(fails))

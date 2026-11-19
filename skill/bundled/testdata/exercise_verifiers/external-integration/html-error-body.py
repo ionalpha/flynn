@@ -50,6 +50,13 @@ try:
         for want, what in (("502", "the status"), ("text/html", "the content type"), ("Bad Gateway", "the first line of the body")):
             if want not in said:
                 fails.append("the failure for a 502 HTML page does not say %s (%s): %r" % (what, want, said[:300]))
+    got, err, said = case(504, "text/plain", "upstream request timeout" + chr(10))
+    if err is None:
+        fails.append("a 504 with a plain-text body returned %r instead of raising" % (got,))
+    else:
+        for want, what in (("504", "the status"), ("text/plain", "the content type"), ("upstream request timeout", "the body")):
+            if want not in said:
+                fails.append("the failure for a 504 plain-text body does not say %s (%s): %r" % (what, want, said[:300]))
     got, err, said = case(503, "application/json", json.dumps({"message": "Service Unavailable"}))
     if err is None:
         fails.append("a 503 with a JSON body came back as an invoice: %r" % (got,))

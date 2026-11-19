@@ -5,7 +5,7 @@ import time
 sys.path.insert(0, ".")
 fails = []
 applied, keys, store = [], [], {}
-mode = {"timeouts": 0}
+mode = {"timeouts": 0, "status": 0}
 time.sleep = lambda seconds: None
 
 try:
@@ -17,6 +17,8 @@ try:
         lower = {str(k).lower(): v for k, v in (headers or {}).items()}
         key = lower.get("idempotency-key")
         keys.append(key)
+        if mode["status"]:
+            return transport.Response(mode["status"], {"Content-Type": "application/json"}, '{"error": "refused"}')
         params = (body["account"], body["amount_cents"])
         if key is not None and key in store:
             if store[key][0] != params:
@@ -39,6 +41,7 @@ try:
         keys.clear()
         store.clear()
         mode["timeouts"] = timeouts
+        mode["status"] = 0
 
     reset(1)
     try:
@@ -70,6 +73,15 @@ try:
         fails.append("a provider that always times out was called %d times" % len(keys))
     if len(applied) != 1:
         fails.append("a provider that always times out applied %d payouts" % len(applied))
+    reset(0)
+    mode["status"] = 400
+    try:
+        payouts.send_payout("acct_3", 100)
+        fails.append("a provider that refuses a payout with 400 should end in an error")
+    except Exception:
+        pass
+    if len(keys) != 1:
+        fails.append("a payout refused with 400 was sent %d times; a refusal is the same answer every time" % len(keys))
 except Exception as e:
     fails.append("the payout client could not be exercised: %r" % (e,))
 for f in fails:
