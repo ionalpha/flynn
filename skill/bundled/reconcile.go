@@ -14,45 +14,19 @@ import (
 )
 
 // Reconcile makes the bundled scope hold what want ships without overwriting a
-// skill a host edited. [Seed] calls it with the embedded pack; a host that
-// assembles its own pack calls it directly. Every skill in want is placed in
-// [state.BundledScope].
+// skill a host edited. [Seed] calls it with the embedded pack.
 //
-// The pack owns name, description, body, tags and check. Everything else on a
-// [state.Skill] is the host's and is never rewritten here: the Offers, Reads and Wins
-// counters record this machine's runs, so a skill whose only change is a counter has
-// not diverged from its pack. [state.Skill.PackDigest] holds a fingerprint of the
-// pack-owned fields as the pack last wrote them, and a stored skill whose fields no
-// longer produce it has been edited. For each skill in want:
+// The pack owns name, description, body, tags and check; the counters are the
+// host's, so a counter change is not an edit. A skill is edited when its fields no
+// longer produce [state.Skill.PackDigest]. An edited skill is withheld from an update
+// and marked [state.Skill.Diverged] (named once in [Result.Diverged]) until the copies
+// agree. A dropped skill is deleted if untouched and released into the host's own
+// scope if edited, or marked diverged if that scope already has the slug.
 //
-//   - not stored: added, with the record.
-//   - untouched and the pack changed: replaced, with the record moved to the new
-//     content.
-//   - edited and the pack changed: left as the host has it, and marked
-//     [state.Skill.Diverged]. [Result.Diverged] names it the first time only; a person
-//     decides, by editing the skill to match the pack or by deleting it so the next
-//     run installs the pack's.
-//   - edited and the stored copy now equals the pack: the mark is cleared and the
-//     record moves to the pack's content.
-//   - edited and the pack unchanged: nothing is withheld, so nothing is marked.
-//
-// A stored skill the pack no longer ships is deleted if untouched. If edited it is
-// released: copied into the host's own scope with its counters and no record, then
-// deleted from the bundled scope, so the host's work outlives the pack. If the host
-// already has a skill of that slug the release is refused and the bundled copy is
-// marked diverged, because overwriting either would lose work.
-//
-// An install seeded before records existed has skills with no digest, and nothing
-// says whether they were edited. The first run adopts them: a skill that differs from
-// the pack is replaced, as every earlier start did, and every one gets a record, so
-// from the second run on an edit is protected. An edit made before that first run is
-// not recoverable by any means this package has. [Result.Adopted] names these skills.
-// A host that rewrites a seeded skill from scratch instead of reading it first drops
-// the record and is adopted the same way.
-//
-// A write that loses a race with a host's own write ([state.ErrConflict]) is skipped
-// and decided again on the next run, because the host's write may be an edit. Any
-// other store error ends the run.
+// A skill with no digest was seeded before records existed and cannot be told
+// from an older pack version. The first run replaces it as every earlier start did,
+// records it ([Result.Adopted]), and protects edits from then on. A write that
+// loses a race ([state.ErrConflict]) is skipped and decided on the next run.
 func Reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) (Result, error) {
 	return reconcile(ctx, store, want)
 }
