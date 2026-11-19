@@ -12,4 +12,3 @@ performance-measurement not yet authored
 reading-unfamiliar-code not yet authored
 shared-state not yet authored
 structural-boundaries not yet authored
-test-first not yet authored
