@@ -1,1 +1,17 @@
-# placeholder
+# Bundled skills that ship without an exercise set: the backlog.
+#
+# One line per skill: "<slug> <reason>". The list may only shrink. Write the skill's
+# set under evals/<slug>/ and delete its line; never add a skill here. A new skill
+# arrives with its set or TestEveryBundledSkillHasAnExerciseSet fails.
+contract-design not yet authored
+deletion not yet authored
+dependencies not yet authored
+domain-language not yet authored
+external-integration not yet authored
+interface-depth not yet authored
+performance-measurement not yet authored
+reading-unfamiliar-code not yet authored
+shared-state not yet authored
+structural-boundaries not yet authored
+test-first not yet authored
+untrusted-input not yet authored
