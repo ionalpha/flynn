@@ -13,4 +13,3 @@ reading-unfamiliar-code not yet authored
 shared-state not yet authored
 structural-boundaries not yet authored
 test-first not yet authored
-untrusted-input not yet authored
