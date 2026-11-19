@@ -10,6 +10,7 @@ import (
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/internal/sqlitex"
 	"github.com/ionalpha/flynn/recallplan"
+	"github.com/ionalpha/flynn/state"
 )
 
 func formatTime(t time.Time) string { return sqlitex.FormatTime(t) }
@@ -87,6 +88,18 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// marshalTriggers stores no triggers as "", which is also the column default.
+func marshalTriggers(ts []state.SkillTrigger) string {
+	if len(ts) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ts)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func marshalTags(tags []string) string {

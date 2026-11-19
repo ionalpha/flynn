@@ -471,6 +471,9 @@ func Validate(d Doc, dirName string) error {
 			return fmt.Errorf("%w: metadata has an empty key", ErrInvalid)
 		}
 	}
+	if err := CheckTriggers(d.Metadata); err != nil {
+		return err
+	}
 	if len(d.Unknown) > 0 {
 		return fmt.Errorf("%w: undefined frontmatter keys %v, put extensions in metadata", ErrInvalid, sortedKeys(d.Unknown))
 	}

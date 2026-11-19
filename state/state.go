@@ -172,7 +172,10 @@ type Skill struct {
 	Reads  int `json:"Reads"`
 	Wins   int `json:"ReadWins"`
 	// Check is an optional shell command that re-grades the skill.
-	Check     string
+	Check string
+	// Triggers declare what a run does that makes the host load Body into the next
+	// turn. Empty means the skill is only ever loaded by the model or by name.
+	Triggers  []SkillTrigger `json:",omitempty"`
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time

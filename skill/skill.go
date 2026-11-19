@@ -40,7 +40,21 @@ var specSchema = json.RawMessage(`{
     "wins": {"type": "integer", "minimum": 0},
     "reads": {"type": "integer", "minimum": 0},
     "read_wins": {"type": "integer", "minimum": 0},
-    "check": {"type": "string"}
+    "check": {"type": "string"},
+    "triggers": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {"type": "string"},
+          "match": {"type": "string"},
+          "count": {"type": "integer", "minimum": 0},
+          "seconds": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
   },
   "additionalProperties": false
 }`)
@@ -71,6 +85,10 @@ type spec struct {
 	Reads  int    `json:"reads,omitempty"`
 	Wins   int    `json:"read_wins,omitempty"`
 	Check  string `json:"check,omitempty"`
+	// Triggers keep unknown trigger fields out of the schema's way (no
+	// additionalProperties on an item), so a newer writer's field survives a round trip
+	// through an older reader's store.
+	Triggers []state.SkillTrigger `json:"triggers,omitempty"`
 }
 
 // Store is the state.SkillStore the agent uses.
@@ -180,7 +198,7 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 // toResource carries SyncVersion so the store enforces the skill contract's opt-in
 // optimistic concurrency.
 func toResource(sk state.Skill) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Offers: sk.Offers, Reads: sk.Reads, Wins: sk.Wins, Check: sk.Check})
+	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Offers: sk.Offers, Reads: sk.Reads, Wins: sk.Wins, Check: sk.Check, Triggers: sk.Triggers})
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("skill: encode spec: %w", err)
 	}
@@ -216,6 +234,7 @@ func toSkill(r resource.Resource) (state.Skill, error) {
 		Reads:       sp.Reads,
 		Wins:        sp.Wins,
 		Check:       sp.Check,
+		Triggers:    sp.Triggers,
 		Scope:       state.Scope(r.Scope),
 		Version:     int(r.Version),
 		CreatedAt:   r.CreatedAt,

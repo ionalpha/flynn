@@ -16,6 +16,7 @@ func RunSuite(t *testing.T, newStore func() state.SkillStore) {
 	t.Run("UpsertGetListSearch", func(t *testing.T) { testCRUD(t, newStore()) })
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testCAS(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
+	t.Run("Triggers", func(t *testing.T) { testTriggers(t, newStore()) })
 	t.Run("Description", func(t *testing.T) { testDescription(t, newStore()) })
 	t.Run("SearchWords", func(t *testing.T) { testSearchWords(t, newStore()) })
 }
@@ -285,5 +286,66 @@ func testTombstone(t *testing.T, sk state.SkillStore) {
 	}
 	if got, err := sk.Get(ctx, "deploy"); err != nil || got.Body != "back" {
 		t.Fatalf("resurrected = (%q, %v)", got.Body, err)
+	}
+}
+
+// skillTriggerWant is a trigger list that exercises every kind and every field, so a
+// store that drops or reorders any of it fails.
+func skillTriggerWant() []state.SkillTrigger {
+	return []state.SkillTrigger{
+		{Kind: "file", Match: "**/go.mod"},
+		{Kind: "tool", Match: "shell"},
+		{Kind: "repeat", Match: "shell", Count: 3},
+		{Kind: "slow", Seconds: 90},
+	}
+}
+
+func triggersEqual(a, b []state.SkillTrigger) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// testTriggers requires the declared triggers to survive a write and every read path,
+// and an upsert without them to clear them.
+func testTriggers(t *testing.T, sk state.SkillStore) {
+	ctx := context.Background()
+	want := skillTriggerWant()
+	if _, err := sk.Upsert(ctx, state.Skill{Slug: "gate", Name: "Gate", Description: "d", Body: "b", Triggers: want}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sk.Get(ctx, "gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !triggersEqual(got.Triggers, want) {
+		t.Fatalf("Get lost the triggers: got %+v, want %+v", got.Triggers, want)
+	}
+	listed, err := sk.List(ctx, state.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || !triggersEqual(listed[0].Triggers, want) {
+		t.Fatalf("List lost the triggers: %+v", listed)
+	}
+	found, err := sk.Search(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || !triggersEqual(found[0].Triggers, want) {
+		t.Fatalf("Search lost the triggers: %+v", found)
+	}
+	cleared, err := sk.Upsert(ctx, state.Skill{Slug: "gate", Name: "Gate", Description: "d", Body: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.Triggers) != 0 {
+		t.Fatalf("an upsert without triggers kept %+v; upsert is a whole-record write", cleared.Triggers)
 	}
 }
