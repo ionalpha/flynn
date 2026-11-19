@@ -12,8 +12,9 @@ import (
 )
 
 // A term is a word, not a run of letters: "ion" is not in "integration", and "test"
-// is not in "latest". An end that is punctuation has nothing to be a boundary of, so a
-// path or a file name still matches where it is written.
+// is not in "latest". An inflected form of the word still counts ("paste" and
+// "pasting", "run" and "running"). An end that is punctuation has nothing to be a
+// boundary of, so a path or a file name still matches where it is written.
 func TestMatchScoreMatchesWholeWords(t *testing.T) {
 	tests := []struct {
 		name string
@@ -25,10 +26,11 @@ func TestMatchScoreMatchesWholeWords(t *testing.T) {
 		{"inside a longer word, later", "ion", "version", 0},
 		{"inside a longer word, middle", "ion", "translating", 0},
 		{"suffix of a word", "test", "the latest build", 0},
-		{"prefix of a word", "deploy", "deployed twice", 0},
-		{"the word itself", "ion", "the ion alpha voice", 1},
-		{"at the start", "ion", "ion alpha", 1},
-		{"at the end", "alpha", "the ion alpha", 1},
+		{"prefix of a word", "deploy", "a deployment plan", 0},
+		{"prefix of a longer word", "pack", "packaging", 0},
+		{"the word itself", "ion", "the ion channel", 1},
+		{"at the start", "ion", "ion channel", 1},
+		{"at the end", "channel", "the ion channel", 1},
 		{"whole text", "ion", "ion", 1},
 		{"beside a hyphen", "release", "pack-deploy-is-not-release", 1},
 		{"beside a hyphen, left", "deploy", "pack-deploy-is-not-release", 1},
@@ -44,6 +46,28 @@ func TestMatchScoreMatchesWholeWords(t *testing.T) {
 		{"digits inside a longer token", "2xx", "a 12xx check", 0},
 		{"non-ASCII neighbour is a letter", "caf", "un café", 0},
 		{"empty term", "", "anything", 0},
+		{"plural of the term", "rule", "the rules apply", 1},
+		{"term is the plural", "rules", "one rule applies", 1},
+		{"es plural", "box", "three boxes", 1},
+		{"es plural, other way", "boxes", "a box", 1},
+		{"past tense of the term", "deploy", "deployed twice", 1},
+		{"term is the past tense", "renamed", "rename this function", 1},
+		{"past tense after a dropped e", "rename", "it was renamed", 1},
+		{"participle of the term", "paste", "pasting a snippet", 1},
+		{"term is the participle", "pasting", "can I paste this snippet", 1},
+		{"doubled consonant", "run", "running the suite", 1},
+		{"doubled consonant, other way", "running", "run the suite", 1},
+		{"doubled consonant in a past tense", "stop", "stopped early", 1},
+		{"plural of a participle", "setting", "the settings page", 1},
+		{"sibilant plural", "cache", "clear the caches", 1},
+		{"inflection beside a hyphen", "paste", "no-pasting-here", 1},
+		{"short ing word is not folded", "bring", "the br tag", 0},
+		{"ing word with no vowel stem", "string", "the str value", 0},
+		{"inflection does not reach into a longer word", "ion", "integrations", 0},
+		{"inflection does not reach into a longer word, ing", "test", "testament", 0},
+		{"different words stay apart", "paste", "pasta salad", 0},
+		{"a path is matched as written", "core/", "edit cores/animation", 0},
+		{"inflection of a different word", "rename", "renamer", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,18 +80,20 @@ func TestMatchScoreMatchesWholeWords(t *testing.T) {
 
 // Whatever the letters, a term never matches inside a longer word, and always matches
 // as a word between any two non-word characters. Together they say the boundary is
-// the whole rule.
+// the whole rule. A longer word here is one that is not an inflection of the term: a
+// prefix, a digit run, or a derived suffix such as "ment" or "ness".
 func TestProp_ATermMatchesAsAWordAndNeverInsideOne(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		word := rapid.StringMatching(`[a-z0-9]{3,8}`).Draw(rt, "word")
-		pre := rapid.StringMatching(`[a-z0-9]{0,3}`).Draw(rt, "pre")
-		post := rapid.StringMatching(`[a-z0-9]{0,3}`).Draw(rt, "post")
+		pre := rapid.StringMatching(`[a-z0-9]{1,3}`).Draw(rt, "pre")
+		digits := rapid.StringMatching(`[0-9]{1,3}`).Draw(rt, "digits")
+		suffix := rapid.SampledFrom([]string{"ment", "ness", "tion", "er", "ly", "able", "al"}).Draw(rt, "suffix")
 		sep := rapid.SampledFrom([]string{" ", "-", "/", ".", ",", "(", ":"}).Draw(rt, "sep")
 		terms := []string{word}
 
-		if pre != "" || post != "" {
-			if got := skillrecall.MatchScore(terms, pre+word+post); got != 0 {
-				rt.Fatalf("%q matched inside %q", word, pre+word+post)
+		for _, in := range []string{pre + word, word + digits, pre + word + digits, word + suffix, pre + word + suffix} {
+			if got := skillrecall.MatchScore(terms, in); got != 0 {
+				rt.Fatalf("%q matched inside %q", word, in)
 			}
 		}
 		if got := skillrecall.MatchScore(terms, "x"+sep+word+sep+"y"); got != 1 {
@@ -76,10 +102,9 @@ func TestProp_ATermMatchesAsAWordAndNeverInsideOne(t *testing.T) {
 	})
 }
 
-// The objective from the field report: "ion" is a word of the Ion Alpha voice and a
-// fragment of "integration", "version" and "translating". The skill about
-// integration matched three terms it has nothing to do with and was offered ahead of
-// the writing skills.
+// "ion" is a word of the objective and a fragment of "integration", "version" and
+// "translating". The skill about integration matched three terms it has nothing to do
+// with and was offered ahead of the writing skills.
 func TestRecallDoesNotOfferASkillForAFragmentOfItsWords(t *testing.T) {
 	store := library(t,
 		state.Skill{
@@ -89,20 +114,20 @@ func TestRecallDoesNotOfferASkillForAFragmentOfItsWords(t *testing.T) {
 		},
 		state.Skill{
 			Slug: "release-notes", Name: "release-notes",
-			Description: "Write release notes a reader can act on, in the Ion Alpha voice.",
+			Description: "Write release notes a reader can act on, in the ion channel style.",
 		},
 		state.Skill{
 			Slug: "editorial-standard", Name: "editorial-standard",
-			Description: "The Ion Alpha voice for anything a person will read: how to write it, and what to cut.",
+			Description: "The ion channel style for anything a person will read: how to write it, and what to cut.",
 		},
 	)
-	got := slugs(skillrecall.Recall(context.Background(), store, "write the release notes in the Ion Alpha voice", 0))
+	got := slugs(skillrecall.Recall(context.Background(), store, "write the release notes in the ion channel style", 0))
 	if len(got) < 3 || got[0] != "release-notes" || got[2] != "external-integration" {
 		t.Errorf("offered %v, want release-notes first and external-integration last: it shares only fragments of words with the objective", got)
 	}
 }
 
-// The other field report: "not" and "yet" are two of the terms of an objective about
+// "not" and "yet" are two of the terms of an objective about
 // a feature that is deployed and not released, and they carried a skill about
 // unfinished interfaces ahead of the one whose subject it is.
 func TestRecallRanksTheSubjectAboveTheFunctionWords(t *testing.T) {
@@ -171,5 +196,33 @@ func TestRankIgnoresTermsNoCandidateCarries(t *testing.T) {
 	got := skillrecall.Rank(padded, cands, 0)
 	if strings.Join(candidateSlugs(got), ",") != strings.Join(candidateSlugs(base), ",") {
 		t.Errorf("ranked %v with unmatched terms ahead, want %v: a term nothing carries weighs nothing", candidateSlugs(got), candidateSlugs(base))
+	}
+}
+
+// The store matches words as written, so a skill that says "pasting" is only found
+// for the objective "paste" if the search also asks for the inflected forms.
+func TestRecallOffersASkillThatUsesAnotherFormOfTheWord(t *testing.T) {
+	tests := []struct {
+		name      string
+		objective string
+		skill     string
+	}{
+		{"participle for the base", "can I paste this snippet", "Covers copying, porting or pasting code from outside."},
+		{"past tense for the base", "rename this function", "A name that no longer describes the behaviour has to be renamed."},
+		{"base for the participle", "we are pasting a snippet", "Use when you paste code from another project."},
+		{"doubled consonant", "run the suite", "Covers running the suite in CI."},
+		{"plural", "clear the cache", "Explains why the caches go stale."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := library(t,
+				state.Skill{Slug: "target", Name: "target", Description: tt.skill},
+				state.Skill{Slug: "other", Name: "other", Description: "Plan lunch for a team."},
+			)
+			got := slugs(skillrecall.Recall(context.Background(), store, tt.objective, 1))
+			if len(got) != 1 || got[0] != "target" {
+				t.Errorf("offered %v for %q, want target", got, tt.objective)
+			}
+		})
 	}
 }

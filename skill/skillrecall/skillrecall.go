@@ -9,6 +9,7 @@ package skillrecall
 import (
 	"context"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -81,7 +82,9 @@ func candidateOf(s state.Skill) Candidate {
 }
 
 // Gather unions per-term search hits, deduped. The store matches a query as one
-// phrase, so each keyword is its own query.
+// phrase, so each keyword is its own query, and it matches whole words as written,
+// so each inflected form of a keyword (see [inflections]) is a query too: [Rank]
+// folds endings, and a skill the store never returns is a skill it never sees.
 func Gather(ctx context.Context, skills state.SkillStore, terms []string, limit int) []state.Skill {
 	if limit <= 0 {
 		limit = DefaultLimit
@@ -89,18 +92,56 @@ func Gather(ctx context.Context, skills state.SkillStore, terms []string, limit 
 	seen := map[string]bool{}
 	var out []state.Skill
 	for _, term := range terms {
-		found, err := skills.Search(ctx, term, limit*candidatePool)
-		if err != nil {
-			continue
-		}
-		for _, s := range found {
-			if !seen[s.ID] {
-				seen[s.ID] = true
-				out = append(out, s)
+		for _, form := range inflections(term) {
+			found, err := skills.Search(ctx, form, limit*candidatePool)
+			if err != nil {
+				continue
+			}
+			for _, s := range found {
+				if !seen[s.ID] {
+					seen[s.ID] = true
+					out = append(out, s)
+				}
 			}
 		}
 	}
 	return out
+}
+
+// inflections returns term and the forms [stem] folds with it, for a store that
+// matches words as written: the stem with each ending added, with and without the
+// final e that folding drops, and with a doubled final consonant before an ending
+// that starts with a vowel. A term that is not a plain word is returned alone.
+func inflections(term string) []string {
+	b := stem(term)
+	forms := []string{term}
+	if b == term && !plainWord(term) {
+		return forms
+	}
+	add := func(f string) {
+		if !slices.Contains(forms, f) {
+			forms = append(forms, f)
+		}
+	}
+	add(b)
+	for _, end := range []string{"e", "s", "es", "ed", "ing"} {
+		add(b + end)
+	}
+	if n := len(b); n > 0 && !strings.ContainsRune("aeiou", rune(b[n-1])) {
+		for _, end := range []string{"ed", "ing"} {
+			add(b + b[n-1:] + end)
+		}
+	}
+	return forms
+}
+
+func plainWord(w string) bool {
+	for _, r := range w {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return w != ""
 }
 
 // Rank orders candidates by relevance and returns at most limit (limit <= 0 uses
@@ -237,15 +278,82 @@ func MatchScore(terms []string, text string) int {
 	return n
 }
 
-// hasWord reports whether term occurs in hay with a word boundary at each end of the
-// term whose own character is a letter or digit. Terms are as often paths and
-// identifiers as words (`core/`, `render.js`), and an end that is punctuation has
-// nothing to be a boundary of: `core/` must still match `core/animation`. Both
+// hasWord reports whether term occurs in hay as a word, or as another inflection of
+// one: "paste" matches "pasting" and "renamed" matches "rename" (see [stem]). Both
 // arguments are lowercased by the caller.
 func hasWord(hay, term string) bool {
 	if term == "" {
 		return false
 	}
+	return hasBounded(hay, term) || hasInflection(hay, term)
+}
+
+// hasInflection reports whether a word of hay folds to the same stem as term. Only a
+// term made of letters and digits folds: a path or a file name has no inflected form,
+// and it is matched as written by [hasBounded].
+func hasInflection(hay, term string) bool {
+	for _, r := range term {
+		if !isWordRune(r) {
+			return false
+		}
+	}
+	want := stem(term)
+	for _, w := range strings.FieldsFunc(hay, func(r rune) bool { return !isWordRune(r) }) {
+		if stem(w) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// stem folds the common English endings of an ASCII word, so that the forms of one
+// word compare equal: a plural (s, es), a past tense (ed), a participle (ing), a
+// dropped final e ("pasting" and "paste" both fold to "past") and a doubled final
+// consonant ("running" and "run" both fold to "run"). Folding stops short of a stem
+// under three letters, or an ing stem with no vowel ("string", "bring"), so a short
+// word is not reduced to a fragment other words share. A word with any other
+// character is returned as it is. Because a suffix is only ever removed from the end,
+// a word never folds to the same stem as a longer word that merely contains it
+// ("ion" and "integration").
+func stem(w string) string {
+	if !plainWord(w) {
+		return w
+	}
+	switch {
+	case strings.HasSuffix(w, "ss"), strings.HasSuffix(w, "us"), strings.HasSuffix(w, "is"):
+	case strings.HasSuffix(w, "es") && len(w) > 4 && sibilant(w[:len(w)-2]):
+		w = w[:len(w)-2]
+	case strings.HasSuffix(w, "s") && len(w) > 3:
+		w = w[:len(w)-1]
+	}
+	switch {
+	case strings.HasSuffix(w, "ing") && len(w) > 5 && hasVowel(w[:len(w)-3]):
+		w = w[:len(w)-3]
+	case strings.HasSuffix(w, "ed") && len(w) > 4 && hasVowel(w[:len(w)-2]):
+		w = w[:len(w)-2]
+	}
+	if strings.HasSuffix(w, "e") && len(w) > 4 {
+		w = w[:len(w)-1]
+	}
+	if n := len(w); n > 3 && w[n-1] == w[n-2] && !strings.ContainsRune("aeiou", rune(w[n-1])) {
+		w = w[:n-1]
+	}
+	return w
+}
+
+// sibilant reports whether a plural of w takes "es" and not "s".
+func sibilant(w string) bool {
+	return strings.HasSuffix(w, "s") || strings.HasSuffix(w, "x") || strings.HasSuffix(w, "z") ||
+		strings.HasSuffix(w, "ch") || strings.HasSuffix(w, "sh")
+}
+
+func hasVowel(w string) bool { return strings.ContainsAny(w, "aeiouy") }
+
+// hasBounded reports whether term occurs in hay with a word boundary at each end of
+// the term whose own character is a letter or digit. Terms are as often paths and
+// identifiers as words (`core/`, `render.js`), and an end that is punctuation has
+// nothing to be a boundary of: `core/` must still match `core/animation`.
+func hasBounded(hay, term string) bool {
 	first, _ := utf8.DecodeRuneInString(term)
 	last, _ := utf8.DecodeLastRuneInString(term)
 	for from := 0; from <= len(hay)-len(term); {
