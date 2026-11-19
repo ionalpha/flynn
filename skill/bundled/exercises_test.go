@@ -168,6 +168,7 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 	}
 	testdata := os.DirFS("testdata")
 	forEachExercise(t, func(t *testing.T, slug string, e skillab.Exercise) {
+		t.Parallel() // each verifier run starts a sandbox; sequentially they dominate the package's time
 		set, err := skillab.LoadDir(filepath.Join(evalRoot, slug), slug)
 		if err != nil {
 			t.Fatal(err)
@@ -256,21 +257,34 @@ func forEachExercise(t *testing.T, fn func(t *testing.T, slug string, e skillab.
 	}
 }
 
+// overlayDeletes names, one path per line, files an overlay removes from the tree it is
+// laid over; a copy cannot express a deletion on its own.
+const overlayDeletes = ".delete"
+
 // overlay copies the tree at dir in src over dest, so a solution or a wrong answer is
-// only the files it changes.
+// only the files it changes, then removes the paths its .delete file lists.
 func overlay(t *testing.T, src fs.FS, dir, dest string) {
 	t.Helper()
 	err := fs.WalkDir(src, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(dest, filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(p, dir), "/")))
+		rel := strings.TrimPrefix(strings.TrimPrefix(p, dir), "/")
+		target := filepath.Join(dest, filepath.FromSlash(rel))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o750)
 		}
 		data, err := fs.ReadFile(src, p)
 		if err != nil {
 			return err
+		}
+		if rel == overlayDeletes {
+			for _, gone := range strings.Fields(string(data)) {
+				if err := os.Remove(filepath.Join(dest, filepath.FromSlash(gone))); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		return os.WriteFile(target, data, 0o600)
 	})
