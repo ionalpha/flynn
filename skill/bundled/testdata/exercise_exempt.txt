@@ -3,10 +3,10 @@
 # One line per skill: "<slug> <reason>". The list may only shrink. Write the skill's
 # set under evals/<slug>/ and delete its line; never add a skill here. A new skill
 # arrives with its set or TestEveryBundledSkillHasAnExerciseSet fails.
-contract-design not yet authored
-dependencies not yet authored
-domain-language not yet authored
-external-integration not yet authored
-interface-depth not yet authored
-shared-state not yet authored
-structural-boundaries not yet authored
+contract-design no set yet: needs a fixture where an interface change breaks a caller the tests do not cover
+dependencies no set yet: needs a vendored-versus-written fixture and a licence check the verifier can run offline
+domain-language no set yet: needs a fixture whose existing vocabulary the verifier can grep for drift
+external-integration no set yet: needs a fake service that fails in the ways the skill names (timeouts, partial pages, retries)
+interface-depth no set yet: needs a before and after measure of interface size that tells a shallow wrapper from a deep module
+shared-state no set yet: needs a deterministic concurrency fixture whose race the verifier can provoke without timing luck
+structural-boundaries no set yet: needs an import-graph check the verifier can run on the fixture
