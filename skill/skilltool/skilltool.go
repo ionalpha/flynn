@@ -26,6 +26,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/skill/bundled"
+	"github.com/ionalpha/flynn/skill/skillload"
 	"github.com/ionalpha/flynn/skill/skillmd"
 	"github.com/ionalpha/flynn/state"
 )
@@ -54,8 +55,13 @@ type Set struct {
 	root   string
 	notes  Notes
 
-	mu    sync.Mutex
-	reads []string
+	start      []string
+	startCheck func(state.Skill) (bool, string)
+	policy     skillload.Policy
+
+	mu     sync.Mutex
+	reads  []string
+	loaded []string
 }
 
 // Notes supplies text to attach to a skill read. The implementer decides what is
@@ -127,6 +133,18 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if err != nil {
 		return "", err
 	}
+	text, err := t.s.render(ctx, sk)
+	if err != nil {
+		return "", err
+	}
+	// Recorded after every refusal, so only a body that reached the model counts.
+	t.s.recordRead(sk.ID)
+	return text, nil
+}
+
+// render is the text a load puts in front of the model: the body, then the resources it
+// may ask for, then any notes. It refuses a body that is empty or over [MaxBodyRunes].
+func (s *Set) render(ctx context.Context, sk state.Skill) (string, error) {
 	body := strings.TrimSpace(sk.Body)
 	if body == "" {
 		return "", fmt.Errorf("%w: %s has no body", ErrUnreadable, sk.Slug)
@@ -134,11 +152,9 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if n := utf8.RuneCountInString(body); n > MaxBodyRunes {
 		return "", fmt.Errorf("%w: %s is %d characters, over the %d limit", ErrUnreadable, sk.Slug, n, MaxBodyRunes)
 	}
-	// Recorded after every refusal, so only a body that reached the model counts.
-	t.s.recordRead(sk.ID)
 	// Resources are listed, not read, so the model knows which paths it may ask for.
 	out := []string{body}
-	res, note := t.s.resources(sk)
+	res, note := s.resources(sk)
 	switch {
 	case note != "":
 		// The body is still returned, with a note that the resource list is missing.
@@ -147,8 +163,8 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		out = append(out, "Resources for this skill, readable with skill_resource:\n- "+strings.Join(res, "\n- "))
 	}
 	// Notes go last, so the procedure is read before anything said about it.
-	if t.s.notes != nil {
-		if n := strings.TrimSpace(t.s.notes.ForSkill(ctx, sk.ID)); n != "" {
+	if s.notes != nil {
+		if n := strings.TrimSpace(s.notes.ForSkill(ctx, sk.ID)); n != "" {
 			out = append(out, n)
 		}
 	}
@@ -221,9 +237,14 @@ func (s *Set) Reads() []string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	seen := make(map[string]bool, len(s.reads))
-	out := make([]string, 0, len(s.reads))
-	for _, id := range s.reads {
+	return dedupe(s.reads)
+}
+
+// dedupe keeps the first of each id, in order, and never returns nil.
+func dedupe(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
 		if seen[id] {
 			continue
 		}
