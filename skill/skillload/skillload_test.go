@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ionalpha/flynn/skill/skillmd"
+	"github.com/ionalpha/flynn/state"
 )
 
 func shell(cmd string, d time.Duration) Call {
@@ -29,7 +29,7 @@ func slugs(ls []Load) []string {
 }
 
 func TestDecideFires(t *testing.T) {
-	gomod := Candidate{Slug: "deps", Triggers: []skillmd.Trigger{{Kind: "file", Match: "**/go.mod"}}}
+	gomod := Candidate{Slug: "deps", Triggers: []state.SkillTrigger{{Kind: "file", Match: "**/go.mod"}}}
 	cases := []struct {
 		name  string
 		cand  Candidate
@@ -41,11 +41,11 @@ func TestDecideFires(t *testing.T) {
 		{"file glob matches windows separators", gomod, []Call{file("fs_write", `svc\api\go.mod`)}, true},
 		{"file glob misses another file", gomod, []Call{file("fs_write", "svc/go.sum")}, false},
 		{"file glob without path argument", gomod, []Call{shell("cat go.mod", 0)}, false},
-		{"tool trigger", Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}, []Call{shell("ls", 0)}, true},
-		{"tool trigger other tool", Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "git"}}}, []Call{shell("ls", 0)}, false},
-		{"slow at threshold", Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "slow", Seconds: 30}}}, []Call{shell("make", 30*time.Second)}, true},
-		{"slow under threshold", Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "slow", Seconds: 30}}}, []Call{shell("make", 29*time.Second)}, false},
-		{"slow narrowed to another tool", Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "slow", Seconds: 1, Match: "git"}}}, []Call{shell("make", time.Minute)}, false},
+		{"tool trigger", Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}, []Call{shell("ls", 0)}, true},
+		{"tool trigger other tool", Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "git"}}}, []Call{shell("ls", 0)}, false},
+		{"slow at threshold", Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "slow", Seconds: 30}}}, []Call{shell("make", 30*time.Second)}, true},
+		{"slow under threshold", Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "slow", Seconds: 30}}}, []Call{shell("make", 29*time.Second)}, false},
+		{"slow narrowed to another tool", Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "slow", Seconds: 1, Match: "git"}}}, []Call{shell("make", time.Minute)}, false},
 		{"no triggers never fires", Candidate{Slug: "s"}, []Call{shell("ls", time.Hour)}, false},
 	}
 	for _, tc := range cases {
@@ -59,7 +59,7 @@ func TestDecideFires(t *testing.T) {
 }
 
 func TestRepeatCountsAcrossObservations(t *testing.T) {
-	c := Candidate{Slug: "feedback-loop", Triggers: []skillmd.Trigger{{Kind: "repeat", Count: 3}}}
+	c := Candidate{Slug: "feedback-loop", Triggers: []state.SkillTrigger{{Kind: "repeat", Count: 3}}}
 	st := State{}
 	for i := 1; i <= 3; i++ {
 		d := Decide(Policy{}, st, []Candidate{c}, Observation{Calls: []Call{shell("go test ./...", 0)}})
@@ -84,7 +84,7 @@ func TestRepeatStateHoldsNoCommandText(t *testing.T) {
 }
 
 func TestLoadsOncePerRun(t *testing.T) {
-	c := Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}
+	c := Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}
 	obs := Observation{Calls: []Call{shell("ls", 0)}}
 	d1 := Decide(Policy{}, State{}, []Candidate{c}, obs)
 	d2 := Decide(Policy{}, d1.State, []Candidate{c}, obs)
@@ -94,7 +94,7 @@ func TestLoadsOncePerRun(t *testing.T) {
 }
 
 func TestModelReadSuppressesTrigger(t *testing.T) {
-	c := Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}
+	c := Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}
 	d := Decide(Policy{}, State{}, []Candidate{c}, Observation{Calls: []Call{shell("ls", 0)}, Read: []string{"s"}})
 	if len(d.Loads) != 0 || d.State.Triggered != 0 {
 		t.Fatalf("a skill the model read was loaded again: %+v", d)
@@ -104,7 +104,7 @@ func TestModelReadSuppressesTrigger(t *testing.T) {
 func TestCapAndOrder(t *testing.T) {
 	var cands []Candidate
 	for _, s := range []string{"a", "b", "c", "d", "e"} {
-		cands = append(cands, Candidate{Slug: s, Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}})
+		cands = append(cands, Candidate{Slug: s, Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}})
 	}
 	obs := Observation{Calls: []Call{shell("ls", 0)}}
 	d := Decide(Policy{}, State{}, cands, obs)
@@ -125,7 +125,7 @@ func TestStartLoadsDoNotCountAgainstCap(t *testing.T) {
 	st := State{}.MarkLoaded("named")
 	var cands []Candidate
 	for _, s := range []string{"a", "b", "c"} {
-		cands = append(cands, Candidate{Slug: s, Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}})
+		cands = append(cands, Candidate{Slug: s, Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}})
 	}
 	d := Decide(Policy{}, st, cands, Observation{Calls: []Call{shell("ls", 0)}})
 	if len(d.Loads) != 3 {
@@ -134,7 +134,7 @@ func TestStartLoadsDoNotCountAgainstCap(t *testing.T) {
 }
 
 func TestNegativeMaxDisablesTriggers(t *testing.T) {
-	c := Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}
+	c := Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}
 	d := Decide(Policy{MaxTriggered: -1}, State{}, []Candidate{c}, Observation{Calls: []Call{shell("ls", 0)}})
 	if len(d.Loads) != 0 {
 		t.Fatalf("loads = %+v with triggers disabled", d.Loads)
@@ -143,7 +143,7 @@ func TestNegativeMaxDisablesTriggers(t *testing.T) {
 
 func TestDecideDoesNotMutateItsInput(t *testing.T) {
 	st := State{Loaded: []string{"x"}, Repeats: map[string]int{"k": 1}}
-	c := Candidate{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}
+	c := Candidate{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}
 	_ = Decide(Policy{}, st, []Candidate{c}, Observation{Calls: []Call{shell("ls", 0)}})
 	if !reflect.DeepEqual(st, State{Loaded: []string{"x"}, Repeats: map[string]int{"k": 1}}) {
 		t.Fatalf("input state changed: %+v", st)
@@ -151,7 +151,7 @@ func TestDecideDoesNotMutateItsInput(t *testing.T) {
 }
 
 func TestStateSurvivesJSON(t *testing.T) {
-	d := Decide(Policy{}, State{}, []Candidate{{Slug: "s", Triggers: []skillmd.Trigger{{Kind: "tool", Match: "shell"}}}}, Observation{Calls: []Call{shell("ls", 0)}})
+	d := Decide(Policy{}, State{}, []Candidate{{Slug: "s", Triggers: []state.SkillTrigger{{Kind: "tool", Match: "shell"}}}}, Observation{Calls: []Call{shell("ls", 0)}})
 	b, err := json.Marshal(d.State)
 	if err != nil {
 		t.Fatal(err)

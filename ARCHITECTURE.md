@@ -146,6 +146,19 @@ its goal resource, keys its budget, and is the owner a child run points at.
   it was produced (which agent in a fan-out, which person in a multi-user host).
   `capability.Grant.Narrow` derives a child grant that is a subset of its parent, so
   delegation cannot widen authority.
+- **Skill loading.** A skill body reaches the model by three routes, and each is an
+  event on the run's stream (`skill`, with the skill, the route and the reason). The
+  model reads one with `skill_read`. The host names skills for the run (`--skill`, or
+  `skills` in a goal spec) and they ride the first user turn in the order named. A skill
+  can declare triggers in its `SKILL.md` metadata (a file glob touched, a tool called,
+  the same command run N times, one check slower than N seconds); when one fires, the
+  executor appends the body to the next user turn, once per run, and at most three such
+  bodies per run (past that only the description stays on offer, and the run says so).
+  The body rides a text block in the same user message as the tool results, so a result
+  stays directly after its call. The state that makes a load once-only, the cap and the
+  repeat counters is kept in the checkpoint, so a resume or a continued conversation
+  neither repeats a body nor restarts a count. Only the model's own reads feed
+  `learn.Reinforce`; a body the host loaded is no evidence that the skill helped.
 
 A single run is the n=1 case of each: no owner, no budget, one principal.
 

@@ -80,8 +80,11 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	//
 	// Loading a skill also surfaces what past runs learned from it and counts that as a
 	// use of those memories: the pull side of the digest's push.
-	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
-	opts = append([]driveOption{withSkills(skillset)}, opts...)
+	//
+	// The same set loads, ahead of the model, the skills named for the run and the ones
+	// whose declared triggers fire.
+	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()), skilltool.WithStart(cfg.startSkills...))
+	opts = append([]driveOption{withSkills(skillset), withOfferedSkills(skillSlugs(ctx, skills, recalled))}, opts...)
 	result, source, transcript, err := driveRequest{
 		out:       out,
 		model:     model,

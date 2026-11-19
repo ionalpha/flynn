@@ -167,6 +167,7 @@ func (s *Set) loadTriggered(ctx context.Context, st skillload.State, calls []mis
 		}
 		if sk, err := s.get(ctx, in.Skill); err == nil {
 			obs.Read = append(obs.Read, sk.Slug)
+			b.notes = append(b.notes, mission.BriefNote{Name: sk.Slug, Via: "read", Reason: "the model called skill_read"})
 		}
 	}
 

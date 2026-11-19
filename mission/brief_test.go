@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 )
@@ -306,5 +307,67 @@ func TestBriefersRunInNameOrder(t *testing.T) {
 	blocks := exec.brief(context.Background(), "g", 1, &cp, true, nil)
 	if len(blocks) != 2 || blocks[0].Text != "alpha" || blocks[1].Text != "zeta" {
 		t.Fatalf("blocks = %+v, want alpha then zeta", blocks)
+	}
+}
+
+// TestContinuedConversationKeepsBriefState: a conversation continued with a new user line
+// keeps what the Briefer recorded, so a body loaded in the first turn is not loaded again
+// and a counter does not restart, and the start brief is not repeated on the later turn.
+func TestContinuedConversationKeepsBriefState(t *testing.T) {
+	bt := &briefTool{name: "bt", brief: func(in BriefInput) (BriefOutput, error) {
+		if in.Start {
+			return BriefOutput{Text: "START BODY", State: json.RawMessage(`{"Calls":0}`)}, nil
+		}
+		return countingBrief(2, "SECOND CALL")(in)
+	}}
+	model := llmtest.NewScripted(
+		llmtest.CallTool("t1", "bt", json.RawMessage(`{}`)),
+		llmtest.SayText("first answer"),
+		llmtest.CallTool("t2", "bt", json.RawMessage(`{}`)),
+		llmtest.SayText("second answer"),
+	)
+	exec := NewExecutor(model, WithTools(bt))
+
+	_, _, raw := driveToDone(t, exec, 5)
+	reopened, err := ContinueConversation(goal.Status{Checkpoint: raw, Phase: goal.PhaseConverged}, "another ask")
+	if err != nil {
+		t.Fatalf("ContinueConversation: %v", err)
+	}
+	cp, err := decodeCheckpoint(reopened.Checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cp.Briefs["bt"]) == 0 {
+		t.Fatal("ContinueConversation dropped the briefer state")
+	}
+
+	driveFrom := reopened.Checkpoint
+	for i := 0; i < 5; i++ {
+		next, err := exec.Execute(context.Background(), res(t, driveFrom))
+		if err != nil {
+			t.Fatalf("step: %v", err)
+		}
+		driveFrom = next
+		if got, _ := decodeCheckpoint(next); got.Done {
+			break
+		}
+	}
+
+	starts := 0
+	for _, in := range bt.seen {
+		if in.Start {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("start brief requested %d times across the conversation, want 1", starts)
+	}
+	got, _ := decodeCheckpoint(driveFrom)
+	var all strings.Builder
+	for _, m := range got.Messages {
+		all.WriteString(m.TextContent())
+	}
+	if !strings.Contains(all.String(), "SECOND CALL") {
+		t.Fatalf("the counter restarted on the continued turn: the second call did not trigger")
 	}
 }

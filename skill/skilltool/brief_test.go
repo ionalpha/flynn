@@ -150,8 +150,8 @@ func TestModelReadSuppressesTheTrigger(t *testing.T) {
 	read := mission.ObservedCall{Tool: "skill_read", Input: json.RawMessage(`{"skill":"feedback-loop"}`)}
 
 	out := brief(t, b, nil, read, runTests, runTests, runTests)
-	if out.Text != "" || len(out.Notes) != 0 {
-		t.Fatalf("loaded %q %v after the model read the skill itself", out.Text, out.Notes)
+	if got := vias(out); out.Text != "" || !equal(got, []string{"read:feedback-loop"}) {
+		t.Fatalf("loaded %q with notes %v after the model read the skill itself, want only the read recorded", out.Text, got)
 	}
 	if len(set.Loaded()) != 0 {
 		t.Fatalf("Loaded() = %v, want none", set.Loaded())
@@ -166,6 +166,9 @@ func TestFailedModelReadDoesNotSuppress(t *testing.T) {
 	out := brief(t, b, nil, read, runTests, runTests, runTests)
 	if !strings.Contains(out.Text, "feedback-loop") {
 		t.Fatalf("a failed read suppressed the trigger, text = %q", out.Text)
+	}
+	if got := vias(out); !equal(got, []string{"trigger:feedback-loop"}) {
+		t.Fatalf("notes = %v, want the trigger load and no read", got)
 	}
 }
 

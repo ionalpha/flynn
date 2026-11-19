@@ -57,11 +57,35 @@ func renderEvent(w io.Writer, ev session.Event, verbose bool) {
 		_, _ = fmt.Fprintf(w, "\nstalled: %s\n", ev.Err)
 	case session.KindProjectContext:
 		_, _ = fmt.Fprintf(w, "  %s\n", projectContextLine(ev))
+	case session.KindSkill:
+		if line := skillLine(ev); line != "" {
+			_, _ = fmt.Fprintf(w, "  %s\n", line)
+		}
 	default:
 		// Governance and record events (action.*, record.*) share the run's stream but
 		// are not shown in the flat text transcript this renderer draws; the interactive
 		// session renders them inline and in its panels.
 	}
+}
+
+// skillLine is the transcript line for a skill the host put in front of the model, or
+// withheld, or could not load. An offer and a model's own read are the model's doing and
+// stay in the record without a line.
+func skillLine(ev session.Event) string {
+	var what string
+	switch ev.Via {
+	case "start":
+		what = "loaded " + ev.Skill + " at start"
+	case "trigger":
+		what = "loaded " + ev.Skill + " (" + ev.Reason + ")"
+	case "skipped":
+		what = "skipped " + ev.Skill + " (" + ev.Reason + ")"
+	case "suppressed":
+		what = "kept " + ev.Skill + " on offer only (" + ev.Reason + ")"
+	default:
+		return ""
+	}
+	return "skill: " + what
 }
 
 // projectContextLine is the transcript line for a project-file trust decision: whether

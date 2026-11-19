@@ -38,6 +38,9 @@ type goalSpecFile struct {
 	// Allowances are the irreversible actions outside the workspace this run may take. Only
 	// here can one be narrowed to a target; --allow cannot express that.
 	Allowances []goal.Allowance `json:"allowances,omitempty"`
+	// Skills are loaded into the run's first turn in this order, after any named with
+	// --skill.
+	Skills []string `json:"skills,omitempty"`
 }
 
 // errEmptyGoalSpec refuses a spec that parsed but states nothing, since running would
@@ -189,6 +192,22 @@ func mergeAllowances(spec goalSpecFile, allowed []string) []goal.Allowance {
 		return extra[i].Target < extra[j].Target
 	})
 	return append(out, extra...)
+}
+
+// mergeSkills lists the skills named for the run: the --skill flags in the order given,
+// then the spec file's, each once. Names are trimmed and blanks dropped.
+func mergeSkills(flags, file []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range append(append([]string(nil), flags...), file...) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // termsLines is what a run says about its terms before it starts, one line per term.

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/skill/skillmd"
+	"github.com/ionalpha/flynn/state"
 )
 
 // DefaultMaxTriggered caps the bodies one run loads by trigger. A body is a few
@@ -33,7 +34,7 @@ const maxTracked = 128
 // Candidate is a skill the host may load, with the triggers it declares.
 type Candidate struct {
 	Slug     string
-	Triggers []skillmd.Trigger
+	Triggers []state.SkillTrigger
 }
 
 // Call is one tool call the run made and the host timed.
@@ -175,7 +176,7 @@ func repeatKey(tool, command string) string {
 }
 
 // firstFired returns the reason of the first declared trigger obs satisfies.
-func firstFired(ts []skillmd.Trigger, st State, obs Observation) (string, bool) {
+func firstFired(ts []state.SkillTrigger, st State, obs Observation) (string, bool) {
 	for _, t := range ts {
 		if r, ok := fires(t, st, obs); ok {
 			return r, true
@@ -184,7 +185,7 @@ func firstFired(ts []skillmd.Trigger, st State, obs Observation) (string, bool) 
 	return "", false
 }
 
-func fires(t skillmd.Trigger, st State, obs Observation) (string, bool) {
+func fires(t state.SkillTrigger, st State, obs Observation) (string, bool) {
 	for _, c := range obs.Calls {
 		switch t.Kind {
 		case skillmd.TriggerTool:

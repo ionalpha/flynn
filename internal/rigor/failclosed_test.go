@@ -33,6 +33,7 @@ var policyNameSuffixes = []string{"policy", "guard", "verifier", "authenticator"
 // stale-entry check below enforces.
 var failClosedExemptions = map[string]string{
 	"(root).Policy":               "per-run configuration lists; the trust decisions it feeds are checked in governed and approval. Fail-closed test owed",
+	"skill/skillload.Policy":      "bounds how many skill bodies a run loads by trigger; it decides no access, and the cap is tested in skill/skillload",
 	"inbox.Policy":                "intake triage policy; fail-closed test owed",
 	"cmd/flynn.consentPolicy":     "CLI consent mode; fail-closed test owed",
 	"cmd/flynn.senderAllowList":   "inbound sender allow-list; fail-closed test owed",

@@ -23,7 +23,11 @@ type driveConfig struct {
 	planning bool
 	proof    bool
 	skills   *skilltool.Set
-	gates    gateSetup
+	// startSkills are loaded into the run's first turn in this order. offered are the
+	// skills recall put in the prompt, recorded on the run's stream once it exists.
+	startSkills []string
+	offered     []string
+	gates       gateSetup
 	// allowances are the irreversible actions outside the workspace this run may take. They
 	// ride the goal spec, so the waist checks them and the reconciler can tell an answered
 	// ask from an open one.
@@ -115,6 +119,19 @@ func withEventObserver(fn func(session.Event)) driveOption {
 // the outcome is credited to.
 func withSkills(s *skilltool.Set) driveOption {
 	return func(c *driveConfig) { c.skills = s }
+}
+
+// withStartSkills loads the named skills into the run's first turn, in the order given,
+// without the model asking. A name that does not load is recorded as skipped on the run
+// and the rest still load.
+func withStartSkills(slugs ...string) driveOption {
+	return func(c *driveConfig) { c.startSkills = slugs }
+}
+
+// withOfferedSkills records the skills recall offered on the run's stream, once per
+// skill, so the record shows what was offered next to what was read or loaded.
+func withOfferedSkills(slugs []string) driveOption {
+	return func(c *driveConfig) { c.offered = slugs }
 }
 
 // withApproval requires a person to authorize each named action before the run takes

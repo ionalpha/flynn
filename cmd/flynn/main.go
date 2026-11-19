@@ -151,6 +151,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		reqApproval = &stringList{}
 		outside     = &stringList{}
 		allowed     = &stringList{}
+		skillNames  = &stringList{}
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
@@ -164,6 +165,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval bash; a name the run does not offer is refused). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
 	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). This adds a check on top of the run's normal grant and sandbox and takes none away: an action the grant refuses stays refused, and one it permits is now also held until --allow declares it. A run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
 	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It only lifts the hold that --irreversible puts on that action, so it needs a matching --irreversible and grants nothing the run's normal grant and sandbox do not already permit. It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
+	fs.Var(skillNames, "skill", "load this skill into the run's first turn without the model asking (repeat for more than one, in the order they should be read). A skill that is unknown, has no readable body or needs tools this run does not mount is skipped, and the run's record says so. Applies to `flynn goal`; the goal spec file's \"skills\" list adds to it.")
 	if err := fs.Parse(args); err != nil {
 		// Only a flag set that returns parse errors reaches here; flag.CommandLine exits.
 		// A help request, already answered by the flag package, is not a usage error.
@@ -264,6 +266,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		reqApproval:  reqApproval.values,
 		outside:      outside.values,
 		allowed:      allowed.values,
+		skills:       skillNames.values,
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		shell:        shellFlags.policy(*dataDir),
@@ -348,8 +351,10 @@ type invocation struct {
 	reqApproval []string
 	outside     []string
 	allowed     []string
-	maxCost     float64
-	maxTokens   int64
+	// skills are the --skill names, loaded into the first turn of a goal.
+	skills    []string
+	maxCost   float64
+	maxTokens int64
 	// shell is built from the flags once, so every entry point that drives a shell passes
 	// the same policy and none restates the defaults.
 	shell governed.ShellPolicy
@@ -410,6 +415,16 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		_, _ = fmt.Fprintf(inv.stderr, "usage: --goal-spec states the terms of one run, so it applies to `flynn goal` and not to %s\n", what)
 		return 2
 	}
+	// Same refusal as a goal spec: a skill named for a command that cannot load it would
+	// read as loaded.
+	if len(inv.skills) > 0 && cmd != "goal" {
+		what := "flynn " + cmd
+		if cmd == "" {
+			what = "an interactive session"
+		}
+		_, _ = fmt.Fprintf(inv.stderr, "usage: --skill names skills for one run, so it applies to `flynn goal` and not to %s\n", what)
+		return 2
+	}
 	name := cmd
 	if target, ok := commandAliases[cmd]; ok {
 		name = target
@@ -454,6 +469,7 @@ func routeGoal(inv invocation, rest []string) int {
 		}
 		spec = loaded
 	}
+	spec.Skills = mergeSkills(inv.skills, spec.Skills)
 	// An objective stated nowhere, or twice differently, is a command-line error and is
 	// printed without the error prefix.
 	objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
@@ -612,7 +628,7 @@ func printUsage(w io.Writer) {
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
   flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, -v/--verbose, --plain, --profile <dir> (run with --help for details).
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --skill <name>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, -v/--verbose, --plain, --profile <dir> (run with --help for details).
 
 A goal spec file states the terms of a run: what must stay true while it works. Each
 term is audited after every step, before the goal is asked whether it is done, and a
@@ -626,7 +642,8 @@ breach stops the run naming the term. Pass it with --goal-spec ("-" reads stdin)
        "statement": "the exported API of ./client does not change",
        "check": "./dev/apidiff ./client"}
     ],
-    "allowances": [{"action": "shell", "target": "prod"}]
+    "allowances": [{"action": "shell", "target": "prod"}],
+    "skills": ["feedback-loop"]
   }
 
 Every field is optional as long as the file states either an objective or one term;
@@ -636,7 +653,8 @@ record, which is weaker than running a command: write the check where you can. A
 claiming something is not there needs one, since the record cannot show an absence.
 A check runs as semi-trusted work and needs a host that can contain it (the same
 requirement --require-proof carries); where it cannot be run, the run stops saying so
-rather than carrying on unaudited.`)
+rather than carrying on unaudited. "skills" names skills loaded into the first turn in
+the order given, like --skill.`)
 }
 
 // defaultDataDir is the per-user state directory, so learning carries across
@@ -683,6 +701,10 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		// An external harness owns its loop, so fan-out with one is refused.
 		if fanout {
 			return fmt.Errorf("--fanout is not supported with the %s external agent backend: it drives its own loop", name)
+		}
+		// Skills are loaded by the native loop, which the external harness replaces.
+		if len(spec.Skills) > 0 {
+			return fmt.Errorf("--skill is not supported with the %s external agent backend: it drives its own loop, so nothing could load the skill", name)
 		}
 		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
 		if err != nil {
@@ -738,6 +760,9 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		withGoalSpec(spec),
 		// Nil unless this install names an embedding model, which keeps lexical recall order.
 		withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(os.Stdout))),
+	}
+	if len(spec.Skills) > 0 {
+		opts = append(opts, withStartSkills(spec.Skills...))
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))

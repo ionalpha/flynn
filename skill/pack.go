@@ -46,7 +46,9 @@ func FromDoc(d skillmd.Doc, scope state.Scope) (state.Skill, error) {
 		if err != nil {
 			return state.Skill{}, fmt.Errorf("skill: %s: %w", d.Name, err)
 		}
-		sk.Triggers = ts
+		for _, t := range ts {
+			sk.Triggers = append(sk.Triggers, state.SkillTrigger(t))
+		}
 	}
 	return sk, nil
 }
@@ -74,7 +76,11 @@ func ToDoc(sk state.Skill) (skillmd.Doc, error) {
 		meta[skillmd.MetaTags] = skillmd.EncodeList(sk.Tags)
 	}
 	if len(sk.Triggers) > 0 {
-		meta[skillmd.MetaTriggers] = skillmd.EncodeTriggers(sk.Triggers)
+		ts := make([]skillmd.Trigger, len(sk.Triggers))
+		for i, t := range sk.Triggers {
+			ts[i] = skillmd.Trigger(t)
+		}
+		meta[skillmd.MetaTriggers] = skillmd.EncodeTriggers(ts)
 	}
 	if len(meta) > 0 {
 		d.Metadata = meta

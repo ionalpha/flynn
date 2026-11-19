@@ -202,6 +202,7 @@ func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if _, err := run.Submit(ctx, r.goalSpec()); err != nil {
 		return err
 	}
+	reportOffered(ctx, run, r.cfg.offered)
 	// The run's stream exists once the goal is submitted, which is the earliest the
 	// decision can be written to it.
 	recordProjectDecision(ctx, r.out, r.log, r.cfg.project, run.ID())

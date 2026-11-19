@@ -119,6 +119,11 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		// The trust decision for the repository's instruction files is shown wherever the
 		// run is, so a session never reads files its user was not told about.
 		return []string{v.th.Render(theme.Muted, "  "+projectContextLine(ev))}
+	case session.KindSkill:
+		if line := skillLine(ev); line != "" {
+			return []string{v.th.Render(theme.Muted, "  "+line)}
+		}
+		return nil
 	default:
 		// session.started (the shell echoes the prompt itself), turn.started,
 		// turn.completed, and action.admitted carry no transcript line; their
