@@ -1,9 +1,21 @@
 import ast
+import hashlib
 import os
 import sys
 
 sys.path.insert(0, ".")
 fails = []
+
+
+def digest(p):
+    return hashlib.sha256(open(p, "rb").read().replace(b'\r\n', b'\n')).hexdigest()
+
+
+try:
+    if digest("acmepay/__init__.py") != "ab1e2e2ec4746315c32e2afdbdbd96ba3cdd1b0725b3d0742ed11612783f46e3":
+        fails.append("acmepay is the vendor SDK and is not ours to change")
+except OSError:
+    fails.append("acmepay/__init__.py is missing")
 
 
 def imports_vendor(tree):
@@ -25,14 +37,22 @@ for root, dirs, files in os.walk("."):
             fails.append(p + " imports acmepay; the SDK's types stop at payments.py")
 
 
-def vendor_typed(value, depth=0):
+def vendor_typed(value, depth=0, seen=None):
+    seen = set() if seen is None else seen
+    if id(value) in seen or depth > 6:
+        return False
+    seen.add(id(value))
     if type(value).__module__.split(".")[0] == "acmepay":
         return True
-    if depth < 2 and hasattr(value, "__dict__"):
-        return any(vendor_typed(v, depth + 1) for v in vars(value).values())
-    if depth < 2 and isinstance(value, (list, tuple)):
-        return any(vendor_typed(v, depth + 1) for v in value)
-    return False
+    kids = []
+    if isinstance(value, dict):
+        kids = list(value.keys()) + list(value.values())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        kids = list(value)
+    else:
+        if hasattr(value, "__dict__"):
+            kids = list(vars(value).values())
+    return any(vendor_typed(k, depth + 1, seen) for k in kids)
 
 
 try:

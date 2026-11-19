@@ -29,6 +29,13 @@ def setup():
     d["mapped.example.com"] = ["::ffff:" + META]
     d["loop6.example.com"] = ["::1"]
     d["meta.example.com"] = [META]
+    d["loopback.example.com"] = ["127.0.0.1"]
+    d["lan172.example.com"] = ["172.16.0.9"]
+    d["lan192.example.com"] = ["192.168.1.1"]
+    d["cgnat.example.com"] = ["100.64.0.1"]
+    d["any.example.com"] = ["0.0.0.0"]
+    d["localhost"] = ["127.0.0.1"]
+    d["127.0.0.1"] = ["127.0.0.1"]
     d[META] = [META]
     answers = [[PUB], [META]]
     d["rebind.example.com"] = lambda: answers.pop(0) if len(answers) > 1 else answers[0]
@@ -63,6 +70,15 @@ hostile = [
     "http://loop6.example.com/",
     "http://rebind.example.com/",
     "http://redir.example.com/",
+    "http://loopback.example.com/",
+    "http://lan172.example.com/",
+    "http://lan192.example.com/",
+    "http://cgnat.example.com/",
+    "http://any.example.com/",
+    "http://localhost/",
+    "http://127.0.0.1/",
+    "http://[::1]/",
+    "file:///etc/passwd",
 ]
 for url in hostile:
     setup()

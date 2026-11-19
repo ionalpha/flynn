@@ -14,17 +14,33 @@ def run(d):
     return p.returncode, p.stdout + p.stderr
 
 
-for name in sorted(os.listdir("domain")) if os.path.isdir("domain") else []:
-    if not name.endswith(".py"):
-        continue
-    for node in ast.walk(ast.parse(open(os.path.join("domain", name), encoding="utf-8").read())):
-        names = []
-        if isinstance(node, ast.Import):
-            names = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module]
-        if any(n == "db" or n.startswith("db.") for n in names):
-            fails.append("domain/" + name + " still imports db")
+for root, _, files in os.walk("domain"):
+    for name in sorted(files):
+        if not name.endswith(".py"):
+            continue
+        p = os.path.join(root, name)
+        for node in ast.walk(ast.parse(open(p, encoding="utf-8").read())):
+            mods = []
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                mods = [node.module]
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and " " not in node.value:
+                mods = [node.value]
+            if any(n == "db" or n.startswith("db.") for n in mods):
+                fails.append(p + " reaches db, by an import or by naming the module")
+PATCHED = """
+import db.session
+db.session.current_rates = lambda: {"tea": 1, "mug": 2}
+import app
+print(app.quote([("tea", 3), ("mug", 1)]))
+"""
+try:
+    got = subprocess.run([sys.executable, "-c", PATCHED], capture_output=True, encoding="utf-8", errors="replace", timeout=60).stdout.strip()
+    if got != "5":
+        fails.append("app.quote does not follow the rates db hands out: with tea at 1 and mug at 2 it gave %r, want 5" % (got,))
+except Exception as e:
+    fails.append("app.quote could not be exercised against other rates: %r" % (e,))
 try:
     import app
 
@@ -41,11 +57,13 @@ cases = [
     ("domain/zz_case.py", "import db.session\n", True, "domain importing db.session"),
     ("domain/zz_case.py", "def f():\n    from db.models import Row\n    return Row\n", True, "a function in domain importing db.models"),
     ("domain/zz_case.py", "import dbtools\n", False, "domain importing dbtools, a different module"),
+    ("domain/sub/zz_case.py", "from db import session\n", True, "a nested domain package importing db"),
     ("db/zz_case.py", "from domain import pricing\n", False, "db importing domain, the allowed direction"),
 ]
 for i, (path, code, should_fail, what) in enumerate(cases):
     d = "_mut_%d" % i
     shutil.copytree(".", d, ignore=shutil.ignore_patterns("_mut_*", "__pycache__", ".git"))
+    os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
     with open(os.path.join(d, path), "w", newline="\n", encoding="utf-8") as f:
         f.write(code)
     rc, out = run(d)
