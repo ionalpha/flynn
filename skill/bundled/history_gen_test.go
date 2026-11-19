@@ -1,3 +1,5 @@
+//go:build packhistory
+
 package bundled
 
 import (
@@ -10,9 +12,10 @@ import (
 
 // TestWritePackHistory is the generator dev/packhistory runs, kept in this package so
 // it fingerprints each skill with [digest] itself and cannot drift from it. It is
-// skipped in an ordinary test run. FLYNN_PACK_TREES names a directory with one
-// subdirectory per historical pack tree, each holding a "skills" directory laid out
-// like the embedded one, and FLYNN_PACK_HISTORY_OUT the file to write.
+// built only with the packhistory tag, so an ordinary test run neither compiles nor
+// skips it. FLYNN_PACK_TREES names a directory with one subdirectory per historical
+// pack tree, each holding a "skills" directory laid out like the embedded one, and
+// FLYNN_PACK_HISTORY_OUT the file to write.
 func TestWritePackHistory(t *testing.T) {
 	trees, out := os.Getenv("FLYNN_PACK_TREES"), os.Getenv("FLYNN_PACK_HISTORY_OUT")
 	if trees == "" || out == "" {

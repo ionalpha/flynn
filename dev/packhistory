@@ -41,4 +41,4 @@ done | sort -u | while read -r tree; do
 done
 
 FLYNN_PACK_TREES="$trees" FLYNN_PACK_HISTORY_OUT="$PWD/skill/bundled/pack_history.txt" \
-  go test ./skill/bundled -run '^TestWritePackHistory$' -count=1 -v | grep -v '^=== RUN'
+  go test -tags packhistory ./skill/bundled -run '^TestWritePackHistory$' -count=1 -v | grep -v '^=== RUN'
