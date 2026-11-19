@@ -43,6 +43,7 @@ type Session struct {
 	failed         error
 	done           chan struct{}
 	maxTurnStarted map[string]int
+	skillSeen      map[skillKey]struct{}
 	// ended holds prompt ids that already have a prompt.ended record, so a prompt
 	// is closed once however many paths close it. raised totals every budget
 	// extension recorded.
@@ -249,6 +250,12 @@ func (r reporter) Report(ctx context.Context, ev mission.Event) {
 	if ev.Kind == mission.EventTurnStarted && !r.s.advanceTurn(ev.Goal, ev.Turn) {
 		return
 	}
+	// The same retry re-runs a brief, so a skill event is kept once per goal, skill and
+	// route. The memory is this process's: a restart records a load again, which is
+	// the at-least-once the stream already has for a step that crashed mid-write.
+	if ev.Kind == mission.EventSkill && !r.s.firstSkillEvent(ev.Goal, ev.Skill, ev.Via) {
+		return
+	}
 	r.s.emit(ctx, toSessionEvent(ev))
 }
 
@@ -267,6 +274,23 @@ func (s *Session) advanceTurn(goal string, n int) bool {
 	s.maxTurnStarted[goal] = n
 	return true
 }
+
+// firstSkillEvent reports whether this goal's skill has not yet been recorded by via.
+func (s *Session) firstSkillEvent(goal, skill, via string) bool {
+	k := skillKey{goal, skill, via}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, seen := s.skillSeen[k]; seen {
+		return false
+	}
+	if s.skillSeen == nil {
+		s.skillSeen = make(map[skillKey]struct{})
+	}
+	s.skillSeen[k] = struct{}{}
+	return true
+}
+
+type skillKey struct{ goal, skill, via string }
 
 // toSessionEvent maps a mission event to a session event. Session-level events
 // (started, stalled) are emitted by the session itself.
@@ -287,6 +311,8 @@ func toSessionEvent(ev mission.Event) Event {
 	case mission.EventChildCompleted:
 		out.Kind, out.Child, out.Tool, out.ToolUseID = KindChildCompleted, ev.Child, ev.Tool, ev.ToolUseID
 		out.Result, out.IsError = ev.Result, ev.IsError
+	case mission.EventSkill:
+		out.Kind, out.Skill, out.Via, out.Reason = KindSkill, ev.Skill, ev.Via, ev.Result
 	case mission.EventTurnCompleted:
 		out.Kind, out.StopReason = KindTurnCompleted, ev.StopReason
 		if u := ev.Usage; u != (llm.Usage{}) {

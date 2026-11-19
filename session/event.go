@@ -93,6 +93,14 @@ const (
 	// basis (flag, remembered, prompt, unattended), and Text one file per line with
 	// its content hash.
 	KindProjectContext Kind = "project.context"
+
+	// KindSkill records a skill the host offered to the run or put into a turn:
+	// Skill names it, Via says how (offered, read, start, trigger, skipped or
+	// suppressed) and Reason says why. It is written by the agent's host, so the
+	// record shows what the model was given beyond what it asked for. The same
+	// (Goal, Skill, Via) is recorded once, however many times a failed step is
+	// retried.
+	KindSkill Kind = "skill"
 )
 
 // Event types the dispatch waist and the sealer write onto a run's stream,
@@ -177,9 +185,16 @@ type Event struct {
 	// (project.context). False with Host set is a blocked destination.
 	Allowed bool `json:"allowed,omitempty"`
 	// Reason says why netguard allowed (public, allowlisted) or refused (private or
-	// reserved address, ...) a dial (net.egress), or the basis of a
-	// project.context decision.
+	// reserved address, ...) a dial (net.egress), the basis of a project.context
+	// decision, or why a skill was loaded, skipped or suppressed (skill).
 	Reason string `json:"reason,omitempty"`
+
+	// Skill is the skill's slug (skill).
+	Skill string `json:"skill,omitempty"`
+	// Via is how the skill reached the run (skill): offered in the listing, read by
+	// the model, loaded at start, loaded by a trigger, skipped because it could not
+	// load, or suppressed by the cap on trigger loads.
+	Via string `json:"via,omitempty"`
 
 	// RequestID pairs an approval.requested with the approval.decision that
 	// resolves it. Empty on the gate's own verdict.
