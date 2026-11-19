@@ -9,6 +9,5 @@ domain-language not yet authored
 external-integration not yet authored
 interface-depth not yet authored
 performance-measurement not yet authored
-reading-unfamiliar-code not yet authored
 shared-state not yet authored
 structural-boundaries not yet authored
