@@ -23,15 +23,23 @@ import (
 // agree. A dropped skill is deleted if untouched and released into the host's own
 // scope if edited, or marked diverged if that scope already has the slug.
 //
-// A skill with no digest was seeded before records existed and cannot be told
-// from an older pack version. The first run replaces it as every earlier start did,
-// records it ([Result.Adopted]), and protects edits from then on. A write that
-// loses a race ([state.ErrConflict]) is skipped and decided on the next run.
-func Reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) (Result, error) {
-	return reconcile(ctx, store, want)
+// A skill with no digest predates records. earlier lists versions the pack shipped
+// before ([Seed] reads them from pack_history.txt): a copy equal to one is replaced, any
+// other is a host edit, kept and marked diverged. Either way it is recorded against
+// want ([Result.Adopted]). A write that loses a race ([state.ErrConflict]) waits.
+func Reconcile(ctx context.Context, store state.SkillStore, want, earlier []state.Skill) (Result, error) {
+	shipped := make(digestSet, len(earlier))
+	for _, sk := range earlier {
+		sk.Scope = state.BundledScope
+		shipped[digest(sk)] = struct{}{}
+	}
+	return reconcile(ctx, store, want, shipped)
 }
 
-func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) (Result, error) {
+// digestSet holds [digest] values of skills the pack has shipped.
+type digestSet map[string]struct{}
+
+func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill, shipped digestSet) (Result, error) {
 	var res Result
 	have, err := store.List(ctx, state.BundledScope)
 	if err != nil {
@@ -54,7 +62,7 @@ func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) 
 			res.Added = append(res.Added, sk.Slug)
 			continue
 		}
-		if err := place(ctx, store, &res, prev, sk); err != nil {
+		if err := place(ctx, store, &res, prev, sk, shipped); err != nil {
 			return res, fmt.Errorf("bundled: seed %s: %w", sk.Slug, err)
 		}
 	}
@@ -67,8 +75,9 @@ func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) 
 	return res, nil
 }
 
-// place decides one stored skill against the pack's version of it.
-func place(ctx context.Context, store state.SkillStore, res *Result, prev, sk state.Skill) error {
+// place decides one stored skill against the pack's version of it. shipped is only
+// read for a skill with no record.
+func place(ctx context.Context, store state.SkillStore, res *Result, prev, sk state.Skill, shipped digestSet) error {
 	slug := sk.Slug
 	newDigest := digest(sk)
 	curDigest := digest(prev)
@@ -87,6 +96,19 @@ func place(ctx context.Context, store state.SkillStore, res *Result, prev, sk st
 	switch {
 	case prev.PackDigest == "":
 		// Seeded before records existed; see Reconcile.
+		if _, old := shipped[curDigest]; !old && curDigest != newDigest {
+			// Recording the new digest, not the stored one, is what makes a later run
+			// treat this copy as edited and keep withholding the pack's version.
+			kept := withDiverged(prev, true)
+			kept.PackDigest = newDigest
+			if err := apply(kept, &res.Diverged); err != nil {
+				return err
+			}
+			if slices.Contains(res.Diverged, slug) {
+				res.Adopted = append(res.Adopted, slug)
+			}
+			return nil
+		}
 		if err := apply(adopt, &res.Adopted); err != nil {
 			return err
 		}

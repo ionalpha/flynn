@@ -13,8 +13,8 @@ import (
 // contract the SQLite store and a host's own store run.
 func TestMemoryPackReconcile(t *testing.T) {
 	statetest.RunPackReconcileSuite(t, func() state.SkillStore { return state.NewMemory().Skills() },
-		func(ctx context.Context, store state.SkillStore, want []state.Skill) (statetest.PackOutcome, error) {
-			res, err := bundled.Reconcile(ctx, store, want)
+		func(ctx context.Context, store state.SkillStore, want, earlier []state.Skill) (statetest.PackOutcome, error) {
+			res, err := bundled.Reconcile(ctx, store, want, earlier)
 			return statetest.PackOutcome(res), err
 		})
 }

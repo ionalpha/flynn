@@ -196,7 +196,7 @@ func TestReconcileAddsUpdatesAndRemoves(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 
-	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")})
+	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}, nil)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestReconcileAddsUpdatesAndRemoves(t *testing.T) {
 	}
 
 	// The same pack again writes nothing.
-	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")})
+	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}, nil)
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestReconcileAddsUpdatesAndRemoves(t *testing.T) {
 	}
 
 	// The next version of the binary rewrites one skill and stops shipping the other.
-	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one, revised")})
+	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one, revised")}, nil)
 	if err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestUpgradeKeepsOutcomeEvidence(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	seeded, err := store.Get(ctx, "alpha")
@@ -251,7 +251,7 @@ func TestUpgradeKeepsOutcomeEvidence(t *testing.T) {
 		t.Fatalf("record outcomes: %v", err)
 	}
 
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one, revised")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one, revised")}, nil); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	got, err := store.Get(ctx, "alpha")
@@ -272,7 +272,7 @@ func TestPruneEmptiesTheBundledScope(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	res, err := Prune(ctx, store)
@@ -298,7 +298,7 @@ func TestRemovalLeavesASameNamedUserSkillAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert user skill: %v", err)
 	}
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := Prune(ctx, store); err != nil {
@@ -335,7 +335,7 @@ func TestStoreFailuresAreReported(t *testing.T) {
 		{"delete", failingStore{fail: "delete", have: pack}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := reconcile(ctx, tc.store, tc.want); !errors.Is(err, errStore) {
+			if _, err := reconcile(ctx, tc.store, tc.want, nil); !errors.Is(err, errStore) {
 				t.Fatalf("error %v, want the store's own", err)
 			}
 		})
@@ -405,7 +405,7 @@ func TestSeedKeepsAHostEditToAShippedSkill(t *testing.T) {
 	copy(next, pack)
 	next[0].Body += "\nA line the next release adds."
 	next[1].Body += "\nA line the next release adds."
-	res, err := Reconcile(ctx, store, next)
+	res, err := Reconcile(ctx, store, next, nil)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestSeedKeepsAHostEditToAShippedSkill(t *testing.T) {
 	if got.Body != mine.Body || !got.Diverged {
 		t.Errorf("%s holds %q (diverged %v), want the host's edit kept and flagged", edited.Slug, got.Body, got.Diverged)
 	}
-	if again, err := Reconcile(ctx, store, next); err != nil || again.Changed() {
+	if again, err := Reconcile(ctx, store, next, nil); err != nil || again.Changed() {
 		t.Errorf("the next start reported %+v (err %v), want it silent", again, err)
 	}
 }
@@ -431,7 +431,7 @@ func TestPruneReleasesAHostEdit(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("alpha", "one"), bundledSkill("beta", "two")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	sk, err := store.Get(ctx, "alpha")

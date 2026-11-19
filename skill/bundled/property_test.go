@@ -9,9 +9,12 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Property: whatever the store held before, reconciling leaves the bundled scope
+// Property: whatever an older binary seeded, reconciling leaves the bundled scope
 // holding exactly the pack it was given, with each skill's content the pack's and
 // its outcome evidence the store's, and nothing outside that scope touched.
+//
+// The older binary's versions are in the history the reconcile is given, which is what
+// tells them from a host edit.
 //
 // This is the whole of what an upgrade promises. Stating it as a property rather
 // than as cases is the point: the interesting inputs are the overlaps between what
@@ -27,9 +30,11 @@ func TestProp_ReconcileMakesTheScopeExact(t *testing.T) {
 
 		// What an older binary seeded, each with outcome evidence this machine earned.
 		seeded := map[string]int{}
+		var earlier []state.Skill
 		for i, slug := range rapid.SliceOfN(slugs, 0, 5).Draw(rt, "seeded") {
 			reads := rapid.IntRange(0, 9).Draw(rt, "reads")
 			sk := bundledSkill(slug, body.Draw(rt, "seededBody"))
+			earlier = append(earlier, sk)
 			sk.Offers, sk.Reads, sk.Wins = reads, reads, reads
 			if _, err := store.Upsert(ctx, sk); err != nil {
 				rt.Fatalf("seed %d: %v", i, err)
@@ -60,7 +65,7 @@ func TestProp_ReconcileMakesTheScopeExact(t *testing.T) {
 			shipped = append(shipped, want[slug])
 		}
 
-		if _, err := reconcile(ctx, store, shipped); err != nil {
+		if _, err := Reconcile(ctx, store, shipped, earlier); err != nil {
 			rt.Fatalf("reconcile: %v", err)
 		}
 
@@ -117,7 +122,7 @@ func TestProp_AHostEditSurvivesAPackUpdate(t *testing.T) {
 			for slug, b := range m {
 				pack = append(pack, bundledSkill(slug, b))
 			}
-			res, err := reconcile(ctx, store, pack)
+			res, err := reconcile(ctx, store, pack, nil)
 			if err != nil {
 				rt.Fatalf("reconcile: %v", err)
 			}

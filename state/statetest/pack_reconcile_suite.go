@@ -16,8 +16,9 @@ type PackOutcome struct {
 }
 
 // PackReconciler is the pack-update operation under test: make the bundled scope
-// hold want.
-type PackReconciler func(ctx context.Context, store state.SkillStore, want []state.Skill) (PackOutcome, error)
+// hold want. earlier lists versions of those skills the pack shipped before, which is
+// how a stored copy with no record of what the pack wrote is told from a host's edit.
+type PackReconciler func(ctx context.Context, store state.SkillStore, want, earlier []state.Skill) (PackOutcome, error)
 
 // RunPackReconcileSuite runs the pack-update contract through reconcile against
 // stores built by newStore: it never overwrites a bundled skill a host edited,
@@ -47,7 +48,9 @@ var packReconcileCases = []struct {
 	{"RetiredUntouchedSkillIsDeleted", testPackRetiredDeleted},
 	{"RetiredEditedSkillIsReleased", testPackRetiredReleased},
 	{"ReleaseDoesNotOverwriteASameNamedSkill", testPackReleaseCollision},
-	{"SkillSeededWithoutARecordIsAdopted", testPackLegacyAdopted},
+	{"OldPackVersionWithoutARecordIsReplaced", testPackLegacyAdopted},
+	{"HostEditWithoutARecordIsKept", testPackLegacyEditKept},
+	{"HostEditWithoutARecordIsStillProtectedAfterwards", testPackLegacyEditProtected},
 }
 
 // packSkill is a skill as the pack ships it.
@@ -64,7 +67,12 @@ func packSkill(slug, body string) state.Skill {
 
 func reconcileOK(t *testing.T, reconcile PackReconciler, store state.SkillStore, want ...state.Skill) PackOutcome {
 	t.Helper()
-	res, err := reconcile(context.Background(), store, want)
+	return reconcileWith(t, reconcile, store, nil, want...)
+}
+
+func reconcileWith(t *testing.T, reconcile PackReconciler, store state.SkillStore, earlier []state.Skill, want ...state.Skill) PackOutcome {
+	t.Helper()
+	res, err := reconcile(context.Background(), store, want, earlier)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -306,7 +314,8 @@ func testPackLegacyAdopted(t *testing.T, store state.SkillStore, reconcile PackR
 		}
 	}
 
-	res := reconcileOK(t, reconcile, store, packSkill("same", "v2"), packSkill("old", "v2"))
+	earlier := []state.Skill{packSkill("old", "v1")}
+	res := reconcileWith(t, reconcile, store, earlier, packSkill("same", "v2"), packSkill("old", "v2"))
 
 	wantSlugs(t, "Adopted", res.Adopted, "old", "same")
 	wantSlugs(t, "Updated", res.Updated, "old")
@@ -316,8 +325,69 @@ func testPackLegacyAdopted(t *testing.T, store state.SkillStore, reconcile PackR
 
 	// From here on the records are held, so an edit is protected.
 	hostEdit(t, store, "old", func(sk *state.Skill) { sk.Body = "host edit" })
-	res = reconcileOK(t, reconcile, store, packSkill("same", "v2"), packSkill("old", "v3"))
+	res = reconcileWith(t, reconcile, store, earlier, packSkill("same", "v2"), packSkill("old", "v3"))
 	wantSlugs(t, "Diverged after adoption", res.Diverged, "old")
 	wantSlugs(t, "Adopted after adoption", res.Adopted)
 	wantBody(t, store, "old", "host edit")
+}
+
+// seedWithoutRecord stores skills as an install from before the pack record would
+// hold them.
+func seedWithoutRecord(t *testing.T, store state.SkillStore, skills ...state.Skill) {
+	t.Helper()
+	for _, sk := range skills {
+		if _, err := store.Upsert(context.Background(), sk); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func testPackLegacyEditKept(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	// "edited" matches no version the pack shipped, so it is the host's. "same" and
+	// "old" are the pack's, current and earlier, and must not be mistaken for edits.
+	seedWithoutRecord(t, store, packSkill("edited", "host edit"), packSkill("same", "v2"), packSkill("old", "v1"))
+	earlier := []state.Skill{packSkill("edited", "v1"), packSkill("old", "v1")}
+
+	res := reconcileWith(t, reconcile, store, earlier,
+		packSkill("edited", "v2"), packSkill("same", "v2"), packSkill("old", "v2"))
+
+	wantSlugs(t, "Diverged", res.Diverged, "edited")
+	wantSlugs(t, "Updated", res.Updated, "old")
+	wantSlugs(t, "Adopted", res.Adopted, "edited", "old", "same")
+	wantBody(t, store, "edited", "host edit")
+	wantBody(t, store, "old", "v2")
+	wantBody(t, store, "same", "v2")
+	got := getBundled(t, store, "edited")
+	if !got.Diverged {
+		t.Error("the kept edit is not marked diverged")
+	}
+	if got.PackDigest == "" {
+		t.Error("the kept edit has no record of the pack version it was held against")
+	}
+	if getBundled(t, store, "old").Diverged || getBundled(t, store, "same").Diverged {
+		t.Error("a copy of a pack version is marked diverged")
+	}
+}
+
+func testPackLegacyEditProtected(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	seedWithoutRecord(t, store, packSkill("a", "host edit"))
+	earlier := []state.Skill{packSkill("a", "v1")}
+	reconcileWith(t, reconcile, store, earlier, packSkill("a", "v2"))
+
+	// The record now names v2, so a later pack version is withheld like any other
+	// update to an edited skill, with no earlier list needed.
+	res := reconcileOK(t, reconcile, store, packSkill("a", "v3"))
+	wantSlugs(t, "Updated", res.Updated)
+	wantSlugs(t, "Adopted", res.Adopted)
+	wantBody(t, store, "a", "host edit")
+	if !getBundled(t, store, "a").Diverged {
+		t.Error("the pack's next version was not withheld from the kept edit")
+	}
+
+	// Matching the pack ends it, and the record then tracks the pack again.
+	hostEdit(t, store, "a", func(sk *state.Skill) { sk.Body = "v3" })
+	res = reconcileOK(t, reconcile, store, packSkill("a", "v3"))
+	wantSlugs(t, "Cleared", res.Cleared, "a")
+	res = reconcileOK(t, reconcile, store, packSkill("a", "v4"))
+	wantSlugs(t, "Updated after agreement", res.Updated, "a")
 }

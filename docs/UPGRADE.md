@@ -93,11 +93,13 @@ you already have a skill of that name, in which case both stay and the bundled o
 marked diverged.
 
 Installs that first ran a release before this behaviour have no record of what the
-pack last wrote, so the first start after upgrading cannot tell an edit from an older
-pack version. It replaces any bundled skill that differs from the pack, as every
-earlier start did, and records what it wrote. From the second start on, edits are
-kept. If you edited a bundled skill and want that edit to survive the upgrade, copy it
-to a skill of your own first.
+pack last wrote. The first start after upgrading compares each bundled skill with
+every version of it the pack has shipped. A copy equal to one of them was never
+edited, so it takes the new version. A copy equal to none of them is your edit: it is
+kept, marked diverged, and the pack's version is withheld as described above. Either
+way the start records what the pack now ships, so later starts need no comparison.
+Because that start cannot know which version your edit began from, the diverged mark
+clears on the next start unless the pack has changed again; the edit stays either way.
 
 ## When flynn will refuse to upgrade itself
 

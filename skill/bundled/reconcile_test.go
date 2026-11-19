@@ -49,12 +49,12 @@ func editSkill(t *testing.T, store state.SkillStore, slug, body string) {
 func TestALostRaceIsSkippedAndDecidedAgain(t *testing.T) {
 	ctx := context.Background()
 	store := &armedStore{SkillStore: newStore(t)}
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	store.upsertErr = state.ErrConflict
-	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")})
+	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}, nil)
 	if err != nil {
 		t.Fatalf("a lost race ended the run: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestALostRaceIsSkippedAndDecidedAgain(t *testing.T) {
 	}
 
 	store.upsertErr = nil
-	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")})
+	res, err = reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}, nil)
 	if err != nil || !equalStrings(res.Updated, []string{"a"}) {
 		t.Errorf("the next run reported %+v (err %v), want a updated", res, err)
 	}
@@ -72,11 +72,11 @@ func TestALostRaceIsSkippedAndDecidedAgain(t *testing.T) {
 func TestAWriteFailureWhilePlacingEndsTheRun(t *testing.T) {
 	ctx := context.Background()
 	store := &armedStore{SkillStore: newStore(t)}
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	store.upsertErr = errStore
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}); !errors.Is(err, errStore) {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}, nil); !errors.Is(err, errStore) {
 		t.Fatalf("error %v, want the store's own", err)
 	}
 }
@@ -86,17 +86,17 @@ func TestAWriteFailureWhilePlacingEndsTheRun(t *testing.T) {
 func TestAnInterruptedReleaseFinishesOnTheNextRun(t *testing.T) {
 	ctx := context.Background()
 	store := &armedStore{SkillStore: newStore(t)}
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	editSkill(t, store, "a", "the host's wording")
 
 	store.deleteErr = errStore
-	if _, err := reconcile(ctx, store, nil); !errors.Is(err, errStore) {
+	if _, err := reconcile(ctx, store, nil, nil); !errors.Is(err, errStore) {
 		t.Fatalf("error %v, want the store's own", err)
 	}
 	store.deleteErr = nil
-	res, err := reconcile(ctx, store, nil)
+	res, err := reconcile(ctx, store, nil, nil)
 	if err != nil || !equalStrings(res.Released, []string{"a"}) {
 		t.Fatalf("the next run reported %+v (err %v), want a released", res, err)
 	}
@@ -113,7 +113,7 @@ func TestAnInterruptedReleaseFinishesOnTheNextRun(t *testing.T) {
 func TestAReleaseCollisionIsReportedOnce(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	editSkill(t, store, "a", "the host's wording")
@@ -121,11 +121,11 @@ func TestAReleaseCollisionIsReportedOnce(t *testing.T) {
 		t.Fatalf("own skill: %v", err)
 	}
 
-	first, err := reconcile(ctx, store, nil)
+	first, err := reconcile(ctx, store, nil, nil)
 	if err != nil || !equalStrings(first.Diverged, []string{"a"}) || len(first.Released) != 0 {
 		t.Fatalf("first run reported %+v (err %v), want a diverged and nothing released", first, err)
 	}
-	second, err := reconcile(ctx, store, nil)
+	second, err := reconcile(ctx, store, nil, nil)
 	if err != nil || second.Changed() {
 		t.Fatalf("second run reported %+v (err %v), want it silent", second, err)
 	}
@@ -139,16 +139,16 @@ func TestAReleaseCollisionIsReportedOnce(t *testing.T) {
 func TestDivergenceClearsWhenTheHostAdoptsThePacksVersion(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	editSkill(t, store, "a", "the host's wording")
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}, nil); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	editSkill(t, store, "a", "v2")
 
-	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")})
+	res, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v2")}, nil)
 	if err != nil || !equalStrings(res.Cleared, []string{"a"}) {
 		t.Fatalf("reported %+v (err %v), want a cleared", res, err)
 	}
@@ -160,12 +160,12 @@ func TestDivergenceClearsWhenTheHostAdoptsThePacksVersion(t *testing.T) {
 func TestReleaseFailuresAreReported(t *testing.T) {
 	ctx := context.Background()
 	store := &armedStore{SkillStore: newStore(t)}
-	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}); err != nil {
+	if _, err := reconcile(ctx, store, []state.Skill{bundledSkill("a", "v1")}, nil); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	editSkill(t, store, "a", "the host's wording")
 	store.upsertErr = errStore
-	if _, err := reconcile(ctx, store, nil); !errors.Is(err, errStore) {
+	if _, err := reconcile(ctx, store, nil, nil); !errors.Is(err, errStore) {
 		t.Fatalf("error %v, want the store's own", err)
 	}
 }
