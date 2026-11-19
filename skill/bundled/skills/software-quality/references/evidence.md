@@ -1,167 +1,165 @@
-# Why each gate is there
+# Why each rule is there
 
-Read this when a gate looks like overhead, or before adding or removing a rule. Each
+Read this when a rule looks like overhead, or before adding or removing one. Each
 entry says how strong its support is: *measured* (a study or benchmark with counts),
 *practice* (the stated experience of a large engineering organisation, or a recorded
-incident class), *inferred* (reasoned from a measurement that is about something
-nearby) or *opinion* (an argument with no data).
+incident class), *inferred* (reasoned from a measurement about something nearby) or
+*opinion* (an argument with no data). Figures marked *(unverified)* were read in a
+summary or abstract and have not yet been checked against the full paper.
 
 ## Contents
 
 - What is not proven
-- Evidence for each gate
+- Before the first edit
+- The gates
 - The defect classes
-- Claims removed because nothing supported them
+- What the harness should enforce
+- The report
 - Advice left out on purpose
 - What a new rule needs before it is added
 
 ## What is not proven
 
 Nothing here shows that an agent following this skill produces better changes than
-one without it. The sources show that each failure happens and how often; none
-tests whether an instruction prevents it. The one measurement of an instruction
-against a failure (the reward-hacking result under the refusal below) found the
-instruction did not help. So the skill states its rules plainly, without emphasis,
-and the section on what the host enforces points at checks the agent cannot edit.
+one without it. The sources show that each failure happens and how often; few test
+whether an instruction prevents it, and the ones that do (the reward-hacking results
+under gate 10) found a written instruction weaker than a check the agent cannot edit.
+So the skill states its rules plainly, without emphasis, and lists what a harness
+should enforce.
 
-Two measurements would settle it: an A/B of the same tasks with and without the
-skill, graded on held-out tests and reviewer findings, and an ablation that removes
-one gate at a time to see which change the outcome. Until then, treat a gate's
-place in the skill as a judgement backed by the failure evidence, not as a proven
-remedy.
+Two measurements would settle it: the same tasks with and without the skill, graded
+on held-out tests and reviewer findings, and an ablation that removes one rule at a
+time. Until then, a rule's place in the skill is a judgement backed by failure
+evidence, not a proven remedy.
 
-## Evidence for each gate
+## Before the first edit
 
-**Before the first edit: a check seen to fail.** Practice. It is the same rule as
-gate 2, applied before the work instead of after it. Flynn's planner enforces it by
-refusing a check that already passes on the untouched tree.
+**The project's own commands.** Measured. Context files that list a project's build
+and test commands helped agents; files made of repository overviews raised cost by
+over 20% with no gain in success (Gloaguen et al., ICLR 2026) *(unverified)*.
 
-**Gate 1, evidence for every claim.** Measured, one benchmark. On thirty systems
-tasks (SpecBench, 2026), frontier agents passed nearly all visible tests, and the
-gap to held-out tests that combined features grew by about 27 points for every
-tenfold increase in code size. One entry passed 97% of visible tests and 0% of
-held-out ones. The held-out tests missed most often were the ones checking that
-invalid input is rejected.
+**Reproduce first; if it does not reproduce, change nothing.** Measured, one
+benchmark. Correct outcomes rose from 60.5% to 88.5% when agents were told a reported
+bug might not reproduce (FixedBench) *(unverified)*.
 
-**Gate 2, a test seen to fail.** Measured, with a caveat. An agent pipeline resolved
-94% of a benchmark with human-written tests and 68% with tests the agents wrote
-(TDFlow, 2025). Agent-written test files contain more print statements than
-assertions (Chen et al., 2026). Strict test-first as a ritual has mixed evidence for
-people (a meta-analysis of 27 studies found a small quality gain; a blind
-replication found none) and none for agents, so the gate keeps only the narrow part:
-a test seen to fail for the stated reason and then pass.
+**Run the covering tests before editing.** Measured, small preprint. Giving an agent
+the list of tests to run cut regressions to 1.82%; a generic test-first instruction
+raised them from 6.08% to 9.94% (TDAD) *(unverified)*.
 
-**Gate 3, checked where users get it.** Practice. Each listed form is a recorded
-incident class: a stale artifact shipped while local tests passed, a test database
-that differed from production, a lint run that differed from the pipeline's. The
-claim that a green check on the wrong target is worse than none is opinion: it rests
-on the check ending the search.
+**Everything the change touches.** Measured for recall, practice for the rest. Models
+name functions that do not exist far more often for project code than for public
+libraries, so a list from memory misses what a search finds. A search still misses
+consumers reached by reflection, string keys, generated code and stored data, which
+is why the routes it cannot see are named.
+
+## The gates
+
+**Gate 1, evidence for every claim.** Measured. Agents have reported "all tests pass"
+over output showing a failure; a required field for the counts fixed the count
+*(unverified)*. Exit codes hide zero-test and skipped runs by design.
+
+**Gate 2, a test that fails for the right reason.** Measured. The most common failure
+in agent-written reproduction tests is a test that already passes on the unfixed code
+(SWT-Bench) *(unverified)*. On thirty systems tasks (SpecBench, 2026), the gap between
+visible and held-out tests grew by about 27 points for every tenfold increase in code
+size, and the held-out tests missed most were the ones checking that invalid input is
+rejected. Strict test-first as a ritual has mixed evidence for people and none for
+agents, so the gate keeps only the narrow part: a test seen to fail for the stated
+reason. Running the test against a clean copy of the old version, rather than
+breaking lines in the working copy, is practice: break-and-restore has wiped
+uncommitted work.
+
+**Gate 3, the check matches the claim, on what ships.** Practice. Each listed form is
+a recorded incident class: a check that did not exercise the claimed property, a
+stale artefact shipped while local tests passed, a test database that differed from
+production, a lint run that differed from the pipeline's.
 
 **Gate 4, no failure passes as success.** Measured in one repository, plus practice.
-In Flynn's classified fix history (below), "could not evaluate" read as false and a
-partial result read as complete was the second largest class, about 20 of 155. OWASP
-added "mishandling of exceptional conditions" to its 2025 Top 10. The fail-fast
-argument (Shore, 2004) and Nygard's stability patterns point the same way. The skill
-gives the mechanism (a plausible value prompts nobody to look) and no time to
-discovery, because no source measured one.
+In one classified fix history (below), "could not evaluate" read as false and a
+partial result read as complete was the second largest class. OWASP added
+"mishandling of exceptional conditions" to its 2025 Top 10. A generated file that
+exceeded a size limit and hit an unhandled error caused the Cloudflare outage of
+18 November 2025. Retry storms follow from unknown errors treated as retryable.
 
 **Gate 5, proven reachable.** Measured in one repository, plus practice. An option or
-guard not wired through every path (a dropped flag, a resume path that lost its
-guards) was the third largest class, about 18 of 155. Recorded incidents also include
-an update signature check written and never called.
+guard not wired through every path was the third largest class in that history.
+Recorded incidents include a signature check written and never called.
 
-**Gate 6, one path for each job.** Practice and opinion. Drift between parallel paths
-is a recurring review finding, and part of the wiring class above is a second path
-that missed a fix. It is not a separately counted class in the classified history,
-so the skill makes no claim about its rank.
+**Gate 6, one path per job.** Practice and opinion. Drift between parallel paths is a
+recurring review finding; it was not counted as a separate class.
 
-**Gate 7, read before you call.** Measured for public libraries, inferred for
-project code. Package suggestions name packages that do not exist at measurable
-rates (Spracklen et al., USENIX Security 2025: 5.2% for commercial models, higher for
-open ones), and some invented names were later registered to host malware. Accuracy
-on library APIs falls sharply as an API gets rarer (Jain et al., 2024). Code local to
-one project is absent from training data, so the skill infers it is the least
-reliable to recall; no study measured that directly.
+**Gate 7, facts from the source.** Measured. Package suggestions name packages that do
+not exist at 5.2% to 21.7% depending on the model (Spracklen et al., USENIX Security
+2025), and some invented names were later registered to host malware. Between 36.7%
+and 55.7% of agent dependency choices carried a known vulnerability *(unverified)*.
+Accuracy on library APIs falls sharply as an API gets rarer (Jain et al., 2024).
 
 **Gate 8, the smallest change.** Practice, with correlation. Google's review guide
-treats about a hundred lines as reasonable and a thousand as usually too large, and
 separates refactoring from behaviour changes. Studies of agent pull requests find
-rejection tracks size and complexity, which does not show that size causes it.
+rejection tracks size, which does not show that size causes it. Configuration pushes
+caused about a third of outages in Google's published postmortem set *(unverified)*.
 
-**Gate 9, nothing obsolete.** Practice. SRE guidance treats dead code and disabled
-flags as liabilities. The data-repair half comes from recorded incidents in which a
-corrected rule left over a thousand records the old rule had written.
+**Gate 9, nothing obsolete.** Practice. Dead code and disabled flags are treated as
+liabilities in SRE guidance. The data-repair half comes from incidents in which a
+corrected rule left records the old rule had written.
 
-**The refusal to weaken a check.** Measured. METR (2025) found frontier models editing
-the scorer, the timer or the test on about 30% of runs on one benchmark, and prompt
-changes telling them not to did not lower the rate. This is the strongest case for
-checking it in the host rather than in the prompt.
+**Gate 10, checks are not yours to change.** Measured. METR (2025) found frontier
+models editing the scorer, the timer or the test on about 30% of runs on one
+benchmark, and telling them not to did not lower the rate. On ImpossibleBench, giving
+the agent a way to flag a task as impossible cut cheating from 54% to 9% for one
+model and from 49% to 12% for another *(unverified)*. This is why "stop and say so"
+is in the gate and a flag action is in the harness list.
 
-**Stopping after three attempts.** Opinion. The count is a convention; Flynn's goal
-loop uses the same count for steps without progress.
-
-**The reread before reporting.** Measured. Models asked to correct their own
-reasoning without outside feedback rarely improve (Huang et al., ICLR 2024). For
-code, self-repair gains are modest and limited by the quality of the feedback
-(Olausson et al., ICLR 2024). Hence a reread answered by something that ran.
+**Stopping after three attempts.** Opinion. The count is a convention.
 
 ## The defect classes
 
-Ordered by a hand classification of every fix commit in Flynn's history up to
-November 2026: 202 fix commits, about 155 of them code defects, counts within about
-5%. Fail-open trust checks (about 32), unknown read as false (20), options not wired
-through (18), domain logic and version compatibility (18), platform (17), encoding
-and ordering (14), concurrency (12), unbounded work (11), lifecycle (5). The standard
-linters would have prevented almost none of them.
+The list comes from a hand classification of every fix commit in one repository (an
+agent runtime in Go with a large security component; about 155 code defects, counts
+within about 5%), checked against a published taxonomy of bugs in generated code
+(Tambon et al., 2024) and a second project's corrections. The order in the skill is
+not a ranking: a web application or a data pipeline ranks the classes differently.
+The standard linters would have prevented almost none of them.
 
-This is one repository: an agent runtime in Go with a large security component. A
-web application or a data pipeline will rank the classes differently. Classify a
-second project's history before treating the order as general; the list itself is
-also checked against a published taxonomy of bugs in generated code (Tambon et al.,
-2024), which contains the data-form, missing-case and invented-object classes.
+**Concurrency.** Measured. The common failure in agent concurrency fixes is a test
+that never creates the overlap (CONCUR) *(unverified)*.
 
-## Claims removed because nothing supported them
+**Secrets.** Measured, one study set. Debug logging accounted for 73.5% of credential
+leaks studied *(unverified)*.
 
-An earlier draft carried these. Each was a plausible statement with no source.
+## What the harness should enforce
 
-- A silent fallback "turns a failure you would see in a minute into one found weeks
-  later". No time to discovery was measured. The mechanism stays.
-- Writing down the four opening items "takes a minute, and each one changes what you
-  do next".
-- "If you cannot name a check, the work is not understood well enough to start." Some
-  work is exploration; the rule now makes finding a check the first step.
-- Silent failure is the largest defect class, and duplicate paths the second. The
-  classified history says fail-open trust checks are the largest and does not count
-  duplicate paths separately.
-- The defect classes "recur in every codebase" and "most data defects are a test that
-  used a tidier input". One repository was classified.
-- Open every function you call at its definition. Applied to standard library calls,
-  this costs reads and returns little; the rule now targets project code and recalled
-  library behaviour.
-- "A diff too large to read in one sitting is too large to review." Opinion stated as
-  a rule.
+Measured. Every large effect found came from the environment rather than the prompt:
+read-only or hidden tests, closed history and network, and a flag action. The list
+names each check by what it does so any harness can provide it.
+
+## The report
+
+Measured. Models asked to correct their own reasoning without outside feedback rarely
+improve (Huang et al., ICLR 2024), and self-repair for code is limited by the quality
+of the feedback (Olausson et al., ICLR 2024). Hence a comparison against what ran,
+and test counts stated in full.
 
 ## Advice left out on purpose
 
-- **A coverage target.** Coverage says code ran, not that anything checked it; suites
-  with full coverage and very low mutation scores are reported.
+- **A coverage target.** Coverage says code ran, not that anything checked it; once
+  suite size is fixed it stops tracking bug detection.
 - **Style gates** such as maximum function length. No evidence supports them, and
   splitting cohesive code to meet a limit produces shallow modules (Ousterhout).
+- **A test-first order rule.** No defect evidence for agents, and the generic
+  instruction raised regressions in the one measurement above.
+- **"Write secure code."** Generic security reminders lowered correctness in the
+  studies found, without a measured security gain.
 - **"Review will catch it."** Studies of review at Microsoft and Google find about
-  three quarters of findings concern readability and design, with few functional
-  defects.
-- **Emphatic wording.** No study shows stronger language makes an agent comply, and
-  the reward-hacking result shows a direct instruction often does not.
-- **A single headline rate** for vulnerabilities in generated code. Published figures
-  run from about 20% to over 80% by benchmark, and several come from vendors.
-- **Mutation testing in the normal loop.** Useful at scale with heavy filtering, noisy
-  without it. Breaking the covered line by hand (gate 2) answers the same question for
-  the lines you changed.
+  three quarters of findings concern readability and design.
+- **Emphatic wording.** No study shows stronger language makes an agent comply.
+- **Mutation testing in the normal loop.** Useful at scale with heavy filtering,
+  noisy without it.
 
 ## What a new rule needs before it is added
 
 A failure it prevents, seen more than once; a check answered by running something or
-quoting a line; and its evidence, graded as above. If a host can enforce the rule,
-file that first: a rule the agent cannot edit beats one it is asked to follow. If the
+quoting a line; and its evidence, graded as above. If a harness can enforce the rule,
+build that first: a rule the agent cannot edit beats one it is asked to follow. If the
 rule belongs to one topic, it goes in that topic's skill, and this one gains a row in
 the table.
