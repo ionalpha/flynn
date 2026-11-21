@@ -1,0 +1,8 @@
+updated conf/billing.ini
+updated conf/catalog.ini
+updated conf/checkout.ini
+updated conf/email-sender.ini
+updated conf/inventory.ini
+updated conf/notifier.ini
+updated conf/reports.ini
+updated conf/search-indexer.ini
