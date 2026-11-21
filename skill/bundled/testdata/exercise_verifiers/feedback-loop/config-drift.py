@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 
 SHIPPED = {
     "README.md": "ae2d2a14420a2423ee2dda1a1cf78dff2855d1cf436cdf153dd5db2d8b62b61f",
@@ -79,19 +80,26 @@ if not kept:
     fails.append("no check was kept in scripts/: a drift check that is not there for the next release is the same hand check again")
 elif repaired:
     good = []
+    base = os.path.abspath(tempfile.gettempdir())
+
+    def snap(dst):
+        skip = lambda d, names: [n for n in names if n in NOISE or os.path.abspath(os.path.join(d, n)) == base]
+        shutil.copytree(".", dst, ignore=skip)
+
     for script in kept:
         if not script.endswith(".py"):
             continue
-        tmp = tempfile.mkdtemp()
+        tmp = os.path.join(base, "drift-" + uuid.uuid4().hex)
+        tree = os.path.join(tmp, "t")
+        os.makedirs(tmp)
         try:
-            shutil.copytree(".", os.path.join(tmp, "t"), ignore=shutil.ignore_patterns(*NOISE))
-            tree = os.path.join(tmp, "t")
+            snap(tree)
             if run(script, tree) != 0:
                 continue
             missed = []
             for label, (rel, change) in MUTATIONS.items():
                 shutil.rmtree(tree)
-                shutil.copytree(".", tree, ignore=shutil.ignore_patterns(*NOISE))
+                snap(tree)
                 edit(os.path.join(tree, rel), change)
                 if run(script, tree) == 0:
                     missed.append(label)
