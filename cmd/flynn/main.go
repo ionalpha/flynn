@@ -155,6 +155,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
 		shellFlags  = registerShellFlags(fs)
+		selFlags    = registerSelectionFlags(fs)
 		showVersion = fs.Bool("version", false, "print version and exit")
 		profileDir  = fs.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
 		profileCont = fs.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
@@ -205,6 +206,15 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
 	}
+
+	// Checked against the stored skills and the tools that exist once a run opens its store;
+	// a malformed list or selection file is refused here, before anything starts.
+	sel, err := selFlags.resolve(fs, *dataDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
+	selectionConfig = sel
 
 	// The bundle spans the whole command and closes on the single exit path below. With
 	// no --profile and no FLYNN_PROFILE, Start returns a nil bundle whose Stop is a no-op.
@@ -612,7 +622,7 @@ func printUsage(w io.Writer) {
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
   flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, -v/--verbose, --plain, --profile <dir> (run with --help for details).
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, --bare, --skills <slugs>, --no-skill <slugs>, --tools <names>, --no-tools, --no-bundled-skills, --project-files, -v/--verbose, --plain, --profile <dir> (run with --help for details).
 
 A goal spec file states the terms of a run: what must stay true while it works. Each
 term is audited after every step, before the goal is asked whether it is done, and a
@@ -710,6 +720,13 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	}
 	defer func() { _ = store.Close() }()
 
+	// Checked against what is stored, so a misspelt slug or tool name stops the run here
+	// naming the valid ones.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), extAgent != nil, fanout, requireProof)
+	if err != nil {
+		return err
+	}
+
 	// An external agent exposes no model to distill through, so its run is sealed but
 	// skips learning.
 	var distiller learn.Distiller
@@ -738,6 +755,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		withGoalSpec(spec),
 		// Nil unless this install names an embedding model, which keeps lexical recall order.
 		withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(os.Stdout))),
+		withSelection(selPlan),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
@@ -747,7 +765,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		opts = append(opts, withPlanning())
 		// The repository's instruction files, if the operator allows them. An external agent
 		// CLI reads its own.
-		opts = append(opts, withProjectFiles(projectDecision(cwd, dataDir)))
+		opts = append(opts, withProjectFiles(projectDecisionFor(cwd, dataDir)))
 		// Planning records each item's verdict; this makes an unproven item stop the run.
 		if requireProof {
 			opts = append(opts, withLedgerProof())
@@ -840,6 +858,14 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	if err != nil {
 		return err
 	}
+	// A resume rebuilds the run's posture from its record and the selection from this
+	// invocation. The tool grant matters here; a resumed run offers no skills, so the
+	// skill rules have nothing to filter.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), false, req.fanout != nil, req.cfg.proof)
+	if err != nil {
+		return err
+	}
+	req = req.withOptions(withSelection(selPlan))
 	_, _, _, err = req.execute(ctx)
 	if signer != nil {
 		sealResumed(ctx, os.Stdout, store, runID, signer, err)

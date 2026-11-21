@@ -40,6 +40,9 @@ type driveConfig struct {
 	// project is the trust decision for the repository's instruction files. The zero value
 	// means none found, and adds, taints and records nothing.
 	project projectctx.Decision
+	// selection is the skills the run is offered and the tools it is granted. Nil leaves
+	// both at their defaults and adds nothing to the record.
+	selection *selectionPlan
 }
 
 type driveOption func(*driveConfig)
