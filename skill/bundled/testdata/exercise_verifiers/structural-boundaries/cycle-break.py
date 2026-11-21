@@ -84,7 +84,9 @@ if r.returncode != 0:
 tmp = tempfile.mkdtemp()
 try:
     work = os.path.join(tmp, "w")
-    shutil.copytree(".", work, ignore=shutil.ignore_patterns(".*", "__pycache__"))
+    tabs = os.path.abspath(tmp) + os.sep
+    skip = lambda d, ns: [n for n in ns if n.startswith(".") or n == "__pycache__" or tabs.startswith(os.path.abspath(os.path.join(d, n)) + os.sep)]
+    shutil.copytree(".", work, ignore=skip)
     with open(os.path.join(work, "stock.py"), "a", encoding="utf-8") as fh:
         fh.write("\nimport orders\n")
     r = subprocess.run([sys.executable, "-m", "unittest", "discover"], capture_output=True, text=True, cwd=work)
