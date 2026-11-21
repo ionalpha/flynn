@@ -241,6 +241,7 @@ the unit would fail as unproven.
 | Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `mission.Tool` | `tools` set, `tools/github`, extension tools | `mission.WithTools` | shipped |
+| `mission.Briefer` | `skilltool` read tool, over the skill store | `cmd/flynn/learning.go`, as part of the skill set mounted with `mission.WithTools`; a tool that does not implement it adds no brief | shipped |
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
 | `mission.Fanout` | `orchestration.Spawner` | `governed/assemble.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |

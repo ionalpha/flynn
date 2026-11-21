@@ -15,7 +15,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "tool.call",
@@ -35,7 +37,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "tool.result",
@@ -52,7 +56,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "turn.completed",
@@ -69,7 +75,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "turn.started",
@@ -86,7 +94,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "tool.call",
@@ -105,7 +115,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "tool.result",
@@ -122,7 +134,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "turn.completed",
@@ -139,7 +153,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "turn.started",
@@ -156,7 +172,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "assistant.text",
@@ -173,7 +191,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     },
     {
       "Kind": "turn.completed",
@@ -190,7 +210,9 @@
       "Usage": {
         "inputTokens": 0,
         "outputTokens": 0
-      }
+      },
+      "Skill": "",
+      "Via": ""
     }
   ],
   "result": "The file says hello.",
