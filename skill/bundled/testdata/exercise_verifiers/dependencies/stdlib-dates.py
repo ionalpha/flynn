@@ -11,7 +11,7 @@ def h(p):
     return hashlib.sha256(open(p, "rb").read().replace(b"\r\n", b"\n")).hexdigest()
 
 
-if h("requirements.txt") != "4b8183101fd19f071771805a42a31fbb234a7961921fdb8b783a279755a1b5d5":
+if h("requirements.txt") != "c115d92a8b5db1e06527ab5712bfea68d09ab56367bcf288896669bf32f56b58":
     fails.append("requirements.txt changed; the standard library parses these timestamps")
 std = set(sys.stdlib_module_names)
 for node in ast.walk(ast.parse(open("events.py", encoding="utf-8").read())):
