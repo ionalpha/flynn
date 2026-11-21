@@ -23,7 +23,7 @@ Load this before the first edit and again before you report. Answer each gate wi
 
 1. **Evidence for every claim.** For each thing you say works, name the command and the output line that shows it. Mark everything else *read* (you looked at the code) or *assumed* (you did not observe it), and check an assumed fact before building on it. Read the output, not the exit code: zero tests run, a cached result and a skipped case all exit 0.
 
-2. **A test that fails for the right reason.** On the code before your change, the new test fails on its assertion, with a message that states the disagreement. A test that passes there, or fails on a build or setup error, proves nothing. Take expected values from the specification, never from what the code returns. Also test what the specification implies and the visible tests do not cover: invalid input rejected, values at a limit, features used together. For a test written after the code, run it against a clean copy of the previous version; never break and restore lines in the working copy.
+2. **A test that fails for the right reason.** For a change in behaviour: on the code before your change, the new test fails on its assertion, with a message that states the disagreement. A test that passes there, or fails on a build or setup error, proves nothing. Take expected values from the specification, never from what the code returns. Also test what the specification implies and the visible tests do not cover: invalid input rejected, values at a limit, features used together. For a test written after the code, run it against a clean copy of the previous version; never break and restore lines in the working copy. A change that keeps behaviour (a restructuring, a removal of dead code, a rename) adds no test of its own: the existing tests pass before and after with no edit to them, and the report says which tests cover the code it moved.
 
 3. **The check matches the claim, on what ships.** Name what each check exercises and confirm it is the property you claim, on the code, build, database, configuration and platform users get. Rebuild both sides of any comparison. Iterate on the narrowest check, then run the pipeline's own command before you report. If that fails in code you did not touch, say where, and which claims it leaves unproven.
 
@@ -35,13 +35,15 @@ Load this before the first edit and again before you report. Answer each gate wi
 
 7. **Facts from the source.** Open each project function, type and setting at its definition before you call or change it. Check library behaviour against the installed version. For a new dependency, confirm the name in its registry and take the version from there. For an external service, send one real request and keep the response as a fixture.
 
-8. **The smallest change that does the job.** Tie each touched file to the request; the tests from gate 2 are part of it. Put problems found on the way in the report, not the diff. Keep restructuring and behaviour changes in separate commits. Add no option, layer, wrapper or abstraction nobody asked for. Configuration and generated files are code and get the same checks.
+8. **The smallest change that does the job.** Tie each touched file to the request; the tests from gate 2 are part of it. Put problems found on the way in the report, not the diff. Keep restructuring and behaviour changes in separate commits. Add no option, layer, wrapper or abstraction nobody asked for. A script or fixture you built to check your own work leaves the diff before you report, unless the project will run it again; a kept one goes in its own commit and under Changed in the report. Configuration and generated files are code and get the same checks.
 
 9. **Nothing obsolete left.** Remove what the change replaced: the old path, its tests, its configuration, and every comment and document describing it. When you fix logic that wrote bad data, repair the data or say why not.
 
 10. **Checks are not yours to change.** Never edit, skip, weaken or delete a test, assertion, threshold or check to get a pass, and never special-case the input a test uses. A failing check is never obsolete. If a check contradicts the request, or the task cannot be done as specified, stop and say so. Fix a wrong check as a separate change.
 
-If three attempts at one problem each uncover a new problem, stop and report what each one revealed.
+11. **Decide what is yours to decide.** Settle from the request, the code and the project's conventions whatever they settle, take the conventional default for the rest, and name each default in the report. Stop for the requester only when the choice is theirs and changes the work: a check that contradicts the request, two readings of the request that lead to different changes, or a step that cannot be undone or that others will see. Finish every step the request covers before you report; a step you could have done is not handed back as a suggestion.
+
+If three attempts at one problem each uncover a new problem, stop and report what each one revealed and what you would try next.
 
 ## Defects to check
 
@@ -57,7 +59,7 @@ Check each one your change touches, with a test or a search.
 - **Partial failure.** For a stop between any two steps, say what state it leaves, whether a retry repeats a write, and whether an unconfirmed request is reported as done. Validate before any irreversible step.
 - **Bounds.** Every cache, queue, buffer, retry loop, wait, file and result set has a limit and a tested path for exceeding it. Every network or cross-process call has a timeout.
 - **Platform.** Paths, line endings, case sensitivity, permissions, locale and process handling differ by operating system and runtime. Check each one the change ships to, or name the ones you did not.
-- **What people see.** Each screen, message or response handles loading, empty, error and oversized content.
+- **What people see.** Each screen, message or response handles loading, empty, error and oversized content. Run a change to an interface in the running application and use it the way a person would, before saying it works: a build that passes and a unit test that renders it are not that check. Where nothing can run it, say so under Not checked.
 - **Secrets.** Credentials never reach logs, error messages, URLs or output, debug logging included.
 - **Destructive and unrequested work.** A delete states its full reach ("this item and its 14 children") and checks its preconditions where it is entered. Scheduled, startup and paid work stays off until someone turns it on.
 
