@@ -189,9 +189,9 @@ func TestACheckIsTestedOnlyOnTheExercisesThatDeclareIt(t *testing.T) {
 // difference in cost is worth is a judgement the harness does not make.
 func TestCostIsTotalledPerArm(t *testing.T) {
 	trial := func(_ context.Context, _ skillab.Exercise, _ int, candidate bool) (skillab.Outcome, error) {
-		c := skillab.Cost{InputTokens: 100, OutputTokens: 10, Turns: 2, Wall: time.Second}
+		c := skillab.Cost{Tokens: tokens(100, 10), Turns: 2, Wall: time.Second}
 		if candidate {
-			c = skillab.Cost{InputTokens: 300, OutputTokens: 30, Turns: 4, Wall: 3 * time.Second}
+			c = skillab.Cost{Tokens: tokens(300, 30), Turns: 4, Wall: 3 * time.Second}
 		}
 		return skillab.Outcome{Passed: true, Cost: c}, nil
 	}
@@ -199,8 +199,8 @@ func TestCostIsTotalledPerArm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.CandidateCost.InputTokens != 1200 || rep.BaselineCost.InputTokens != 400 {
-		t.Errorf("input tokens %d/%d, want 1200/400", rep.CandidateCost.InputTokens, rep.BaselineCost.InputTokens)
+	if rep.CandidateCost.Tokens.Input.N != 1200 || rep.BaselineCost.Tokens.Input.N != 400 {
+		t.Errorf("input tokens %d/%d, want 1200/400", rep.CandidateCost.Tokens.Input.N, rep.BaselineCost.Tokens.Input.N)
 	}
 	if rep.CandidateCost.Turns != 16 || rep.BaselineCost.Wall != 4*time.Second {
 		t.Errorf("turns %d wall %v", rep.CandidateCost.Turns, rep.BaselineCost.Wall)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill"
@@ -120,8 +121,11 @@ func readGitTree(ctx context.Context, ref, dir, dest string) error {
 	}
 	defer func() { _ = sb.Close() }()
 	listed, err := sb.Exec(ctx, sandbox.Command{Line: "git ls-tree -r --name-only --full-tree " + ref + " -- " + dir})
-	if err != nil || listed.ExitCode != 0 {
-		return fmt.Errorf("git could not list %s at %s: %v %s", dir, ref, err, strings.TrimSpace(listed.Output))
+	if err != nil {
+		return fmt.Errorf("git could not list %s at %s: %w", dir, ref, err)
+	}
+	if listed.ExitCode != 0 {
+		return fmt.Errorf("git could not list %s at %s: %s", dir, ref, strings.TrimSpace(listed.Output))
 	}
 	files := strings.Fields(listed.Output)
 	if len(files) == 0 {
@@ -143,8 +147,11 @@ func readGitTree(ctx context.Context, ref, dir, dest string) error {
 			return fmt.Errorf("repository path %q cannot be read safely", name)
 		}
 		shown, err := sb.Exec(ctx, sandbox.Command{Line: "git show " + ref + ":" + name})
-		if err != nil || shown.ExitCode != 0 {
-			return fmt.Errorf("git could not read %s at %s: %v", name, ref, err)
+		if err != nil {
+			return fmt.Errorf("git could not read %s at %s: %w", name, ref, err)
+		}
+		if shown.ExitCode != 0 {
+			return fmt.Errorf("git could not read %s at %s: %s", name, ref, strings.TrimSpace(shown.Output))
 		}
 		rel := filepath.Join(filepath.Base(dest), filepath.FromSlash(strings.TrimPrefix(name, dir+"/")))
 		if err := root.MkdirAll(filepath.Dir(rel), 0o750); err != nil {
@@ -174,6 +181,7 @@ func (v *skillVersion) install(ctx context.Context, store state.SkillStore) erro
 type meteredModel struct {
 	inner llm.Model
 	price *pricer
+	clk   clock.Clock
 
 	mu    sync.Mutex
 	cost  skillab.Cost
@@ -182,9 +190,10 @@ type meteredModel struct {
 	last  string
 }
 
-// newMeteredModel wraps inner. A nil price leaves every turn unpriced.
-func newMeteredModel(inner llm.Model, price *pricer) *meteredModel {
-	return &meteredModel{inner: inner, price: price}
+// newMeteredModel wraps inner. A nil price leaves every turn unpriced. clk dates each
+// turn, because a price table row is chosen by the time of the call.
+func newMeteredModel(inner llm.Model, price *pricer, clk clock.Clock) *meteredModel {
+	return &meteredModel{inner: inner, price: price, clk: clk}
 }
 
 // maxLoggedBlock bounds one block of the transcript, so a tool that printed a large
@@ -212,7 +221,7 @@ func (m *meteredModel) Generate(ctx context.Context, req llm.Request) (llm.Respo
 	}
 	writeMessage(&m.log, resp.Message)
 	m.last = resp.Message.TextContent()
-	m.cost = m.cost.Add(m.price.turn(resp.Usage, time.Now()))
+	m.cost = m.cost.Add(m.price.turn(resp.Usage, m.clk.Now()))
 	return resp, nil
 }
 

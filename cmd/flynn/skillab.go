@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/skill/skillab"
@@ -186,10 +187,7 @@ func newPricer(table *usage.Table, spec string) *pricer {
 
 // turn is the cost of one returned call: its tokens, and a price only if the table has one.
 func (p *pricer) turn(u llm.Usage, at time.Time) skillab.Cost {
-	c := skillab.Cost{
-		Turns: 1, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
-		CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens,
-	}
+	c := skillab.Cost{Turns: 1, Tokens: usage.FromLLM(u)}
 	if p == nil || p.table == nil {
 		c.Unpriced = 1
 		return c
@@ -320,10 +318,11 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the
 	// only thing that does.
-	metered := newMeteredModel(model, price)
-	start := time.Now()
+	var clk clock.Clock = clock.System{}
+	metered := newMeteredModel(model, price, clk)
+	start := clk.Now()
 	report, rerr := runLearningMission(ctx, io.Discard, metered, plan, nil, workdir, exercise.Objective, "", store, nil, false, nil, opts...)
-	wall := time.Since(start)
+	wall := clk.Now().Sub(start)
 	cost, transcript, last := metered.snapshot()
 	cost.Wall = wall
 	var ended skillab.Ending

@@ -5,15 +5,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/skill/skillab"
 	"github.com/ionalpha/flynn/usage"
 )
 
 const usd = "USD"
 
+// tokens is a reported input and output count, as an adapter would give it.
+func tokens(in, out int) usage.Tokens {
+	return usage.FromLLM(llm.Usage{InputTokens: in, OutputTokens: out})
+}
+
 // priced is one turn costing amount, so a pair of two arms costs twice that.
 func priced(amount usage.Nanos) skillab.Cost {
-	return skillab.Cost{Turns: 1, InputTokens: 100, OutputTokens: 10, Money: amount, Currency: usd}
+	return skillab.Cost{Turns: 1, Tokens: tokens(100, 10), Money: amount, Currency: usd}
 }
 
 func cheap(amount usage.Nanos) skillab.Trial {
@@ -63,7 +69,7 @@ func TestNoLimitRunsEveryPairAndSaysNothingOfStopping(t *testing.T) {
 // after the first pair, and the report says why instead of showing a cost of zero.
 func TestSpendLimitStopsWhenCostIsUnknown(t *testing.T) {
 	trial := func(context.Context, skillab.Exercise, int, bool) (skillab.Outcome, error) {
-		return skillab.Outcome{Passed: true, Cost: skillab.Cost{Turns: 1, InputTokens: 50, Unpriced: 1}}, nil
+		return skillab.Outcome{Passed: true, Cost: skillab.Cost{Turns: 1, Tokens: tokens(50, 0), Unpriced: 1}}, nil
 	}
 	limit := skillab.Limit{Money: 1_000_000_000, Currency: usd}
 	rep, err := skillab.CompareWithin(context.Background(), set(4), 1, skillab.Arms{Candidate: "a", Baseline: "b"}, trial, limit)

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/skill/skillab"
 	"github.com/ionalpha/flynn/usage"
@@ -43,7 +44,7 @@ func TestPricerPricesReportedTokensOrLeavesThemUnpriced(t *testing.T) {
 		"no pricer":              nil,
 	} {
 		c := p.turn(u, at)
-		if c.Known() || c.Unpriced != 1 || c.InputTokens != 1_000_000 || c.Money != 0 {
+		if c.Known() || c.Unpriced != 1 || c.Tokens.Input.N != 1_000_000 || c.Money != 0 {
 			t.Errorf("%s: %+v, want tokens kept and the turn unpriced", name, c)
 		}
 	}
@@ -54,7 +55,7 @@ func TestPricerPricesReportedTokensOrLeavesThemUnpriced(t *testing.T) {
 }
 
 func TestMeteredModelAccumulatesMoneyFromTheTable(t *testing.T) {
-	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply("a", 1_000_000, 0), reply("b", 1_000_000, 0)}}, newPricer(priceTable(t), "acme:m1"))
+	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply("a", 1_000_000, 0), reply("b", 1_000_000, 0)}}, newPricer(priceTable(t), "acme:m1"), clock.System{})
 	for range 2 {
 		if _, err := m.Generate(context.Background(), llm.Request{}); err != nil {
 			t.Fatal(err)
@@ -136,7 +137,7 @@ func TestMeasureSkillReportsAStopHonestly(t *testing.T) {
 		return skillab.Outcome{Passed: true, Cost: skillab.Cost{Turns: 1, Money: 1_000_000_000, Currency: "USD"}}, nil
 	}
 	unpriced := func(context.Context, skillab.Exercise, int, bool) (skillab.Outcome, error) {
-		return skillab.Outcome{Passed: true, Cost: skillab.Cost{Turns: 1, InputTokens: 7, Unpriced: 1}}, nil
+		return skillab.Outcome{Passed: true, Cost: skillab.Cost{Turns: 1, Tokens: usage.FromLLM(llm.Usage{InputTokens: 7}), Unpriced: 1}}, nil
 	}
 	limit := skillab.Limit{Money: 3_000_000_000, Currency: "USD"}
 

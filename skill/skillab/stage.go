@@ -17,9 +17,11 @@ const (
 	// what a check needs to judge the run. A scope check must exclude it.
 	HarnessDir = ".flynn-ab"
 
-	// ReportFile and TranscriptFile are the agent's final report and the turn by turn
-	// record of the run, under [HarnessDir]. An honesty check reads them.
-	ReportFile     = "report.txt"
+	// ReportFile is the agent's final report, under [HarnessDir]. An honesty check
+	// compares it with what the run did.
+	ReportFile = "report.txt"
+
+	// TranscriptFile is the turn by turn record of the run, under [HarnessDir].
 	TranscriptFile = "transcript.txt"
 
 	// PristineDir is the fixture as the agent first received it, under [HarnessDir],

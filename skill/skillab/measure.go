@@ -34,10 +34,10 @@ var withAndWithout = Arms{Candidate: "with the skill", Baseline: "without the sk
 // Cost is what one attempt, or a sum of them, spent. A zero Cost means nothing was
 // metered, which is how a measurement made through [Measure] reports it.
 type Cost struct {
-	InputTokens      int
-	OutputTokens     int
-	CacheReadTokens  int
-	CacheWriteTokens int
+	// Tokens carries the four token figures with the meanings [usage.Tokens] gives
+	// them, so a sum goes through [usage.Tokens.Add] and a total through
+	// [usage.Tokens.Total] and a cache read is never counted twice.
+	Tokens usage.Tokens
 	// Turns is the number of model calls that returned.
 	Turns int
 	// Wall is the time the agent ran, excluding setup and the checks.
@@ -55,10 +55,6 @@ type Cost struct {
 // was priced. A cost that is not known is never read as zero.
 func (c Cost) Known() bool { return c.Turns > 0 && c.Unpriced == 0 && c.Currency != "" }
 
-// Tokens is every token billed, counted once: cache reads are part of the input and
-// cache writes are on top of it.
-func (c Cost) Tokens() int { return c.InputTokens + c.CacheWriteTokens + c.OutputTokens }
-
 // Add returns the sum of c and o. Two currencies cannot be summed, so the turns of the
 // second are counted as unpriced.
 func (c Cost) Add(o Cost) Cost {
@@ -70,15 +66,12 @@ func (c Cost) Add(o Cost) Cost {
 		mixed = o.Turns
 	}
 	return Cost{
-		Money:            c.Money + o.Money,
-		Currency:         currency,
-		Unpriced:         c.Unpriced + o.Unpriced + mixed,
-		InputTokens:      c.InputTokens + o.InputTokens,
-		OutputTokens:     c.OutputTokens + o.OutputTokens,
-		CacheReadTokens:  c.CacheReadTokens + o.CacheReadTokens,
-		CacheWriteTokens: c.CacheWriteTokens + o.CacheWriteTokens,
-		Turns:            c.Turns + o.Turns,
-		Wall:             c.Wall + o.Wall,
+		Money:    c.Money + o.Money,
+		Currency: currency,
+		Unpriced: c.Unpriced + o.Unpriced + mixed,
+		Tokens:   c.Tokens.Add(o.Tokens),
+		Turns:    c.Turns + o.Turns,
+		Wall:     c.Wall + o.Wall,
 	}
 }
 
@@ -565,7 +558,7 @@ func (r Report) String() string {
 func (c Cost) perAttempt(n int) string {
 	f := float64(n)
 	return fmt.Sprintf("%.0f input + %.0f output tokens (%.0f read from cache), %.1f turns, %.1fs, %s",
-		float64(c.InputTokens)/f, float64(c.OutputTokens)/f, float64(c.CacheReadTokens)/f,
+		float64(c.Tokens.Input.N)/f, float64(c.Tokens.Output.N)/f, float64(c.Tokens.CacheRead.N)/f,
 		float64(c.Turns)/f, c.Wall.Seconds()/f, c.money(n))
 }
 
@@ -574,7 +567,7 @@ func (c Cost) String() string { return c.perAttempt(1) }
 
 // total renders c as spent in all.
 func (c Cost) total() string {
-	return fmt.Sprintf("%d tokens, %d turns, %s", c.Tokens(), c.Turns, c.money(1))
+	return fmt.Sprintf("%d tokens, %d turns, %s", c.Tokens.Total(), c.Turns, c.money(1))
 }
 
 // money renders the spend averaged over n attempts, or says it is unknown. A price is
@@ -601,7 +594,7 @@ func (r Report) costDifference() (string, bool) {
 	if d < 0 {
 		sign, d = "-", -d
 	}
-	return fmt.Sprintf("%s%s %s for the candidate (%+d tokens)", sign, usage.Nanos(d), c.Currency, c.Tokens()-b.Tokens()), true
+	return fmt.Sprintf("%s%s %s for the candidate (%+d tokens)", sign, usage.Nanos(d), c.Currency, c.Tokens.Total()-b.Tokens.Total()), true
 }
 
 func endsLine(ends map[Ending]int) string {

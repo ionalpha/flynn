@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/skill/skillab"
 )
@@ -62,7 +63,7 @@ func TestMeteredModelBuildsTheTranscriptTurnByTurn(t *testing.T) {
 	m := newMeteredModel(&fakeModel{
 		replies: []llm.Response{reply("first", 10, 1), {}, reply("second", 20, 2)},
 		err:     map[int]error{1: errors.New("rate limited")},
-	}, nil)
+	}, nil, clock.System{})
 	ctx := context.Background()
 	user := llm.Text(llm.RoleUser, "fix it")
 	if _, err := m.Generate(ctx, llm.Request{Messages: []llm.Message{user}}); err != nil {
@@ -78,7 +79,7 @@ func TestMeteredModelBuildsTheTranscriptTurnByTurn(t *testing.T) {
 	}
 
 	cost, log, last := m.snapshot()
-	if cost.Turns != 2 || cost.InputTokens != 30 || cost.OutputTokens != 3 {
+	if cost.Turns != 2 || cost.Tokens.Input.N != 30 || cost.Tokens.Output.N != 3 {
 		t.Errorf("cost = %+v, want 2 turns, 30 in, 3 out: a failed call reported no usage and counts for nothing", cost)
 	}
 	if last != "second" {
@@ -95,7 +96,7 @@ func TestMeteredModelBuildsTheTranscriptTurnByTurn(t *testing.T) {
 }
 
 func TestMeteredModelBoundsOneBlock(t *testing.T) {
-	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply(strings.Repeat("x", 3*maxLoggedBlock), 1, 1)}}, nil)
+	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply(strings.Repeat("x", 3*maxLoggedBlock), 1, 1)}}, nil, clock.System{})
 	if _, err := m.Generate(context.Background(), llm.Request{}); err != nil {
 		t.Fatal(err)
 	}
