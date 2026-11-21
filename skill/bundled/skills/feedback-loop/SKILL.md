@@ -38,10 +38,10 @@ Before you report, run the project's own check. A tool you built never replaces,
 
 ## Keep it or remove it
 
-Keep a tool when the next person working here will run the same loop. Put it where the project keeps such things (its scripts, test fixtures or task runner), name it after the question it answers, make it run with one command and no edits, write it in a language and with dependencies the project already has, commit it apart from the change it served, and list it in the report under Changed. A kept tool is code and passes the same checks as the rest of the change.
+Keep a tool when the next person working here will run the same loop. Put it where the project keeps such things (its scripts, test fixtures or task runner), name it after the question it answers, make it run with one command and no edits, write it in a language and with dependencies the project already has, commit it apart from the change it served, and name it in the report. A kept tool is code and passes the same checks as the rest of the change.
 
 Remove a tool only this task needed before you report, with any temporary logging.
 
 ## Repeated work
 
-When you have done the same sequence by hand three times in one task, script it or write in the report why not. Put any repeated manual step you saw and did not script under "Found on the way".
+When you have done the same sequence by hand three times in one task, script it or write in the report why not. Report any repeated manual step you saw and did not script, for someone to pick up.
