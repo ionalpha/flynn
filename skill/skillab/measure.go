@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ionalpha/flynn/usage"
 )
 
 // Alpha is the significance level for a verdict. It is a constant so the threshold
@@ -40,11 +42,37 @@ type Cost struct {
 	Turns int
 	// Wall is the time the agent ran, excluding setup and the checks.
 	Wall time.Duration
+	// Money is what a price table charged for the priced turns, in Currency. It is the
+	// whole spend only when Unpriced is zero: see [Cost.Known].
+	Money    usage.Nanos
+	Currency string
+	// Unpriced counts the turns no price was found for. A provider reports tokens and
+	// not a price, so a model the table does not list leaves every turn here.
+	Unpriced int
 }
 
-// Add returns the sum of c and o.
+// Known reports whether Money is the whole spend: something was metered and every turn
+// was priced. A cost that is not known is never read as zero.
+func (c Cost) Known() bool { return c.Turns > 0 && c.Unpriced == 0 && c.Currency != "" }
+
+// Tokens is every token billed, counted once: cache reads are part of the input and
+// cache writes are on top of it.
+func (c Cost) Tokens() int { return c.InputTokens + c.CacheWriteTokens + c.OutputTokens }
+
+// Add returns the sum of c and o. Two currencies cannot be summed, so the turns of the
+// second are counted as unpriced.
 func (c Cost) Add(o Cost) Cost {
+	currency, mixed := c.Currency, 0
+	switch {
+	case currency == "":
+		currency = o.Currency
+	case o.Currency != "" && o.Currency != currency:
+		mixed = o.Turns
+	}
 	return Cost{
+		Money:            c.Money + o.Money,
+		Currency:         currency,
+		Unpriced:         c.Unpriced + o.Unpriced + mixed,
 		InputTokens:      c.InputTokens + o.InputTokens,
 		OutputTokens:     c.OutputTokens + o.OutputTokens,
 		CacheReadTokens:  c.CacheReadTokens + o.CacheReadTokens,
@@ -54,9 +82,28 @@ func (c Cost) Add(o Cost) Cost {
 	}
 }
 
+// Ending says how an attempt's run stopped when it did not finish by itself. A run
+// stopped short still fails its exercise; the report keeps the reason apart from an
+// ordinary failure, because a stalled arm and a wrong answer call for different fixes.
+type Ending string
+
+const (
+	// Finished is a run that ended by itself, right or wrong.
+	Finished Ending = ""
+	// Stalled is a run stopped for making no progress.
+	Stalled Ending = "stalled"
+	// BudgetExhausted is a run stopped by a step, token or spend limit.
+	BudgetExhausted Ending = "budget exhausted"
+	// Aborted is any other early stop, such as a model error or a cancelled run.
+	Aborted Ending = "aborted"
+)
+
 // Outcome is what one attempt produced: the primary check, any named secondary
-// checks, and what the attempt cost.
+// checks, how the run ended and what the attempt cost.
 type Outcome struct {
+	// Ended is how the run stopped. Passed and Checks still hold the verifier's word
+	// on whatever the run left behind.
+	Ended Ending
 	// Passed is the result of the exercise's verify command.
 	Passed bool
 	// Checks maps each of the exercise's [Exercise.Checks] to its result. A declared
@@ -84,6 +131,9 @@ type Pair struct {
 	WithoutChecks map[string]bool
 	WithCost      Cost
 	WithoutCost   Cost
+	// WithEnded and WithoutEnded say how each arm's run stopped.
+	WithEnded    Ending
+	WithoutEnded Ending
 }
 
 // Discordant reports whether the conditions disagreed; only such pairs inform the test.
@@ -102,12 +152,49 @@ func Measure(ctx context.Context, set Set, repeats int, attempt Attempt) (Report
 // of a pair run before the next pair, so drift in the model, machine or network
 // affects both arms.
 func Compare(ctx context.Context, set Set, repeats int, arms Arms, trial Trial) (Report, error) {
+	return CompareWithin(ctx, set, repeats, arms, trial, Limit{})
+}
+
+// Limit bounds what a comparison may spend. The zero value is no limit.
+type Limit struct {
+	// Money stops the comparison from starting a pair once the pairs already run have
+	// cost this much. It is checked between pairs, because half a pair observes
+	// nothing, so a run can pass it by up to one pair. A spend that cannot be read (a
+	// turn no price was found for) stops the comparison too: a limit that cannot be
+	// checked must not be assumed to hold.
+	Money usage.Nanos
+	// Currency is the currency of Money. A spend in another currency is unreadable.
+	Currency string
+}
+
+// reached returns why no further pair may start, or "" when one may.
+func (l Limit) reached(spent Cost) string {
+	if l.Money <= 0 {
+		return ""
+	}
+	if spent.Unpriced > 0 || (spent.Currency != "" && spent.Currency != l.Currency) {
+		return fmt.Sprintf("spend limit %s %s could not be checked: %d turn(s) had no price", l.Money, l.Currency, spent.Unpriced)
+	}
+	if spent.Money >= l.Money {
+		return fmt.Sprintf("spend limit %s %s reached (%s spent)", l.Money, l.Currency, spent.Money)
+	}
+	return ""
+}
+
+// CompareWithin is [Compare] under a [Limit]. When the limit stops it, the report holds
+// the pairs that ran, and Stopped says why.
+func CompareWithin(ctx context.Context, set Set, repeats int, arms Arms, trial Trial, limit Limit) (Report, error) {
 	if repeats < 1 {
 		repeats = 1
 	}
-	rep := Report{Skill: set.Skill, Repeats: repeats, Arms: arms}
+	rep := Report{Skill: set.Skill, Repeats: repeats, Arms: arms, Planned: len(set.Exercises) * repeats}
+	var spent Cost
 	for _, exercise := range set.Exercises {
 		for r := 1; r <= repeats; r++ {
+			if reason := limit.reached(spent); reason != "" {
+				rep.Stopped = reason
+				return rep.scored(), nil
+			}
 			with, err := runArm(ctx, trial, exercise, r, true, arms.Candidate)
 			if err != nil {
 				return Report{}, err
@@ -121,7 +208,9 @@ func Compare(ctx context.Context, set Set, repeats int, arms Arms, trial Trial) 
 				With: with.Passed, Without: without.Passed,
 				WithChecks: with.Checks, WithoutChecks: without.Checks,
 				WithCost: with.Cost, WithoutCost: without.Cost,
+				WithEnded: with.Ended, WithoutEnded: without.Ended,
 			})
+			spent = spent.Add(with.Cost).Add(without.Cost)
 		}
 	}
 	return rep.scored(), nil
@@ -193,6 +282,17 @@ type Report struct {
 	// worth is a judgement for whoever reads it.
 	CandidateCost Cost
 	BaselineCost  Cost
+
+	// CandidateEnds and BaselineEnds count each arm's attempts that stopped without
+	// finishing, by how they stopped.
+	CandidateEnds map[Ending]int
+	BaselineEnds  map[Ending]int
+
+	// Planned is the number of pairs the comparison set out to run. Stopped is empty
+	// when all of them ran, and otherwise says why it ended early; the verdict then
+	// reads only the pairs that ran.
+	Planned int
+	Stopped string
 }
 
 // CheckResult is the paired comparison of one named secondary check over the pairs
@@ -234,6 +334,8 @@ func (r Report) scored() Report {
 		}
 		r.CandidateCost = r.CandidateCost.Add(p.WithCost)
 		r.BaselineCost = r.BaselineCost.Add(p.WithoutCost)
+		r.CandidateEnds = countEnd(r.CandidateEnds, p.WithEnded)
+		r.BaselineEnds = countEnd(r.BaselineEnds, p.WithoutEnded)
 	}
 	if n := len(r.Pairs); n > 0 {
 		r.Gain = 100 * (float64(r.WithPasses) - float64(r.WithoutPasses)) / float64(n)
@@ -242,6 +344,17 @@ func (r Report) scored() Report {
 	r.Verdict = verdict(r.P, r.HelpedOnly, r.HurtOnly)
 	r.Checks = scoreChecks(r.Pairs)
 	return r
+}
+
+func countEnd(m map[Ending]int, e Ending) map[Ending]int {
+	if e == Finished {
+		return m
+	}
+	if m == nil {
+		m = map[Ending]int{}
+	}
+	m[e]++
+	return m
 }
 
 func verdict(p float64, helped, hurt int) Verdict {
@@ -417,6 +530,22 @@ func (r Report) String() string {
 	if r.Metered() && n > 0 {
 		fmt.Fprintf(&b, "  cost per attempt, %s: %s\n", arms.Candidate, r.CandidateCost.perAttempt(n))
 		fmt.Fprintf(&b, "  cost per attempt, %s: %s\n", arms.Baseline, r.BaselineCost.perAttempt(n))
+		fmt.Fprintf(&b, "  cost in total, %s: %s\n", arms.Candidate, r.CandidateCost.total())
+		fmt.Fprintf(&b, "  cost in total, %s: %s\n", arms.Baseline, r.BaselineCost.total())
+		if d, ok := r.costDifference(); ok {
+			fmt.Fprintf(&b, "  cost difference: %s\n", d)
+		}
+	}
+	for _, e := range []struct {
+		arm  string
+		ends map[Ending]int
+	}{{arms.Candidate, r.CandidateEnds}, {arms.Baseline, r.BaselineEnds}} {
+		if s := endsLine(e.ends); s != "" {
+			fmt.Fprintf(&b, "  runs that did not finish, %s: %s\n", e.arm, s)
+		}
+	}
+	if r.Stopped != "" {
+		fmt.Fprintf(&b, "  STOPPED EARLY after %d of %d pairs: %s; the verdict reads only the pairs that ran\n", n, r.Planned, r.Stopped)
 	}
 	for _, t := range r.PerExercise() {
 		mark := " "
@@ -435,9 +564,54 @@ func (r Report) String() string {
 // perAttempt renders c averaged over n attempts.
 func (c Cost) perAttempt(n int) string {
 	f := float64(n)
-	return fmt.Sprintf("%.0f input + %.0f output tokens (%.0f read from cache), %.1f turns, %.1fs",
+	return fmt.Sprintf("%.0f input + %.0f output tokens (%.0f read from cache), %.1f turns, %.1fs, %s",
 		float64(c.InputTokens)/f, float64(c.OutputTokens)/f, float64(c.CacheReadTokens)/f,
-		float64(c.Turns)/f, c.Wall.Seconds()/f)
+		float64(c.Turns)/f, c.Wall.Seconds()/f, c.money(n))
+}
+
+// String renders c as one attempt's cost: tokens, turns, time and money.
+func (c Cost) String() string { return c.perAttempt(1) }
+
+// total renders c as spent in all.
+func (c Cost) total() string {
+	return fmt.Sprintf("%d tokens, %d turns, %s", c.Tokens(), c.Turns, c.money(1))
+}
+
+// money renders the spend averaged over n attempts, or says it is unknown. A price is
+// only ever looked up, so a cost the table could not give is stated as unknown and
+// never as zero.
+func (c Cost) money(n int) string {
+	if !c.Known() {
+		if c.Unpriced > 0 {
+			return fmt.Sprintf("cost unknown (%d of %d turns had no price)", c.Unpriced, c.Turns)
+		}
+		return "cost unknown (no price table)"
+	}
+	return fmt.Sprintf("%s %s", usage.Nanos(int64(c.Money)/int64(n)), c.Currency)
+}
+
+// costDifference is the candidate's spend minus the baseline's, when both are known.
+func (r Report) costDifference() (string, bool) {
+	c, b := r.CandidateCost, r.BaselineCost
+	if !c.Known() || !b.Known() || c.Currency != b.Currency {
+		return "", false
+	}
+	d := int64(c.Money) - int64(b.Money)
+	sign := "+"
+	if d < 0 {
+		sign, d = "-", -d
+	}
+	return fmt.Sprintf("%s%s %s for the candidate (%+d tokens)", sign, usage.Nanos(d), c.Currency, c.Tokens()-b.Tokens()), true
+}
+
+func endsLine(ends map[Ending]int) string {
+	var parts []string
+	for _, e := range []Ending{Stalled, BudgetExhausted, Aborted} {
+		if ends[e] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", ends[e], e))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func exerciseCount(pairs []Pair) int {

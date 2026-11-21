@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/harness"
@@ -16,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
+	"github.com/ionalpha/flynn/usage"
 )
 
 // defaultEvalRoot is where a skill's exercise set lives: outside the pack, so the agent
@@ -33,22 +35,27 @@ const defaultEvalRoot = "evals"
 // whether a skill is reachable and costs nothing, and this says whether reaching it
 // was worth the tokens.
 func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
-	set, repeats, refs, err := skillABArgs(args, out)
+	set, repeats, flags, err := skillABArgs(args, out)
+	if err != nil {
+		return err
+	}
+	limit, table, err := flags.spend()
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	arms, err := resolveArms(ctx, set.Skill, refs)
+	arms, err := resolveArms(ctx, set.Skill, flags.versionRefs)
 	if err != nil {
 		return err
 	}
 	defer arms.close()
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, spec, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
 	}
-	return measureSkill(ctx, out, set, repeats, arms.names, func(ctx context.Context, exercise skillab.Exercise, repeat int, candidate bool) (skillab.Outcome, error) {
-		return runTrial(ctx, out, model, plan, set, exercise, repeat, candidate, arms)
+	price := newPricer(table, spec)
+	return measureSkill(ctx, out, set, repeats, arms.names, limit, func(ctx context.Context, exercise skillab.Exercise, repeat int, candidate bool) (skillab.Outcome, error) {
+		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms)
 	})
 }
 
@@ -95,12 +102,14 @@ func resolveArms(ctx context.Context, slug string, refs versionRefs) (abArms, er
 // can refuse, it refuses here, before a model is resolved or a store is opened: a
 // missing exercise set costs nothing to detect and would otherwise be found after the
 // harness had already started charging for runs.
-func skillABArgs(args []string, out io.Writer) (skillab.Set, int, versionRefs, error) {
+func skillABArgs(args []string, out io.Writer) (skillab.Set, int, abFlags, error) {
 	fs := flag.NewFlagSet("skill ab", flag.ContinueOnError)
 	fs.SetOutput(out)
 	repeats := fs.Int("repeats", 3, "runs per exercise per condition; the variance between runs is larger than the effect")
 	root := fs.String("exercises", defaultEvalRoot, "directory holding each skill's exercise set, one subdirectory per skill")
-	var refs versionRefs
+	var refs abFlags
+	fs.StringVar(&refs.maxCost, "max-cost", "", "stop starting new attempts once this much has been spent, in USD (for example 2 or 0.50); needs --prices to know what a call cost")
+	fs.StringVar(&refs.prices, "prices", "", "a JSON price table (usage.LoadTable format) pricing the model's reported tokens; without one, tokens are reported and cost is unknown")
 	fs.StringVar(&refs.against, "against", "", "a SKILL.md, a directory holding one, or a git ref: the version the skill is compared against, instead of no skill")
 	fs.StringVar(&refs.candidate, "candidate", "", "the version under test, as a path or git ref; the installed skill when empty")
 	// Parsed around the skill's name rather than up to it. Go's flag package stops at
@@ -111,7 +120,7 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, versionRefs, e
 		return skillab.Set{}, 0, refs, err
 	}
 	if len(bare) != 1 {
-		return skillab.Set{}, 0, refs, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version]`)
+		return skillab.Set{}, 0, refs, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file]`)
 	}
 	slug := bare[0]
 
@@ -127,6 +136,82 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, versionRefs, e
 			slug, skillab.HoldoutFile)
 	}
 	return set, *repeats, refs, nil
+}
+
+// abFlags are the options of `skill ab` beyond the exercise set: which versions to
+// compare and what the run may spend.
+type abFlags struct {
+	versionRefs
+	maxCost string
+	prices  string
+}
+
+// spend reads the spend options before any model is resolved. A table that is named
+// and unreadable is refused. With a limit and no table the run still starts: it reports
+// tokens and stops at its first limit check, which says the spend could not be read.
+func (f abFlags) spend() (skillab.Limit, *usage.Table, error) {
+	var table *usage.Table
+	if f.prices != "" {
+		file, err := os.Open(f.prices)
+		if err != nil {
+			return skillab.Limit{}, nil, fmt.Errorf("--prices: %w", err)
+		}
+		defer func() { _ = file.Close() }()
+		if table, err = usage.LoadTable(file); err != nil {
+			return skillab.Limit{}, nil, fmt.Errorf("--prices %s: %w", f.prices, err)
+		}
+	}
+	if f.maxCost == "" {
+		return skillab.Limit{}, table, nil
+	}
+	n, err := usage.ParseNanos(f.maxCost)
+	if err != nil || n == 0 {
+		return skillab.Limit{}, nil, fmt.Errorf("--max-cost %q: want a positive amount in USD such as 2 or 0.50", f.maxCost)
+	}
+	return skillab.Limit{Money: n, Currency: "USD"}, table, nil
+}
+
+// pricer prices one model's reported tokens from a table. A nil table prices nothing,
+// so every turn is counted as unpriced and none is guessed.
+type pricer struct {
+	table           *usage.Table
+	provider, model string
+}
+
+// newPricer splits spec, the canonical "provider:model", into the names a table keys on.
+func newPricer(table *usage.Table, spec string) *pricer {
+	provider, model, _ := strings.Cut(spec, ":")
+	return &pricer{table: table, provider: provider, model: model}
+}
+
+// turn is the cost of one returned call: its tokens, and a price only if the table has one.
+func (p *pricer) turn(u llm.Usage, at time.Time) skillab.Cost {
+	c := skillab.Cost{
+		Turns: 1, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+		CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens,
+	}
+	if p == nil || p.table == nil {
+		c.Unpriced = 1
+		return c
+	}
+	priced := p.table.Price(usage.Record{Provider: p.provider, Model: p.model, At: at, Tokens: usage.FromLLM(u)})
+	if !priced.Known {
+		c.Unpriced = 1
+		return c
+	}
+	c.Money, c.Currency = priced.Amount, priced.Currency
+	return c
+}
+
+// endingOf classifies how a run that returned an error stopped.
+func endingOf(runErr error) skillab.Ending {
+	switch stoppedOutcome(runErr) {
+	case resultBudget:
+		return skillab.BudgetExhausted
+	case resultStalled:
+		return skillab.Stalled
+	}
+	return skillab.Aborted
 }
 
 // parseAroundArgs parses fs over args and returns the arguments that are not flags,
@@ -151,13 +236,13 @@ func parseAroundArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 // measureSkill runs the measurement and writes the report. It takes the trial
 // rather than the model, so the half that decides what a reader is told is separable
 // from the half that spends money on model calls.
-func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats int, arms skillab.Arms, trial skillab.Trial) error {
+func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats int, arms skillab.Arms, limit skillab.Limit, trial skillab.Trial) error {
 	if repeats < 1 {
 		repeats = 1
 	}
 	_, _ = fmt.Fprintf(out, "measuring %s over %d exercise(s) x %d repeat(s), both conditions: %d runs\n",
 		set.Skill, len(set.Exercises), repeats, 2*len(set.Exercises)*repeats)
-	report, err := skillab.Compare(ctx, set, repeats, arms, trial)
+	report, err := skillab.CompareWithin(ctx, set, repeats, arms, trial, limit)
 	if err != nil {
 		return err
 	}
@@ -184,7 +269,7 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 //
 // An arm that runs a named version installs it in its own store and reads its
 // references from its own tree, so the baseline never sees the candidate's files.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms) (skillab.Outcome, error) {
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms) (skillab.Outcome, error) {
 	slug := set.Skill
 	arm, version := "without", arms.baseline
 	if candidate {
@@ -235,19 +320,25 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the
 	// only thing that does.
-	metered := newMeteredModel(model)
+	metered := newMeteredModel(model, price)
 	start := time.Now()
 	report, rerr := runLearningMission(ctx, io.Discard, metered, plan, nil, workdir, exercise.Objective, "", store, nil, false, nil, opts...)
 	wall := time.Since(start)
-	if rerr != nil {
-		_, _ = fmt.Fprintf(out, "    (the run stopped: %v)\n", rerr)
-	}
 	cost, transcript, last := metered.snapshot()
 	cost.Wall = wall
+	var ended skillab.Ending
+	if rerr != nil {
+		if ctx.Err() != nil {
+			return skillab.Outcome{}, ctx.Err()
+		}
+		ended = endingOf(rerr)
+		_, _ = fmt.Fprintf(out, "    (the run stopped, %s: %v)\n", ended, rerr)
+	}
+	defer func() { _, _ = fmt.Fprintf(out, "    cost: %s\n", cost) }()
 	if report == "" {
 		report = last
 	}
-	outcome := skillab.Outcome{Cost: cost, Checks: map[string]bool{}}
+	outcome := skillab.Outcome{Ended: ended, Cost: cost, Checks: map[string]bool{}}
 	for _, c := range exercise.Checks {
 		outcome.Checks[c.Name] = false
 	}

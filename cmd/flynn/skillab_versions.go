@@ -173,6 +173,7 @@ func (v *skillVersion) install(ctx context.Context, store state.SkillStore) erro
 // counted, because it reported no usage and the harness would be inventing one.
 type meteredModel struct {
 	inner llm.Model
+	price *pricer
 
 	mu    sync.Mutex
 	cost  skillab.Cost
@@ -181,7 +182,10 @@ type meteredModel struct {
 	last  string
 }
 
-func newMeteredModel(inner llm.Model) *meteredModel { return &meteredModel{inner: inner} }
+// newMeteredModel wraps inner. A nil price leaves every turn unpriced.
+func newMeteredModel(inner llm.Model, price *pricer) *meteredModel {
+	return &meteredModel{inner: inner, price: price}
+}
 
 // maxLoggedBlock bounds one block of the transcript, so a tool that printed a large
 // file does not make the record larger than the run.
@@ -208,11 +212,7 @@ func (m *meteredModel) Generate(ctx context.Context, req llm.Request) (llm.Respo
 	}
 	writeMessage(&m.log, resp.Message)
 	m.last = resp.Message.TextContent()
-	m.cost.Turns++
-	m.cost.InputTokens += resp.Usage.InputTokens
-	m.cost.OutputTokens += resp.Usage.OutputTokens
-	m.cost.CacheReadTokens += resp.Usage.CacheReadTokens
-	m.cost.CacheWriteTokens += resp.Usage.CacheWriteTokens
+	m.cost = m.cost.Add(m.price.turn(resp.Usage, time.Now()))
 	return resp, nil
 }
 
