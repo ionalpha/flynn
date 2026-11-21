@@ -1,0 +1,2 @@
+0 2 * * * python3 jobs.py nightly_rollup
+# 0 6 * * 1 python3 jobs.py weekly_digest   # paused until the new mail provider is live
