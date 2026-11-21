@@ -122,7 +122,8 @@ func TestExercisesHaveFixtures(t *testing.T) {
 // solution from testdata/exercise_solutions, and each tempting wrong answer from
 // testdata/exercise_wrong. A fixture with no solution is an exercise whose right
 // answer is to change nothing: the shipped tree must pass, and at least one wrong
-// answer must exist to fail it. CI must run it: a skip there would report every
+// answer must exist to fail it. Every tree is staged first, as a trial's is, so the
+// harness directory ([skillab.HarnessDir]) and the held-out files are present. CI must run it: a skip there would report every
 // verifier as checked when none was.
 func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
@@ -150,6 +151,11 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 			}
 			if overlayDir != "" {
 				overlay(t, testdata, overlayDir, work)
+			}
+			// A trial stages the harness directory before any verifier runs, so a
+			// verifier that lists or scans the tree must be graded with it present.
+			if err := set.Stage(e, work, "report", "transcript"); err != nil {
+				t.Fatalf("%s: stage: %v", exerciseLabel(slug, e), err)
 			}
 			ok, out := passes(t, work, e.Verify)
 			lastOutput = out
