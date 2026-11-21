@@ -1,7 +1,15 @@
 // Package skillab measures whether a skill helps: on the exercises it claims, does a
 // run with it beat a run without it? Each exercise ends in a command that passes or
 // fails. The two conditions differ by one skill, and runs repeat because run-to-run
-// variance exceeds the effect.
+// variance exceeds the effect. [Compare] also takes two named arms, so one version of a
+// skill can be measured against another and not only against none.
+//
+// An exercise has a primary Verify command and optional named [Check] commands. After
+// the agent stops, [Set.Stage] places the final report, the transcript, the pristine
+// fixture and any held-out files in the working directory, and the commands run there.
+// The primary check is tested at the full significance level and the declared
+// secondary checks share it by the Holm step-down method. Each attempt also reports
+// its [Cost]. See docs/SKILLAB.md for the format and what a verdict does not say.
 //
 // [NoDifference] is a verdict, and the action is deleting the skill. A set where
 // every run passes in both conditions cannot tell them apart, and [Report] says so.
