@@ -1,0 +1,9 @@
+{
+  "channels": {
+    "mobile": "channels.fcm",
+    "watch": "channels.wearos",
+    "email": "channels.smtp",
+    "inapp": "channels.inbox"
+  },
+  "push_channels": ["mobile", "watch"]
+}

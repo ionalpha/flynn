@@ -1,0 +1,4 @@
+{
+  "export": {"max_rows": 500},
+  "db": {"pool": 20}
+}

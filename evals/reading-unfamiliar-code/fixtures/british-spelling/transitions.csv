@@ -1,0 +1,6 @@
+from,to
+new,paid
+new,canceled
+paid,shipped
+paid,canceled
+shipped,delivered
