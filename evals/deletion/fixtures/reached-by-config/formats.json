@@ -1,0 +1,5 @@
+{
+  "csv": "fmt_csv:render",
+  "tsv": "fmt_tsv:render",
+  "xml": "fmt_xml:render"
+}
