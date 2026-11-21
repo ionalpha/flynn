@@ -4,10 +4,16 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
+
+
+def scratch():
+    d = os.path.abspath("_mut_scratch")
+    os.makedirs(d, exist_ok=True)
+    return d
+
 
 
 def h(p):
@@ -41,7 +47,7 @@ def write(d, text):
     return p
 
 
-tmp = tempfile.mkdtemp()
+tmp = scratch()
 try:
     import importer
     import report

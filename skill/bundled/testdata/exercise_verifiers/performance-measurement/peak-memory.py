@@ -3,11 +3,17 @@ import random
 import shutil
 import subprocess
 import sys
-import tempfile
 import tracemalloc
 
 sys.path.insert(0, ".")
 fails = []
+
+
+def scratch():
+    d = os.path.abspath("_mut_scratch")
+    os.makedirs(d, exist_ok=True)
+    return d
+
 r = subprocess.run([sys.executable, "test_summary.py"], capture_output=True, text=True)
 if r.returncode != 0 or "test_counts_errors_and_p95_per_endpoint" not in open("test_summary.py").read():
     fails.append("test_summary.py no longer passes as it was")
@@ -40,7 +46,7 @@ def ref(path):
     return out
 
 
-d = tempfile.mkdtemp()
+d = scratch()
 try:
     import summary
 

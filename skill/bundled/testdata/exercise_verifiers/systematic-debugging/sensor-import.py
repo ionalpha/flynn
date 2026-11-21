@@ -1,10 +1,17 @@
 import hashlib
 import os
+import shutil
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
+
+
+def scratch():
+    d = os.path.abspath("_mut_scratch")
+    os.makedirs(d, exist_ok=True)
+    return d
+
 
 
 def h(p):
@@ -38,7 +45,7 @@ def ref(lines):
 
 
 def load(text):
-    d = tempfile.mkdtemp()
+    d = scratch()
     p = os.path.join(d, "r.csv")
     with open(p, "w", newline="\n", encoding="utf-8") as f:
         f.write("site,ts,value,unit\n" + text)
@@ -74,6 +81,7 @@ try:
         pass
 except Exception as e:
     fails.append("pipeline.run is not usable: %r" % (e,))
+shutil.rmtree("_mut_scratch", ignore_errors=True)
 for f in fails:
     print(f, file=sys.stderr)
 sys.exit(1 if fails else 0)
