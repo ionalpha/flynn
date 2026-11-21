@@ -1,5 +1,4 @@
 import os
-import tempfile
 import unittest
 
 import summary
@@ -14,8 +13,8 @@ not a log line
 
 class Summarise(unittest.TestCase):
     def test_counts_errors_and_p95_per_endpoint(self):
-        d = tempfile.mkdtemp()
-        p = os.path.join(d, "a.log")
+        p = "_test_a.log"
+        self.addCleanup(os.remove, p)
         with open(p, "w", newline="\n") as f:
             f.write(LOG)
         got = summary.summarise(p)
