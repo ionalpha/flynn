@@ -4,7 +4,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
@@ -41,11 +40,10 @@ try:
         count += len(re.findall("(?i)mock|patch", open(f, encoding="utf-8").read()))
     if count > ORIGINAL_STAND_INS:
         fails.append("the tests stand in for the zone, rate or promo modules %d times, was %d: nothing here is outside the process" % (count, ORIGINAL_STAND_INS))
-    work = tempfile.mkdtemp()
+    work = ".mutation-%d" % os.getpid()
+    os.makedirs(work)
     try:
-        tabs = os.path.abspath(work) + os.sep
-        skip = lambda d, ns: [n for n in ns if n.startswith(".") or n == "__pycache__" or tabs.startswith(os.path.abspath(os.path.join(d, n)) + os.sep)]
-        shutil.copytree(".", os.path.join(work, "t"), ignore=skip)
+        shutil.copytree(".", os.path.join(work, "t"), ignore=shutil.ignore_patterns(".*", "__pycache__"))
         path = os.path.join(work, "t", "rates.py")
         src = open(path, encoding="utf-8").read()
         mutated = re.sub(r'"base": (\d+)', lambda m: '"base": %d' % (int(m.group(1)) + 1), src)

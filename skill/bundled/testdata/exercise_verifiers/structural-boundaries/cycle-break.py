@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
@@ -81,12 +80,11 @@ if r.stdout.strip() != "[('SKU-LAMP', 120)]":
 r = subprocess.run([sys.executable, "-m", "unittest", "discover"], capture_output=True, text=True)
 if r.returncode != 0:
     fails.append("the suite fails: " + r.stderr.strip()[-300:])
-tmp = tempfile.mkdtemp()
+tmp = ".mutation-%d" % os.getpid()
+os.makedirs(tmp)
 try:
     work = os.path.join(tmp, "w")
-    tabs = os.path.abspath(tmp) + os.sep
-    skip = lambda d, ns: [n for n in ns if n.startswith(".") or n == "__pycache__" or tabs.startswith(os.path.abspath(os.path.join(d, n)) + os.sep)]
-    shutil.copytree(".", work, ignore=skip)
+    shutil.copytree(".", work, ignore=shutil.ignore_patterns(".*", "__pycache__"))
     with open(os.path.join(work, "stock.py"), "a", encoding="utf-8") as fh:
         fh.write("\nimport orders\n")
     r = subprocess.run([sys.executable, "-m", "unittest", "discover"], capture_output=True, text=True, cwd=work)
