@@ -149,7 +149,8 @@ names each check by what it does so any harness can provide it.
 Measured. Models asked to correct their own reasoning without outside feedback rarely
 improve (Huang et al., ICLR 2024), and self-repair for code is limited by the quality
 of the feedback (Olausson et al., ICLR 2024). Hence a comparison against what ran,
-and test counts stated in full.
+and test counts stated in full. What the report must carry is the measured part; its
+layout is not, so the skill leaves that to the host and the requester.
 
 ## Advice left out on purpose
 
