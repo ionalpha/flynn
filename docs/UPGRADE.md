@@ -81,6 +81,26 @@ Windows cannot overwrite a running executable, but it can rename one, so the out
 binary is moved aside and the new one takes its place; if that second step fails, the
 original is put straight back. The displaced file is swept on the next start.
 
+## What happens to the bundled skills
+
+Each start compares the skills the binary ships with the copies in the bundled scope.
+A copy you have not edited takes the new version. A copy you have edited keeps your
+edit: the update is withheld and `flynn skill ls` shows the skill as `bundled, diverged`.
+`flynn skill show <skill>` says what to do. Edit the skill to match the pack, or
+delete it, and the next start installs the pack's version. A skill you edited that a
+later release stops shipping moves into your own scope instead of being deleted, unless
+you already have a skill of that name, in which case both stay and the bundled one is
+marked diverged.
+
+Installs that first ran a release before this behaviour have no record of what the
+pack last wrote. The first start after upgrading compares each bundled skill with
+every version of it the pack has shipped. A copy equal to one of them was never
+edited, so it takes the new version. A copy equal to none of them is your edit: it is
+kept, marked diverged, and the pack's version is withheld as described above. Either
+way the start records what the pack now ships, so later starts need no comparison.
+Because that start cannot know which version your edit began from, the diverged mark
+clears on the next start unless the pack has changed again; the edit stays either way.
+
 ## When flynn will refuse to upgrade itself
 
 - **This flynn was installed by a package manager** (a distribution package, Homebrew,

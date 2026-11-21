@@ -74,8 +74,12 @@ func writeSkillList(ctx context.Context, skills state.SkillStore, out io.Writer)
 			return err
 		}
 		for _, sk := range list {
+			source := src.name
+			if sk.Diverged {
+				source += ", diverged"
+			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n",
-				sk.Slug, src.name, sk.Reads, sk.Wins, clipLine(sk.Description, skillListDescriptionWidth))
+				sk.Slug, source, sk.Reads, sk.Wins, clipLine(sk.Description, skillListDescriptionWidth))
 			n++
 		}
 	}
@@ -112,7 +116,13 @@ func writeSkill(ctx context.Context, skills state.SkillStore, slug string, out i
 	if sk.Scope == state.BundledScope {
 		source = "bundled"
 	}
+	if sk.Diverged {
+		source += ", diverged"
+	}
 	_, _ = fmt.Fprintf(out, "%s (%s, version %d)\n", sk.Slug, source, sk.Version)
+	if sk.Diverged {
+		_, _ = fmt.Fprintln(out, "\nThe pack ships a newer version of this skill. It was not applied because this copy has been edited.\nEdit this copy to match the pack, or delete it so the next start installs the pack's.")
+	}
 	if sk.Description != "" {
 		_, _ = fmt.Fprintf(out, "\n%s\n", sk.Description)
 	}

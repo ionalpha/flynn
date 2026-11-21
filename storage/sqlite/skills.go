@@ -14,14 +14,14 @@ import (
 
 type skills struct{ p *Store }
 
-const skillCols = `id, slug, name, description, body, tags, offers, reads, wins, check_cmd, scope_instance, scope_project, scope_workspace,
+const skillCols = `id, slug, name, description, body, tags, offers, reads, wins, check_cmd, pack_digest, diverged, scope_instance, scope_project, scope_workspace,
 	version, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
 // skillColsQualified uses the `s` alias for the FTS join. It sits beside
 // skillCols so the two cannot drift; scanSkill would catch drift only at run
 // time.
-const skillColsQualified = `s.id, s.slug, s.name, s.description, s.body, s.tags, s.offers, s.reads, s.wins, s.check_cmd,
+const skillColsQualified = `s.id, s.slug, s.name, s.description, s.body, s.tags, s.offers, s.reads, s.wins, s.check_cmd, s.pack_digest, s.diverged,
 	s.scope_instance, s.scope_project, s.scope_workspace,
 	s.version, s.created_at, s.updated_at,
 	s.sync_version, s.origin_instance_id, s.updated_hlc_wall, s.updated_hlc_counter, s.last_writer_id, s.deleted`
@@ -33,8 +33,9 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 		created, updated string
 		wall, counter    int64
 		deleted          int
+		diverged         int
 	)
-	if err := sc.Scan(&s.ID, &s.Slug, &s.Name, &s.Description, &s.Body, &tags, &s.Offers, &s.Reads, &s.Wins, &s.Check,
+	if err := sc.Scan(&s.ID, &s.Slug, &s.Name, &s.Description, &s.Body, &tags, &s.Offers, &s.Reads, &s.Wins, &s.Check, &s.PackDigest, &diverged,
 		&s.Scope.Instance, &s.Scope.Project, &s.Scope.Workspace,
 		&s.Version, &created, &updated,
 		&s.SyncVersion, &s.OriginInstanceID, &wall, &counter, &s.LastWriterID, &deleted); err != nil {
@@ -43,6 +44,7 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 	s.CreatedAt, s.UpdatedAt = parseTime(created), parseTime(updated)
 	s.UpdatedHLC = hlcTime(wall, counter)
 	s.Deleted = deleted != 0
+	s.Diverged = diverged != 0
 	if tags != "" && tags != "[]" {
 		_ = json.Unmarshal([]byte(tags), &s.Tags)
 	}
@@ -51,17 +53,17 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 
 func upsertSkillRow(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			slug=excluded.slug, name=excluded.name, description=excluded.description,
 			body=excluded.body, tags=excluded.tags,
-			offers=excluded.offers, reads=excluded.reads, wins=excluded.wins, check_cmd=excluded.check_cmd,
+			offers=excluded.offers, reads=excluded.reads, wins=excluded.wins, check_cmd=excluded.check_cmd, pack_digest=excluded.pack_digest, diverged=excluded.diverged,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
 			version=excluded.version, created_at=excluded.created_at, updated_at=excluded.updated_at,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
-		sk.ID, sk.Slug, sk.Name, sk.Description, sk.Body, marshalTags(sk.Tags), sk.Offers, sk.Reads, sk.Wins, sk.Check,
+		sk.ID, sk.Slug, sk.Name, sk.Description, sk.Body, marshalTags(sk.Tags), sk.Offers, sk.Reads, sk.Wins, sk.Check, sk.PackDigest, boolToInt(sk.Diverged),
 		sk.Scope.Instance, sk.Scope.Project, sk.Scope.Workspace,
 		sk.Version, formatTime(sk.CreatedAt), formatTime(sk.UpdatedAt),
 		sk.SyncVersion, sk.OriginInstanceID, sk.UpdatedHLC.Wall, int64(sk.UpdatedHLC.Counter), sk.LastWriterID, boolToInt(sk.Deleted))
