@@ -177,6 +177,9 @@ func (r driveRequest) assembly() assembly {
 func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	c := r.cfg
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.ID())
+	if c.model.Spec != "" {
+		_, _ = fmt.Fprintf(w, "  model: %s\n", c.model)
+	}
 	if gated := governed.GatedActions(governed.ApprovalPolicy(c.gates.approve)); len(gated) > 0 {
 		how := "refused, nothing here can prompt"
 		if c.gates.prompter != nil {
@@ -197,6 +200,7 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 // replays the prior conversation first, then tails the rest live.
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
+		recordModelChoice(ctx, r.out, r.log, r.cfg.model, r.resumeID)
 		return run.Resume(ctx, r.resumeID)
 	}
 	if _, err := run.Submit(ctx, r.goalSpec()); err != nil {
@@ -204,6 +208,7 @@ func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	}
 	// The run's stream exists once the goal is submitted, which is the earliest the
 	// decision can be written to it.
+	recordModelChoice(ctx, r.out, r.log, r.cfg.model, run.ID())
 	recordProjectDecision(ctx, r.out, r.log, r.cfg.project, run.ID())
 	return nil
 }

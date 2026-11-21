@@ -147,7 +147,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
@@ -210,6 +210,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		log:       log,
 		verbose:   verbose,
 	}.withOptions(
+		withModelChoice(choice),
 		withToolset(&boundToolset{tools: toolset, grant: review.Grant()}),
 		withEventObserver(verdict.observe),
 		withBudget(budgetpkg.Limits{Tokens: fl.maxTokens, Cost: fl.maxCost}),

@@ -2,7 +2,8 @@
 //
 // Build:  go build -o flynn ./cmd/flynn
 // Run a goal:  flynn goal "audit the repo for TODOs and write a summary to NOTES.md"
-// --model provider:model picks the model (default anthropic:claude-opus-5-5) and the
+// --model provider:model picks the model; without it the saved default (flynn models
+// use) applies, and with neither a terminal is asked and a script is refused. The
 // provider's API key comes from its environment variable. Learned skills and memory
 // persist under --data-dir; --no-learn skips capturing them.
 package main
@@ -137,7 +138,7 @@ func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) 
 // testable in-process.
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
-		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model")
+		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model; when omitted, the saved default (flynn models use) applies, else you are asked (the shown value is only the suggestion)")
 		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
 		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
@@ -239,9 +240,12 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	setCatalogDataDir(*dataDir)
 	defer setCatalogDataDir(prevCatalogDir)
 
-	// An explicit --model wins, then the recorded default, then the flag's default.
+	// An explicit --model wins, then the recorded default. The flag's own default is only
+	// a suggestion: with neither of the others, the resolver asks or refuses.
 	modelSpecExplicit = flagPassed(fs, "model")
 	modelSpec := effectiveModelSpec(*model, modelSpecExplicit, *dataDir)
+	_, saved := readActiveModel(*dataDir)
+	modelSpecSaved = saved && !modelSpecExplicit
 
 	// No subcommand is named "", so the branches below compare against cmd directly.
 	cmd := ""
@@ -678,6 +682,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		model    llm.Model
 		plan     harness.Plan
 		extAgent *externAgent
+		choice   modelChoice
 	)
 	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
 		// An external harness owns its loop, so fan-out with one is refused.
@@ -691,7 +696,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		// The harness home holds the CLI's own conversation, so it lives as long as the run.
 		defer extAgent.close()
 	} else {
-		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+		model, plan, choice, err = resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 		if err != nil {
 			return err
 		}
@@ -742,6 +747,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
 	} else {
+		opts = append(opts, withModelChoice(choice))
 		// A native goal writes a visible plan ledger before it builds. An external agent CLI
 		// plans in its own loop.
 		opts = append(opts, withPlanning())
@@ -803,7 +809,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
@@ -836,7 +842,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 		log:      store.Log(),
 		verbose:  verbose,
 		resumeID: runID,
-	}.resuming(ctx, dataDir, shell)
+	}.withOptions(withModelChoice(choice)).resuming(ctx, dataDir, shell)
 	if err != nil {
 		return err
 	}

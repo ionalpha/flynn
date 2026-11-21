@@ -40,6 +40,9 @@ type driveConfig struct {
 	// project is the trust decision for the repository's instruction files. The zero value
 	// means none found, and adds, taints and records nothing.
 	project projectctx.Decision
+	// model is the model the run resolved to and where that came from. The zero value
+	// says nothing and records nothing.
+	model modelChoice
 }
 
 type driveOption func(*driveConfig)
@@ -82,6 +85,13 @@ func withPlanning() driveOption {
 // item stays unproven and the run moves on (see goal.LedgerState).
 func withLedgerProof() driveOption {
 	return func(c *driveConfig) { c.proof = true }
+}
+
+// withModelChoice has the run state which model it resolved to and where that came
+// from, in its header and on its stream, so a run on a model nobody typed is visible
+// afterwards.
+func withModelChoice(m modelChoice) driveOption {
+	return func(c *driveConfig) { c.model = m }
 }
 
 // withExternalAgent drives the run through an external agent CLI, whose harness runs

@@ -36,12 +36,13 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 		return err
 	}
 	ctx := context.Background()
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintf(out, "model: %s\n", choice)
 	return measureSkill(ctx, out, set, repeats, func(ctx context.Context, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
-		return runTrial(ctx, out, model, plan, set, exercise, repeat, withSkill)
+		return runTrial(ctx, out, model, plan, set, exercise, repeat, withSkill, withModelChoice(choice))
 	})
 }
 
@@ -131,7 +132,7 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 // a previous run left behind cannot make the next exercise easier. Learning is off for
 // the same reason, and because a measurement that changed the thing it measures
 // would be reporting on a library that no longer exists.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, withSkill bool, opts ...driveOption) (bool, error) {
 	slug := set.Skill
 	arm := "without"
 	if withSkill {
@@ -169,7 +170,7 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the
 	// only thing that does.
-	if _, rerr := runLearningMission(ctx, io.Discard, model, plan, nil, workdir, exercise.Objective, "", store, nil, false, nil); rerr != nil {
+	if _, rerr := runLearningMission(ctx, io.Discard, model, plan, nil, workdir, exercise.Objective, "", store, nil, false, nil, opts...); rerr != nil {
 		_, _ = fmt.Fprintf(out, "    (the run stopped: %v)\n", rerr)
 	}
 	return runVerification(ctx, workdir, exercise.Verify), nil
