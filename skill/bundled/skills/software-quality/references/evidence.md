@@ -110,7 +110,18 @@ the agent a way to flag a task as impossible cut cheating from 54% to 9% for one
 model and from 49% to 12% for another *(unverified)*. This is why "stop and say so"
 is in the gate and a flag action is in the harness list.
 
+**Gate 11, decide what is yours to decide.** Measured in one project. Among the
+corrections a second project's operator made to agent work, stopping to ask a
+question the code already answered, and handing a step back that the agent could have
+done, were two of the four classes that did not fall between October and November
+2026, while the classes gates 1 to 10 cover did. Gate 10 and the three-attempt rule
+both tell the agent to stop; without this gate the skill only ever pushes one way.
+
 **Stopping after three attempts.** Opinion. The count is a convention.
+
+**Running an interface before saying it works.** Measured in the same project: an
+interface change reported as working and never exercised in a browser was the third
+of those four classes.
 
 ## The defect classes
 
