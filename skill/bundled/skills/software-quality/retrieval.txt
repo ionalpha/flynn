@@ -1,0 +1,10 @@
+use the quality skill on this | software-quality |
+check my work before I say this is done | software-quality |
+is this change ready to merge | software-quality |
+review my own diff before I hand it over | software-quality |
+make sure this code is good quality | software-quality |
+which engineering skill applies to this change | software-quality |
+hold this work to a high standard | software-quality |
+the nightly job started failing, find out why | systematic-debugging | software-quality
+write the tests for this new endpoint first | test-first | software-quality
+remove the dead code from this package | deletion | software-quality

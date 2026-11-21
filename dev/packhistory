@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+# Regenerate skill/bundled/pack_history.txt: the digest of every version of every
+# bundled skill the pack has carried.
+#
+#   ./dev/packhistory
+#
+# A copy of a bundled skill seeded before the store kept a record of what the pack
+# wrote cannot be told from a host's edit by comparing it with the current pack. The
+# first start matches it against this list instead: a copy equal to an old pack version
+# is replaced, anything else is kept as the host's edit. So a change to a bundled skill
+# needs this run before it is committed (TestEveryBundledSkillIsInThePackHistory fails
+# otherwise).
+#
+# It reads every distinct tree skill/bundled/skills has had in the history of HEAD,
+# plus the working tree, and fingerprints each skill with the function that
+# fingerprints a stored one (TestWritePackHistory, in skill/bundled). History is needed
+# in full, so a shallow clone is refused.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+path=skill/bundled/skills
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  echo "packhistory: shallow clone; run 'git fetch --unshallow' first" >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT INT TERM
+trees="$work/trees"
+mkdir -p "$trees/worktree"
+
+# The working tree is checked out with LF endings on every platform (.gitattributes),
+# so a copy of it matches what a commit would hold.
+cp -R "$path" "$trees/worktree/skills"
+
+git rev-list HEAD -- "$path" | while read -r commit; do
+  git rev-parse "$commit:$path" 2>/dev/null || true
+done | sort -u | while read -r tree; do
+  mkdir -p "$trees/$tree/skills"
+  git archive "$tree" | tar -x -C "$trees/$tree/skills"
+done
+
+FLYNN_PACK_TREES="$trees" FLYNN_PACK_HISTORY_OUT="$PWD/skill/bundled/pack_history.txt" \
+  go test -tags packhistory ./skill/bundled -run '^TestWritePackHistory$' -count=1 -v | grep -v '^=== RUN'
