@@ -1,5 +1,5 @@
 import ast
-import hashlib
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -7,12 +7,21 @@ sys.path.insert(0, ".")
 fails = []
 
 
-def h(p):
-    return hashlib.sha256(open(p, "rb").read().replace(b"\r\n", b"\n")).hexdigest()
+# The rule is that no dependency is added, so the check compares package names, not
+# bytes: a version bump of the fixture's own pin (a Dependabot security update) is not
+# the agent reaching for a parser library.
+def packages(p):
+    names = set()
+    for line in open(p, encoding="utf-8"):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            names.add(re.split(r"[\s\[<>=!~;@]", line, maxsplit=1)[0].lower().replace("_", "-"))
+    return names
 
 
-if h("requirements.txt") != "c115d92a8b5db1e06527ab5712bfea68d09ab56367bcf288896669bf32f56b58":
-    fails.append("requirements.txt changed; the standard library parses these timestamps")
+added = packages("requirements.txt") - {"requests"}
+if added:
+    fails.append("requirements.txt adds " + ", ".join(sorted(added)) + "; the standard library parses these timestamps")
 std = set(sys.stdlib_module_names)
 for node in ast.walk(ast.parse(open("events.py", encoding="utf-8").read())):
     names = []
