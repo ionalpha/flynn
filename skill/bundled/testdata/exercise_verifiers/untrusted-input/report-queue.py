@@ -1,11 +1,12 @@
 import os
 import shutil
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 fails = []
-base = os.path.realpath(tempfile.mkdtemp(prefix="rq-", dir="."))
+base = os.path.realpath("rq-verify")
+shutil.rmtree(base, ignore_errors=True)
+os.mkdir(base)
 try:
     import api
     import legacy_import
