@@ -35,7 +35,7 @@ Load this before the first edit and again before you report. Answer each gate wi
 
 7. **Facts from the source.** Open each project function, type and setting at its definition before you call or change it. Check library behaviour against the installed version. For a new dependency, confirm the name in its registry and take the version from there. For an external service, send one real request and keep the response as a fixture.
 
-8. **The smallest change that does the job.** Tie each touched file to the request; the tests from gate 2 are part of it. Put problems found on the way in the report, not the diff. Keep restructuring and behaviour changes in separate commits. Add no option, layer, wrapper or abstraction nobody asked for. A script or fixture you built to check your own work leaves the diff before you report, unless the project will run it again; a kept one goes in its own commit and under Changed in the report. Configuration and generated files are code and get the same checks.
+8. **The smallest change that does the job.** Tie each touched file to the request; the tests from gate 2 are part of it. Put problems found on the way in the report, not the diff. Keep restructuring and behaviour changes in separate commits. Add no option, layer, wrapper or abstraction nobody asked for. A script or fixture you built to check your own work leaves the diff before you report, unless the project will run it again; a kept one goes in its own commit and is named in the report. Configuration and generated files are code and get the same checks.
 
 9. **Nothing obsolete left.** Remove what the change replaced: the old path, its tests, its configuration, and every comment and document describing it. When you fix logic that wrote bad data, repair the data or say why not.
 
@@ -59,7 +59,7 @@ Check each one your change touches, with a test or a search.
 - **Partial failure.** For a stop between any two steps, say what state it leaves, whether a retry repeats a write, and whether an unconfirmed request is reported as done. Validate before any irreversible step.
 - **Bounds.** Every cache, queue, buffer, retry loop, wait, file and result set has a limit and a tested path for exceeding it. Every network or cross-process call has a timeout.
 - **Platform.** Paths, line endings, case sensitivity, permissions, locale and process handling differ by operating system and runtime. Check each one the change ships to, or name the ones you did not.
-- **What people see.** Each screen, message or response handles loading, empty, error and oversized content. Run a change to an interface in the running application and use it the way a person would, before saying it works: a build that passes and a unit test that renders it are not that check. Where nothing can run it, say so under Not checked.
+- **What people see.** Each screen, message or response handles loading, empty, error and oversized content. Run a change to an interface in the running application and use it the way a person would, before saying it works: a build that passes and a unit test that renders it are not that check. Where nothing can run it, report it as not checked.
 - **Secrets.** Credentials never reach logs, error messages, URLs or output, debug logging included.
 - **Destructive and unrequested work.** A delete states its full reach ("this item and its 14 children") and checks its preconditions where it is entered. Scheduled, startup and paid work stays off until someone turns it on.
 
@@ -78,13 +78,15 @@ Written rules lower these failures and do not remove them. Where your harness pr
 
 ## The report
 
-Compare the diff against the request and each gate, using what you ran. Then lead with the result:
+Compare the diff against the request and each gate, using what you ran. Then write the report in the form its reader asked for: the host's or the requester's instructions on layout, length and headings come first, and a brief that lists questions is answered question by question. Whatever the form, it carries:
 
-- **Changed**: what and why, one line per file or group of files.
-- **Ran**: each command and the output line that shows its result; for tests, the counts run, passed, failed and skipped in the final run.
-- **Not checked**: what did not run, and why.
-- **Assumed**: what you believe and did not observe.
-- **Found on the way**: problems outside the request, left for someone to pick up.
+- The result, first.
+- For each claim, what you ran that shows it; for tests, the counts run, passed, failed and skipped in the final run. A claim you only read or assumed says so.
+- What you did not check, and why.
+- What changed and why, where the reader cannot see the diff.
+- Problems found outside the request, left for someone to pick up.
+
+Scale it like the gates: for a one-file fix, each of these is a clause, and one that is empty is left out.
 
 ## Which skill to load
 
