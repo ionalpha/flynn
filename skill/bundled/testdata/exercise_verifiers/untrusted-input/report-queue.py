@@ -5,7 +5,7 @@ import tempfile
 
 sys.path.insert(0, ".")
 fails = []
-base = os.path.realpath(tempfile.mkdtemp())
+base = os.path.realpath(tempfile.mkdtemp(prefix="rq-", dir="."))
 try:
     import api
     import legacy_import
