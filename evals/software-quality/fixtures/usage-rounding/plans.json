@@ -1,0 +1,16 @@
+{
+  "starter": {
+    "limit": 1000,
+    "rules": [
+      {"metric": "percent", "at": 80, "action": "warn"},
+      {"metric": "percent", "at": 100, "action": "bill_overage"}
+    ]
+  },
+  "pro": {
+    "limit": 8000,
+    "rules": [
+      {"metric": "percent", "at": 80, "action": "warn"},
+      {"metric": "percent", "at": 100, "action": "bill_overage"}
+    ]
+  }
+}
