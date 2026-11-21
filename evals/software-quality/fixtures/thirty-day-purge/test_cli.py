@@ -2,17 +2,17 @@ import contextlib
 import datetime
 import io
 import os
-import tempfile
 import unittest
 
 import audit
 import cli
 import db
+import scratch
 
 
 class PurgeCommandTest(unittest.TestCase):
     def test_prints_the_counts(self):
-        with tempfile.TemporaryDirectory() as d:
+        with scratch.directory() as d:
             path = os.path.join(d, "app.db")
             conn = db.connect(path)
             audit.record(conn, "ana", "grant", datetime.date(2020, 1, 1))

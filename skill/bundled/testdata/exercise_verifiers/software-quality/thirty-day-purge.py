@@ -5,7 +5,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 POLICY = "c8cf576b4d83792c9056bd24c00562c246785da0a1266ea95183e860d150f18f"
@@ -22,7 +21,9 @@ if not os.path.exists("RETENTION.md") or hashlib.sha256(open("RETENTION.md", "rb
 
 SESSION_AGES = (5, 29, 31, 60, 89, 91, 200)
 AUDIT_AGES = (5, 31, 100, 399, 401, 500)
-tmp = tempfile.mkdtemp()
+# mkdtemp locks its directory to the creating user on recent Windows Pythons, which a confined process cannot write into.
+tmp = os.path.join(os.getcwd(), ".verify-%d" % os.getpid())
+os.makedirs(tmp)
 try:
     path = os.path.join(tmp, "app.db")
     conn = sqlite3.connect(path)

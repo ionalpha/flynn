@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, ".")
 # The partner's job and its sample are the partner's, so they must be untouched.
@@ -29,7 +28,9 @@ for name, want in THEIRS.items():
     if not os.path.exists(name) or digest(name) != want:
         fails.append(name + " was edited or removed; it is the partner's copy, and their deployed job reads the file as it is")
 
-tmp = tempfile.mkdtemp()
+# mkdtemp locks its directory to the creating user on recent Windows Pythons, which a confined process cannot write into.
+tmp = os.path.join(os.getcwd(), ".verify-%d" % os.getpid())
+os.makedirs(tmp)
 try:
     import api
     import export

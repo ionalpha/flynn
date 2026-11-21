@@ -1,20 +1,20 @@
 import os
-import tempfile
 import unittest
 
 import api
+import scratch
 
 
 class CreateTest(unittest.TestCase):
     def test_create_stores_an_open_ticket(self):
-        with tempfile.TemporaryDirectory() as d:
+        with scratch.directory() as d:
             path = os.path.join(d, "t.json")
             status, body = api.create_ticket(path, {"title": "  Lamp out  "})
             self.assertEqual(status, 201)
             self.assertEqual((body["id"], body["title"], body["status"]), (1, "Lamp out", "open"))
 
     def test_create_needs_a_title(self):
-        with tempfile.TemporaryDirectory() as d:
+        with scratch.directory() as d:
             status, body = api.create_ticket(os.path.join(d, "t.json"), {"title": " "})
             self.assertEqual(status, 400)
             self.assertIn("title", body["error"])
