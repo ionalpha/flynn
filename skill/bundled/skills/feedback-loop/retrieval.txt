@@ -1,0 +1,7 @@
+the test suite takes ten minutes every time I change something | feedback-loop |
+I keep checking the log by hand after each change | feedback-loop |
+write a script so I stop repeating these setup steps | feedback-loop |
+make the edit and test cycle faster | feedback-loop |
+how will I know this change worked and how long will it take to find out | feedback-loop |
+the nightly job has started running past its window | systematic-debugging | feedback-loop
+make this endpoint respond faster | performance-measurement | feedback-loop
