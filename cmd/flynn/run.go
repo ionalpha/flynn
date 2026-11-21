@@ -177,8 +177,8 @@ func (r driveRequest) assembly() assembly {
 func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	c := r.cfg
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.ID())
-	if c.model.Spec != "" {
-		_, _ = fmt.Fprintf(w, "  model: %s\n", c.model)
+	if line := modelLine(c.model); line != "" {
+		_, _ = fmt.Fprintln(w, line)
 	}
 	if gated := governed.GatedActions(governed.ApprovalPolicy(c.gates.approve)); len(gated) > 0 {
 		how := "refused, nothing here can prompt"
@@ -193,6 +193,15 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	for _, line := range termsLines(c.terms) {
 		_, _ = fmt.Fprintln(w, line)
 	}
+}
+
+// modelLine is the header line naming the model a run resolved to and where that came
+// from. A run that resolved none (an external agent drives its own) says nothing.
+func modelLine(m modelChoice) string {
+	if m.Spec == "" {
+		return ""
+	}
+	return "  model: " + m.String()
 }
 
 // begin starts the run's goal. A resumed run re-drives its existing goal, preserving its
