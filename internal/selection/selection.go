@@ -194,7 +194,7 @@ type file struct {
 // had taken away, and an unknown key is most likely a misspelt one.
 func Load(dir string) (Config, error) {
 	path := filepath.Join(dir, FileName)
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: fixed filename under the operator-chosen data dir
 	if errors.Is(err, os.ErrNotExist) {
 		return Config{}, nil
 	}
