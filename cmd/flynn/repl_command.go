@@ -93,6 +93,7 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 	}
 
 	s.modelSpec = spec
+	s.modelSource = ""
 	if err := writeActiveModel(s.dataDir, spec); err != nil {
 		// The switch still holds for this session; only persistence failed.
 		_, _ = fmt.Fprintf(out, "  switched to %s (could not save it as the default: %v)\n", spec, err)

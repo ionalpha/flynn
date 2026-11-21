@@ -13,7 +13,6 @@ import (
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/notices"
-	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -29,9 +28,7 @@ func serveEnv(t *testing.T) (dataDir, modelSpec string) {
 	t.Setenv("FLYNN_API_TOKEN", "")
 	t.Setenv("FLYNN_TELEGRAM_ALLOW", "")
 	t.Setenv("FLYNN_SIGNAL_ALLOW", "")
-	for _, k := range provider.CredentialEnvVars() {
-		t.Setenv(k, "")
-	}
+	noProviderKeys(t)
 	prior := modelSpecExplicit
 	modelSpecExplicit = true
 	t.Cleanup(func() { modelSpecExplicit = prior })

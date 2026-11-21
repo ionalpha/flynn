@@ -33,7 +33,7 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 	if err := errExternalAgentUnsupported("watch", modelSpec); err != nil {
 		return err
 	}
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
@@ -65,6 +65,7 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 		_, _ = fmt.Fprintf(out, "\n  marker %s\n  %s\n", m.Provenance(), m.Text)
 		objective := watchObjective(m)
 		if _, err := runLearningMission(ctx, out, model, plan, distiller, cwd, objective, "", store, signer, verbose, nil,
+			withModelChoice(choice),
 			withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
 			// Surface the failure and leave the marker in place (unretried until edited),
 			// so a transient run error does not silently swallow the request.

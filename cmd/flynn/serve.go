@@ -335,7 +335,7 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 // until ctx is cancelled.
 func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink, allow senderAllowList, gov serveGovernance) error {
 	// Channels need a model and the goal runtime that executes a triaged entry.
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
@@ -343,6 +343,7 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintf(os.Stderr, "model: %s\n", choice)
 	return serveIntake{
 		model: model, plan: plan, workdir: workdir, rstore: rstore, jq: jq, log: servedLog,
 		sources: sources, sinks: sinks, allow: allow, gov: gov, notice: os.Stderr,

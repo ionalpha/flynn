@@ -10,7 +10,6 @@ import (
 
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/notices"
-	"github.com/ionalpha/flynn/provider"
 )
 
 // unopenableDataDir returns a data directory path no store can be opened under, because a
@@ -33,9 +32,7 @@ func unopenableDataDir(t *testing.T) string {
 func runCLIIn(t *testing.T, dataDir string, args ...string) runResult {
 	t.Helper()
 	t.Setenv(notices.OffEnv, "1")
-	for _, k := range provider.CredentialEnvVars() {
-		t.Setenv(k, "")
-	}
+	noProviderKeys(t)
 	t.Setenv(diag.EnvDir, "")
 
 	prior := modelSpecExplicit

@@ -41,6 +41,8 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		model    llm.Model
 		plan     harness.Plan
 		extAgent *externAgent
+		// modelSource is where the resolved model came from, for the header.
+		modelSource string
 	)
 	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
 		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
@@ -51,14 +53,15 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		// each turn continues. It dies with the session.
 		defer extAgent.close()
 	} else {
-		var resolvedSpec string
-		model, plan, resolvedSpec, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+		var resolved modelChoice
+		model, plan, resolved, err = resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 		if err != nil {
 			return err
 		}
 		// Report and drive the model that actually resolved, not the default spec that
 		// started resolution: a fallback to an already-configured provider changes it.
-		modelSpec = resolvedSpec
+		modelSpec = resolved.Spec
+		modelSource = resolved.Source
 	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -111,6 +114,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		signer:       signer,
 		dataDir:      dataDir,
 		modelSpec:    modelSpec,
+		modelSource:  modelSource,
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
 		gates: gateSetup{approve: reqApproval},
@@ -174,7 +178,7 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	defer signal.Stop(sigCh)
 
 	s.notice = func(text string) { _, _ = fmt.Fprintf(s.out, "  %s\n", text) }
-	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, s.modelSpec)
+	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, modelChoice{Spec: s.modelSpec, Source: s.modelSource})
 	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
 }

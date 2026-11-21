@@ -38,8 +38,12 @@ func newerStoreDir(t *testing.T) string {
 // act on, and exit non-zero so a script or an agent driving the CLI sees the failure
 // rather than reading a message and a success code.
 func TestGoalOnAStoreFromANewerBuildExitsNonZero(t *testing.T) {
-	// A credential that resolves, so the run gets as far as the store.
+	// A named model with a credential that resolves, so the run gets as far as the store.
+	noProviderKeys(t)
 	t.Setenv("OPENAI_API_KEY", "test-key")
+	prior := modelSpecExplicit
+	modelSpecExplicit = true
+	t.Cleanup(func() { modelSpecExplicit = prior })
 	var out, errOut strings.Builder
 	code := routeCommand("goal", []string{"goal", "tidy the repo"}, invocation{
 		stdout:    &out,
