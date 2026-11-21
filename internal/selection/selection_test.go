@@ -256,6 +256,29 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// A data directory that cannot be read is a different failure from a file that was read
+// and refused, and the CLI gives them different exit codes, so only the first carries
+// [ErrUnreadable].
+func TestLoadMarksOnlyAnUnreadableFile(t *testing.T) {
+	// A directory where the file should be fails the read on every platform. A path under
+	// a regular file would not: Windows reports that as not found.
+	unreadable := t.TempDir()
+	if err := os.Mkdir(filepath.Join(unreadable, FileName), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(unreadable); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Load with a directory in place of the file = %v, want ErrUnreadable", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`bare`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Load of a malformed file = %v, want a parse error without ErrUnreadable", err)
+	}
+}
+
 func TestAppendRoundTripsThroughTheSession(t *testing.T) {
 	ctx := context.Background()
 	log := spine.NewMemoryLog()

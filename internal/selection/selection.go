@@ -29,6 +29,12 @@ const None = "none"
 // FileName is the selection file in a data directory.
 const FileName = "selection.json"
 
+// ErrUnreadable marks a selection file that could not be read, as against one that was
+// read and refused. The first is a broken data directory, which the CLI reports as a
+// failure (exit 1) like a store it cannot open; the second is the operator's mistake in
+// the file, which it reports as a usage error.
+var ErrUnreadable = errors.New("the selection file could not be read")
+
 // Config is one invocation's selection. The zero value offers every skill and grants
 // every tool.
 //
@@ -199,7 +205,7 @@ func Load(dir string) (Config, error) {
 		return Config{}, nil
 	}
 	if err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
 	return parseFile(path, b)
 }

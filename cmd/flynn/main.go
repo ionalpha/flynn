@@ -26,6 +26,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/selection"
 	"github.com/ionalpha/flynn/internal/selfupdate"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
@@ -210,6 +211,10 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	// Checked against the stored skills and the tools that exist once a run opens its store;
 	// a malformed list or selection file is refused here, before anything starts.
 	sel, err := selFlags.resolve(fs, *dataDir)
+	if errors.Is(err, selection.ErrUnreadable) {
+		_, _ = fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
