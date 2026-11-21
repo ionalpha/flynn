@@ -21,7 +21,7 @@ RUN install -d -o 65532 -g 65532 /data
 # the boundary around those commands, and in a container it needs the seccomp profile in
 # deploy/seccomp (see deploy/README.md). For real project work, copy this binary into an
 # image that has your toolchain instead; busybox is the out-of-the-box minimum.
-FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:12c2026b21e05857a4c730b4dbf812becf02b396cb7916166c8305f45f140ab0
+FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:7df9fac2f5d3927260696af33fc2391da26366825838a47337088ed78f854a0c
 
 # APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
 # posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits
