@@ -13,6 +13,16 @@ A version is a `SKILL.md`, a directory holding one, or a git ref of the reposito
 
 Each arm installs its own version and reads its references from that version's own tree, so the baseline never sees the candidate's files. The candidate arm runs first in each pair; the order is not alternated.
 
+## Cost and the spend limit
+
+Every attempt prints its tokens, turns, time and cost, and the report totals them per arm and states the difference. Cost comes from what the model provider reports: tokens, which the provider returns on every call, priced from a table. A provider does not return a price and flynn ships none, so a table is supplied with `--prices <file>` in the `usage` package's JSON format (provider, model, effective date, currency, per-million rates, and the page the rates came from). A model the table does not list, a date before its first row, or a call that used the cache where the row states no cache rate is unpriced. The report then gives tokens and says the cost is unknown; it never reports zero or a guess.
+
+`--max-cost <usd>` stops the comparison from starting a new pair once the pairs already run have cost that much. It is checked between pairs, so a run can pass it by up to one pair. The report says `STOPPED EARLY`, how many pairs ran of those planned, and that the verdict reads only the pairs that ran. A limit that cannot be checked also stops the run, after the first pair: with no price table, or when a turn was unpriced, the spend is unknown and the limit is not assumed to hold. The limit is in USD, so a table priced in another currency is unreadable against it.
+
+## How a run ended
+
+A run stopped for making no progress, or by a step, token or spend budget, still fails its exercise, but the report counts it apart from a wrong answer, per arm, as `stalled` or `budget exhausted`. Any other early stop, such as a model error, counts as `aborted`. The verifier still grades whatever the run left behind.
+
 ## Exercise file format
 
 A row is `[fixture] objective | verify command`. The new addition is a continuation line that names an extra check:

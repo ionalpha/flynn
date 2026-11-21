@@ -70,7 +70,7 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "any-skill"}, exercise, 1, true, abArms{})
+			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "any-skill"}, exercise, 1, true, abArms{})
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -98,7 +98,7 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{})
+	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{})
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}
@@ -119,7 +119,7 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 	set.Exercises = append(set.Exercises, skillab.Exercise{Objective: "held out", Verify: "exit 0", Holdout: true})
 
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 1, skillab.Arms{}, func(_ context.Context, tk skillab.Exercise, _ int, withSkill bool) (skillab.Outcome, error) {
+	err := measureSkill(context.Background(), &out, set, 1, skillab.Arms{}, skillab.Limit{}, func(_ context.Context, tk skillab.Exercise, _ int, withSkill bool) (skillab.Outcome, error) {
 		if tk.Holdout {
 			return skillab.Outcome{Passed: true}, nil // the skill changes nothing on the held-out exercise
 		}
@@ -146,7 +146,7 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 func TestSkillABReportsNothingWhenTheMeasurementFails(t *testing.T) {
 	set := skillab.Set{Skill: "x", Exercises: []skillab.Exercise{{Objective: "do the thing", Verify: "exit 0"}}}
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 0, skillab.Arms{}, func(context.Context, skillab.Exercise, int, bool) (skillab.Outcome, error) {
+	err := measureSkill(context.Background(), &out, set, 0, skillab.Arms{}, skillab.Limit{}, func(context.Context, skillab.Exercise, int, bool) (skillab.Outcome, error) {
 		return skillab.Outcome{}, errors.New("the sandbox would not start")
 	})
 	if err == nil {

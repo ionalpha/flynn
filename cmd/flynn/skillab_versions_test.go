@@ -62,7 +62,7 @@ func TestMeteredModelBuildsTheTranscriptTurnByTurn(t *testing.T) {
 	m := newMeteredModel(&fakeModel{
 		replies: []llm.Response{reply("first", 10, 1), {}, reply("second", 20, 2)},
 		err:     map[int]error{1: errors.New("rate limited")},
-	})
+	}, nil)
 	ctx := context.Background()
 	user := llm.Text(llm.RoleUser, "fix it")
 	if _, err := m.Generate(ctx, llm.Request{Messages: []llm.Message{user}}); err != nil {
@@ -95,7 +95,7 @@ func TestMeteredModelBuildsTheTranscriptTurnByTurn(t *testing.T) {
 }
 
 func TestMeteredModelBoundsOneBlock(t *testing.T) {
-	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply(strings.Repeat("x", 3*maxLoggedBlock), 1, 1)}})
+	m := newMeteredModel(&fakeModel{replies: []llm.Response{reply(strings.Repeat("x", 3*maxLoggedBlock), 1, 1)}}, nil)
 	if _, err := m.Generate(context.Background(), llm.Request{}); err != nil {
 		t.Fatal(err)
 	}
