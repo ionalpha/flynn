@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -301,5 +303,80 @@ func TestRecordModelChoiceWritesTheResolvedModelToTheRunsStream(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("a successful record printed: %q", out.String())
+	}
+}
+
+// TestModelLine is the run header's model line.
+func TestModelLine(t *testing.T) {
+	if got := modelLine(modelChoice{Spec: "openai:gpt-5.5", Source: sourceSaved}); got != "  model: openai:gpt-5.5 (saved default)" {
+		t.Errorf("modelLine = %q", got)
+	}
+	if got := modelLine(modelChoice{}); got != "" {
+		t.Errorf("a run with no resolved model printed %q", got)
+	}
+	var d driveConfig
+	withModelChoice(modelChoice{Spec: "a:b", Source: sourceFlag})(&d)
+	if d.model.Spec != "a:b" {
+		t.Errorf("withModelChoice left %+v", d.model)
+	}
+}
+
+// TestNoKeysOnATerminalRunsFirstSetup proves nothing keyed at all, with someone to ask,
+// goes to the first-run setup and reports the answer as saved.
+func TestNoKeysOnATerminalRunsFirstSetup(t *testing.T) {
+	keyedEnv(t)
+	dir := t.TempDir()
+	askWith(t, true, "ollama:m\n")
+
+	_, _, choice, err := resolveModelOrOnboard(context.Background(), builtinSpec, modelUnchosen, dir)
+	if err != nil {
+		t.Fatalf("resolveModelOrOnboard: %v", err)
+	}
+	if choice.Spec != "ollama:m" || choice.Source != sourceSetup+savedAsDefaultTag {
+		t.Errorf("choice = %+v", choice)
+	}
+	if got, _ := readActiveModel(dir); got != "ollama:m" {
+		t.Errorf("saved default = %q", got)
+	}
+}
+
+// TestPromptsThatCloseUnansweredAreRefused proves a terminal that ends before the
+// operator answers is a refusal and saves nothing, rather than taking the suggestion.
+func TestPromptsThatCloseUnansweredAreRefused(t *testing.T) {
+	keyedEnv(t, "openai")
+	dir := t.TempDir()
+	askWith(t, true, "")
+	if _, _, _, err := resolveModelOrOnboard(context.Background(), builtinSpec, modelUnchosen, dir); err == nil {
+		t.Fatal("a closed prompt on the one-key question was answered")
+	}
+	if got, ok := readActiveModel(dir); ok {
+		t.Errorf("saved %q without an answer", got)
+	}
+}
+
+// TestSaveChoiceFailureKeepsTheRunAndSaysSo proves a default that cannot be written does
+// not stop a run already decided, and the source does not claim it was saved.
+func TestSaveChoiceFailureKeepsTheRunAndSaysSo(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	got := saveChoice(filepath.Join(blocker, "data"), "openai:gpt-5.5", sourcePrompt, &out)
+	if got.Spec != "openai:gpt-5.5" || got.Source != sourcePrompt {
+		t.Errorf("choice = %+v, want the spec with the unsaved source", got)
+	}
+	if !strings.Contains(out.String(), "Could not save") {
+		t.Errorf("output = %q, want it to say the default was not saved", out.String())
+	}
+}
+
+// TestRecordModelChoiceFailureIsReported proves a record that could not be written is
+// said aloud and does not fail the run.
+func TestRecordModelChoiceFailureIsReported(t *testing.T) {
+	var out bytes.Buffer
+	recordModelChoice(context.Background(), &out, failingLog{}, modelChoice{Spec: "a:b", Source: sourceFlag}, "run-1")
+	if !strings.Contains(out.String(), "model choice not recorded") {
+		t.Errorf("output = %q", out.String())
 	}
 }
