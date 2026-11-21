@@ -51,6 +51,7 @@ var packReconcileCases = []struct {
 	{"OldPackVersionWithoutARecordIsReplaced", testPackLegacyAdopted},
 	{"HostEditWithoutARecordIsKept", testPackLegacyEditKept},
 	{"HostEditWithoutARecordIsStillProtectedAfterwards", testPackLegacyEditProtected},
+	{"RetiredSkillWithoutARecordIsDeletedOnlyIfThePackShippedIt", testPackLegacyRetired},
 }
 
 // packSkill is a skill as the pack ships it.
@@ -366,6 +367,26 @@ func testPackLegacyEditKept(t *testing.T, store state.SkillStore, reconcile Pack
 	}
 	if getBundled(t, store, "old").Diverged || getBundled(t, store, "same").Diverged {
 		t.Error("a copy of a pack version is marked diverged")
+	}
+}
+
+// A skill the pack dropped in the same release that first keeps records has no record
+// to compare against, so the earlier versions decide: a copy of one is the pack's and
+// is deleted, anything else is a host's edit and must survive as the host's own skill.
+func testPackLegacyRetired(t *testing.T, store state.SkillStore, reconcile PackReconciler) {
+	seedWithoutRecord(t, store, packSkill("edited", "host edit"), packSkill("plain", "v1"))
+	earlier := []state.Skill{packSkill("edited", "v1"), packSkill("plain", "v1")}
+
+	res := reconcileWith(t, reconcile, store, earlier)
+
+	wantSlugs(t, "Removed", res.Removed, "plain")
+	wantSlugs(t, "Released", res.Released, "edited")
+	own, err := store.List(context.Background(), state.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(own) != 1 || own[0].Slug != "edited" || own[0].Body != "host edit" {
+		t.Errorf("the host's edit of a dropped skill did not survive in its own scope: %+v", own)
 	}
 }
 

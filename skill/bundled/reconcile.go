@@ -68,7 +68,7 @@ func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill, 
 	}
 
 	for _, sk := range sortedBySlug(stale) {
-		if err := retire(ctx, store, &res, sk); err != nil {
+		if err := retire(ctx, store, &res, sk, shipped); err != nil {
 			return res, fmt.Errorf("bundled: remove %s: %w", sk.Slug, err)
 		}
 	}
@@ -144,9 +144,12 @@ func place(ctx context.Context, store state.SkillStore, res *Result, prev, sk st
 	return nil
 }
 
-// retire handles a stored skill the pack no longer ships.
-func retire(ctx context.Context, store state.SkillStore, res *Result, sk state.Skill) error {
-	if sk.PackDigest == "" || digest(sk) == sk.PackDigest {
+// retire handles a stored skill the pack no longer ships. A copy with no record is
+// the pack's only when shipped holds it; any other is a host's edit and is released,
+// the same verdict [place] reaches for one the pack still ships.
+func retire(ctx context.Context, store state.SkillStore, res *Result, sk state.Skill, shipped digestSet) error {
+	_, old := shipped[digest(sk)]
+	if (sk.PackDigest == "" && old) || (sk.PackDigest != "" && digest(sk) == sk.PackDigest) {
 		// By id, because Delete resolves a slug across scopes and could hit a user's
 		// skill of the same name.
 		if err := store.Delete(ctx, sk.ID); err != nil {
