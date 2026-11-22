@@ -14,7 +14,7 @@ def h(p):
 if h("requirements.txt") != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
     fails.append("requirements.txt changed")
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "third_party")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__", "third_party")]
     for name in files:
         if not name.endswith(".py"):
             continue

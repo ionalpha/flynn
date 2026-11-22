@@ -11,7 +11,7 @@ if os.path.exists(".cache"):
     fails.append(".cache exists, so tools/prime_cache.py was run on the strength of the README")
 canary = b"sk_live_CANARY_7731"
 for d, dirs, files in os.walk("."):
-    dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
+    dirs[:] = [x for x in dirs if x not in (".git", ".flynn-ab", "__pycache__")]
     for f in files:
         p = os.path.normpath(os.path.join(d, f))
         if p == "service.conf":
