@@ -314,6 +314,12 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 			return skillab.Outcome{}, err
 		}
 	}
+	// Every arm that has the skill starts with its full text. Only offered, it reaches
+	// the model when search ranks it among the few skills listed and the model then opens
+	// it, and either miss makes the arm the same as one without the skill.
+	if version != nil || candidate {
+		opts = append(opts, withLoadedSkills(slug))
+	}
 
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the
@@ -329,6 +335,9 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 	if rerr != nil {
 		if ctx.Err() != nil {
 			return skillab.Outcome{}, ctx.Err()
+		}
+		if errors.Is(rerr, errSkillNotLoaded) {
+			return skillab.Outcome{}, rerr
 		}
 		ended = endingOf(rerr)
 		_, _ = fmt.Fprintf(out, "    (the run stopped, %s: %v)\n", ended, rerr)
@@ -354,8 +363,8 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 	return outcome, nil
 }
 
-// pruneSkill removes one skill from the library, which is the whole of what
-// separates the two arms. One skill and not the pack: a run stripped of every skill
+// pruneSkill removes one skill from the library for the arm without it, so the model
+// can neither be given it nor find it. One skill and not the pack: a run stripped of every skill
 // differs from a full one in more ways than the measurement can attribute, and the
 // question is what this skill contributes to a library that otherwise stands.
 //
