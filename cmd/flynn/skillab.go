@@ -302,23 +302,9 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 		return skillab.Outcome{}, err
 	}
 	defer func() { _ = store.Close() }()
-	var opts []driveOption
-	switch {
-	case version != nil:
-		if err := version.install(ctx, store.Skills()); err != nil {
-			return skillab.Outcome{}, err
-		}
-		opts = append(opts, withSkills(skilltool.New(store.Skills(), skilltool.WithPack(version.fsys, version.root))))
-	case !candidate:
-		if err := pruneSkill(ctx, store, slug); err != nil {
-			return skillab.Outcome{}, err
-		}
-	}
-	// Every arm that has the skill starts with its full text. Only offered, it reaches
-	// the model when search ranks it among the few skills listed and the model then opens
-	// it, and either miss makes the arm the same as one without the skill.
-	if version != nil || candidate {
-		opts = append(opts, withLoadedSkills(slug))
+	opts, err := armOptions(ctx, store, slug, version, candidate)
+	if err != nil {
+		return skillab.Outcome{}, err
 	}
 
 	// The run's own error is not the measurement. A run that stopped short failed the
@@ -361,6 +347,27 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 		outcome.Checks[c.Name] = runVerification(ctx, workdir, c.Command)
 	}
 	return outcome, nil
+}
+
+// armOptions prepares one arm's store and returns the run options that make it that
+// arm: a named version installed with its own resources, or the skill removed for the
+// arm without it.
+//
+// Every arm that has the skill starts with its full text. Only offered, it reaches the
+// model when search ranks it among the few skills listed and the model then opens it,
+// and either miss makes the arm the same as one without the skill.
+func armOptions(ctx context.Context, store *sqlite.Store, slug string, version *skillVersion, candidate bool) ([]driveOption, error) {
+	var opts []driveOption
+	switch {
+	case version != nil:
+		if err := version.install(ctx, store.Skills()); err != nil {
+			return nil, err
+		}
+		opts = append(opts, withSkills(skilltool.New(store.Skills(), skilltool.WithPack(version.fsys, version.root))))
+	case !candidate:
+		return nil, pruneSkill(ctx, store, slug)
+	}
+	return append(opts, withLoadedSkills(slug)), nil
 }
 
 // pruneSkill removes one skill from the library for the arm without it, so the model

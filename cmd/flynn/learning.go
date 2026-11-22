@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/driver"
@@ -77,13 +78,15 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	if cfg.skills != nil {
 		loader = cfg.skills
 	}
+	var loaded strings.Builder
 	for _, slug := range cfg.loaded {
 		text, lerr := loader.Load(ctx, slug)
 		if lerr != nil {
 			return "", fmt.Errorf("%w: %s: %w", errSkillNotLoaded, slug, lerr)
 		}
-		system += "\n\nThe skill " + slug + " is loaded for this run. Its full procedure follows:\n\n" + text
+		fmt.Fprintf(&loaded, "\n\nThe skill %s is loaded for this run. Its full procedure follows:\n\n%s", slug, text)
 	}
+	system += loaded.String()
 	// Last, so no operator or store text follows text the repository wrote.
 	if p := cfg.project.Prompt(); p != "" {
 		system += "\n\n" + p
