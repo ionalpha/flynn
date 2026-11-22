@@ -164,14 +164,11 @@ func readGitTree(ctx context.Context, ref, dir, dest string) error {
 	return nil
 }
 
-// install makes v the skill the store offers, replacing the pack's own copy of the
-// same slug.
+// install makes v the skill the store offers. v is in [state.BundledScope] and
+// [state.SkillStore.Upsert] writes by scope and slug, so it replaces the pack's own
+// copy of the same slug rather than adding a second one.
 func (v *skillVersion) install(ctx context.Context, store state.SkillStore) error {
-	prev, err := store.Get(ctx, v.skill.Slug)
-	if err == nil && prev.Scope == state.BundledScope {
-		v.skill.ID = prev.ID
-	}
-	_, err = store.Upsert(ctx, v.skill)
+	_, err := store.Upsert(ctx, v.skill)
 	return err
 }
 
