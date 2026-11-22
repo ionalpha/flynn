@@ -137,3 +137,36 @@ func TestStageWithoutAFixtureStillLeavesTheReport(t *testing.T) {
 		t.Errorf("report = %q", got)
 	}
 }
+
+// Most fixtures have no held-out checks, so a missing overlay is the common case and
+// stages the pristine copy alone.
+func TestStageWithoutAnOverlayCopiesOnlyThePristineFixture(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, skillab.ExercisesFile), "[f] fix it | exit 0\n")
+	write(t, filepath.Join(dir, skillab.FixturesDir, "f", "a.txt"), "original")
+	set, err := skillab.LoadDir(dir, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	if err := set.Stage(set.Exercises[0], work, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(work, skillab.HarnessDir, skillab.PristineDir, "a.txt")); got != "original" {
+		t.Errorf("pristine = %q", got)
+	}
+	entries, err := os.ReadDir(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != skillab.HarnessDir {
+		t.Errorf("work holds %v, want only %s", entries, skillab.HarnessDir)
+	}
+}
+
+func TestStageRefusesAWorkDirectoryThatIsGone(t *testing.T) {
+	set := stagedSet(t)
+	if err := set.Stage(set.Exercises[0], filepath.Join(t.TempDir(), "gone"), "", ""); err == nil {
+		t.Error("staged into a directory that does not exist")
+	}
+}

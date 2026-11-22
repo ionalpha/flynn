@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -8,8 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/skill/bundled"
+	"github.com/ionalpha/flynn/skill/skillab"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -119,6 +125,36 @@ func TestInstallReplacesTheShippedCopy(t *testing.T) {
 	}
 	if got[0].ID != shipped.ID {
 		t.Errorf("installed under ID %v, want the shipped copy's %v", got[0].ID, shipped.ID)
+	}
+}
+
+// A named version runs in its own store, and each secondary check is scored on its
+// own: a run can pass the verifier and still fail a check, and the outcome keeps both.
+func TestTrialRunsANamedVersionAndScoresEachCheck(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	v, err := resolveVersion(ctx, "demo", versionDir(t, "demo", "candidate body", "r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.close()
+	exercise := skillab.Exercise{
+		Objective: "do the thing",
+		Verify:    "exit 0",
+		Checks:    []skillab.Check{{Name: "held-out", Command: "exit 1"}, {Name: "in-scope", Command: "exit 0"}},
+	}
+	var out bytes.Buffer
+	got, err := runTrial(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), nil, harness.Plan{},
+		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v})
+	if err != nil {
+		t.Fatalf("trial: %v", err)
+	}
+	if !got.Passed || got.Checks["held-out"] || !got.Checks["in-scope"] {
+		t.Errorf("outcome = passed %v, checks %v; want passed with held-out failing and in-scope passing", got.Passed, got.Checks)
+	}
+	if !strings.Contains(out.String(), "[candidate, repeat 2]") || !strings.Contains(out.String(), "cost:") {
+		t.Errorf("the trial did not name its arm or its cost:\n%s", out.String())
 	}
 }
 
