@@ -13,6 +13,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/skill/skillab"
 	"github.com/ionalpha/flynn/skill/skilltool"
@@ -390,7 +391,7 @@ func keepAttempt(keep, fixture, arm string, repeat int, files map[string]string)
 		return "", err
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+		if err := fsatomic.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			return "", err
 		}
 	}
