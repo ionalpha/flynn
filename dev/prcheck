@@ -1,0 +1,120 @@
+#!/usr/bin/env sh
+# Check what a pull request will publish, before it is published.
+#
+#   dev/prcheck                                  commits on this branch not on origin/main
+#   dev/prcheck --commits <base>                 commits in <base>..HEAD
+#   dev/prcheck --title <text> --body-file <f>   also the PR title and body
+#   dev/prcheck --body-file <f> --no-commits     the body alone (CI, pr-body.yml)
+#
+# Run it before the first push. A commit that is already pushed can only be fixed
+# by a history rewrite, which AGENTS.md never asks for, so on a branch that is
+# already published pass `--commits @{upstream}` to check only what is new.
+#
+# Each commit: a Conventional Commits subject (dev/commitcheck), a Signed-off-by
+# trailer, body lines of at most 72 columns (a line holding a URL, or with no
+# space to break at, is exempt). The body: the template's What, Why and How to
+# verify sections, no closing keyword without an issue number, one line per
+# paragraph. Everything: no AI attribution (a Co-Authored-By trailer or a
+# "generated with" line naming a model; the bare word claude is the name of a
+# backend Flynn drives), no "subtask", and no 8-hex-digit token that is not a
+# commit here, since that is the shape of an internal tracker id a reader on
+# GitHub cannot open. A shallow clone cannot tell a hash from an id, so that
+# rule is skipped there and says so.
+#
+# The body rules are the ones pr-body.yml enforces after a PR opens; that
+# workflow calls this script, so the local check and CI cannot drift apart.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+base="origin/main"; check_commits=1; title=""; have_title=0; body_file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --commits) base="$2"; shift 2 ;;
+    --no-commits) check_commits=0; shift ;;
+    --title) title="$2"; have_title=1; shift 2 ;;
+    --body-file) body_file="$2"; shift 2 ;;
+    *) echo "prcheck: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+bad=0
+fail() { echo "prcheck: $*" >&2; bad=1; }
+
+shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || echo true)"
+[ "$shallow" = "true" ] && echo "prcheck: shallow clone, so 8-hex ids are not checked"
+
+# Takes the text as an argument, never on a pipe: a pipe would run it in a
+# subshell, and the failure it records would be lost with the subshell.
+scan_leaks() {
+  what="$1"; text="$2"
+  if printf '%s\n' "$text" | grep -Eiq 'co-authored-by:.*(claude|anthropic|openai|gpt|copilot|gemini)|generated (with|by) (claude|ai|an ai)'; then
+    fail "$what: AI attribution; work ships under the human identity only"
+  fi
+  if printf '%s\n' "$text" | grep -Eiq '\bsubtasks?\b'; then
+    fail "$what: mentions a subtask; say what the change does, not where it sits in a plan"
+  fi
+  [ "$shallow" = "true" ] && return 0
+  for tok in $(printf '%s\n' "$text" | grep -Eo '\b[0-9a-f]{8}\b' | sort -u); do
+    git cat-file -e "$tok^{commit}" 2>/dev/null && continue
+    fail "$what: \"$tok\" looks like an internal id and is not a commit here; describe the thing instead"
+  done
+}
+
+strip_fences() {
+  awk '{ sub(/\r$/, "") } /^[ \t]*(```|~~~)/ { fence = !fence; next } !fence'
+}
+
+if [ "$check_commits" -eq 1 ]; then
+  git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
+    echo "prcheck: base \"$base\" is not a commit here (fetch it, or pass --commits <base>)" >&2
+    exit 2
+  }
+  for c in $(git rev-list --no-merges "$base..HEAD"); do
+    short="$(git rev-parse --short "$c")"
+    subject="$(git log -1 --format=%s "$c")"
+    ./dev/commitcheck --subject "$subject" || fail "$short: subject above"
+    [ -n "$(git log -1 --format='%(trailers:key=Signed-off-by)' "$c")" ] ||
+      fail "$short: no Signed-off-by trailer (git commit --amend -s, before pushing)"
+    git log -1 --format=%b "$c" | awk -v c="$short" '
+      length($0) > 72 && $0 ~ / / && $0 !~ /:\/\// { printf "prcheck: %s: body line %d is %d columns, over 72\n", c, NR, length($0); bad = 1 }
+      END { exit bad }' >&2 || bad=1
+    scan_leaks "$short" "$(git log -1 --format=%B "$c" | grep -v '^Signed-off-by:' || true)"
+  done
+fi
+
+if [ "$have_title" -eq 1 ]; then
+  ./dev/commitcheck --subject "$title" || fail "title above"
+  scan_leaks "title" "$title"
+fi
+
+if [ -n "$body_file" ]; then
+  [ -s "$body_file" ] || { echo "prcheck: body file \"$body_file\" is missing or empty" >&2; exit 2; }
+  for section in "## What" "## Why" "## How to verify"; do
+    grep -Fq "$section" "$body_file" || fail "body: missing the '$section' section (.github/PULL_REQUEST_TEMPLATE.md)"
+  done
+  if tr -d '\r' < "$body_file" | grep -Eiq '^[[:space:]]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[[:space:]]*$'; then
+    fail "body: a closing keyword with no issue number; name the issue or delete the line"
+  fi
+  # GitHub renders a newline inside a paragraph as a line break, so a body wrapped
+  # like a commit message displays as ragged short lines. Lists, tables, headings,
+  # quotes, HTML and fenced code each open their own element and are not checked.
+  awk '
+    { sub(/\r$/, "") }
+    /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
+    fence { next }
+    /^[ \t]*$/ { prev = ""; next }
+    {
+      block = ($0 ~ /^[ \t]*([-*+>|#=]|[0-9]+[.)]|<)/)
+      if (prev != "" && !block) {
+        printf "prcheck: body line %d continues the line above: \"%s\"\n", NR, substr($0, 1, 60)
+        bad++
+      }
+      prev = block ? "" : $0
+    }
+    END { exit (bad > 0) }
+  ' "$body_file" >&2 || fail "body: put each paragraph on one line; the browser wraps it"
+  scan_leaks "body" "$(strip_fences < "$body_file")"
+fi
+
+[ "$bad" -eq 0 ] && echo "prcheck: OK"
+exit "$bad"
