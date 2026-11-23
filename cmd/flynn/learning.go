@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/driver"
@@ -26,6 +27,11 @@ import (
 // did not pass. The run is still sealed and distilled, since its record states the
 // failure; the error keeps a goal its own check disagrees with from exiting 0.
 var errGroundTruthFailed = errors.New("the --verify check did not pass: the run's success is not grounded")
+
+// errSkillNotLoaded is returned before any model call when a skill named by
+// [withLoadedSkills] cannot be loaded. It is the caller's mistake, not the run's
+// outcome, so a measurement stops on it instead of scoring a failed attempt.
+var errSkillNotLoaded = errors.New("a skill named for the run could not be loaded")
 
 // runLearningMission drives one objective over a durable store: it recalls past
 // learning into the prompt, runs the goal through the sandboxed toolset and, given a
@@ -59,6 +65,28 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	if block != "" {
 		system += "\n\n" + block
 	}
+	// Skills are read from the store recall offered from, through a toolset that lists
+	// what it served. It is prepended so a caller can override it, and always present
+	// because the prompt's offer names skill_read.
+	//
+	// Loading a skill also surfaces what past runs learned from it and counts that as a
+	// use of those memories: the pull side of the digest's push.
+	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
+	// A loaded skill comes from the toolset the run will use, so a caller's override
+	// (a skill version with its own resources) is what the prompt carries.
+	loader := skillset
+	if cfg.skills != nil {
+		loader = cfg.skills
+	}
+	var loaded strings.Builder
+	for _, slug := range cfg.loaded {
+		text, lerr := loader.Load(ctx, slug)
+		if lerr != nil {
+			return "", fmt.Errorf("%w: %s: %w", errSkillNotLoaded, slug, lerr)
+		}
+		fmt.Fprintf(&loaded, "\n\nThe skill %s is loaded for this run. Its full procedure follows:\n\n%s", slug, text)
+	}
+	system += loaded.String()
 	// Last, so no operator or store text follows text the repository wrote.
 	if p := cfg.project.Prompt(); p != "" {
 		system += "\n\n" + p
@@ -74,13 +102,6 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 
 	resources := store.Resources(reg)
-	// Skills are read from the store recall offered from, through a toolset that lists
-	// what it served. It is prepended so a caller can override it, and always present
-	// because the prompt's offer names skill_read.
-	//
-	// Loading a skill also surfaces what past runs learned from it and counts that as a
-	// use of those memories: the pull side of the digest's push.
-	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
 	opts = append([]driveOption{withSkills(skillset)}, opts...)
 	result, source, transcript, err := driveRequest{
 		out:       out,
@@ -174,14 +195,24 @@ func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream
 // runVerification runs the operator's command in a confined sandbox at workdir and
 // reports exit 0.
 func runVerification(ctx context.Context, workdir, command string) bool {
+	passed, _ := verifyWithOutput(ctx, workdir, command)
+	return passed
+}
+
+// verifyWithOutput is [runVerification] that also returns what the command printed, or
+// why it could not run, so a failed attempt can be read afterwards.
+func verifyWithOutput(ctx context.Context, workdir, command string) (bool, string) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
-		return false
+		return false, "the sandbox could not start: " + err.Error()
 	}
 	// Without Close every verified run leaves a container profile behind.
 	defer func() { _ = sb.Close() }()
 	res, err := sb.Exec(ctx, sandbox.Command{Line: command})
-	return err == nil && res.ExitCode == 0
+	if err != nil {
+		return false, "the command could not run: " + err.Error()
+	}
+	return res.ExitCode == 0, fmt.Sprintf("exit %d\n%s", res.ExitCode, res.Output)
 }
 
 // appendGroundTruth records the verdict and binds the run's success to it, in the

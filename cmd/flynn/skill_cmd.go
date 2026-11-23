@@ -12,7 +12,7 @@ import (
 )
 
 // errSkillUsage is the usage line for `flynn skill`.
-var errSkillUsage = errors.New("usage: flynn skill ls | flynn skill show <skill> | flynn skill ab <skill> [--repeats n] [--exercises dir]")
+var errSkillUsage = errors.New("usage: flynn skill ls | flynn skill show <skill> | flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file] [--keep dir]")
 
 // skillListDescriptionWidth caps the description column of `flynn skill ls`, so one
 // long description does not push every row past the width of a terminal. The whole

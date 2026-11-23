@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, ".")
 TEST_SHA = "fb4ebbe061a3d0b9695857be3cc54a1f337821a34a3e66151eb70e80d112dd80"
 SHIPPED = ("pricing.py", "test_pricing.py", "README.md")
-NOISE = ("__pycache__", ".pytest_cache")
+NOISE = ("__pycache__", ".pytest_cache", ".flynn-ab")
 CASES = [
     ([(10.0, 2)], "standard", "GB", {"subtotal": 20.0, "discount": 0.0, "shipping": 4.99, "tax": 5.0, "total": 29.99}),
     ([(60.0, 2)], "gold", "GB", {"subtotal": 120.0, "discount": 3.6, "shipping": 0.0, "tax": 23.28, "total": 139.68}),

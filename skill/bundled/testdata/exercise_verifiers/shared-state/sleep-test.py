@@ -20,7 +20,7 @@ def sleeps(tree):
 
 tests = []
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__") and not d.startswith("_mut")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__") and not d.startswith("_mut")]
     tests += [os.path.join(root, f) for f in files if f.startswith("test") and f.endswith(".py")]
 for p in tests:
     if sleeps(ast.parse(open(p, encoding="utf-8").read())):
