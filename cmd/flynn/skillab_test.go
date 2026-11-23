@@ -70,7 +70,7 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{})
+			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{}, "")
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -99,7 +99,7 @@ func TestTrialLoadsTheSkillOnlyOnTheArmThatHasIt(t *testing.T) {
 		var out bytes.Buffer
 		model := llmtest.NewScripted(llmtest.SayText("done"))
 		exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
-		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}); err != nil {
+		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}, ""); err != nil {
 			t.Fatalf("trial (with skill %v): %v", candidate, err)
 		}
 		reqs := model.Requests()
@@ -123,7 +123,7 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{})
+	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{}, "")
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}

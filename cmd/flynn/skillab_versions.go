@@ -185,6 +185,10 @@ type meteredModel struct {
 	calls int
 	log   strings.Builder
 	last  string
+	// system is the first request's system prompt, where a loaded skill's text sits. It
+	// stays out of log because checks read the staged transcript, and a skill's own words
+	// there could satisfy a check that greps for them.
+	system string
 }
 
 // newMeteredModel wraps inner. A nil price leaves every turn unpriced. clk dates each
@@ -205,6 +209,7 @@ func (m *meteredModel) Generate(ctx context.Context, req llm.Request) (llm.Respo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.calls == 0 {
+		m.system = req.System
 		for _, msg := range req.Messages {
 			writeMessage(&m.log, msg)
 		}
@@ -226,6 +231,12 @@ func (m *meteredModel) snapshot() (skillab.Cost, string, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cost, m.log.String(), m.last
+}
+
+func (m *meteredModel) firstSystem() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.system
 }
 
 func writeMessage(b *strings.Builder, msg llm.Message) {

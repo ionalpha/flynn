@@ -56,7 +56,7 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 	}
 	price := newPricer(table, spec)
 	return measureSkill(ctx, out, set, repeats, arms.names, limit, func(ctx context.Context, exercise skillab.Exercise, repeat int, candidate bool) (skillab.Outcome, error) {
-		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms)
+		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms, flags.keep)
 	})
 }
 
@@ -113,6 +113,7 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, abFlags, error
 	fs.StringVar(&refs.prices, "prices", "", "a JSON price table (usage.LoadTable format) pricing the model's reported tokens; without one, tokens are reported and cost is unknown")
 	fs.StringVar(&refs.against, "against", "", "a SKILL.md, a directory holding one, or a git ref: the version the skill is compared against, instead of no skill")
 	fs.StringVar(&refs.candidate, "candidate", "", "the version under test, as a path or git ref; the installed skill when empty")
+	fs.StringVar(&refs.keep, "keep", "", "a directory to save each attempt's report, transcript and check output in, one subdirectory per attempt; nothing is kept when empty")
 	// Parsed around the skill's name rather than up to it. Go's flag package stops at
 	// the first argument that is not a flag, so the usage line this command prints,
 	// with the name before the flags, is the one spelling it would otherwise refuse.
@@ -121,7 +122,7 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, abFlags, error
 		return skillab.Set{}, 0, refs, err
 	}
 	if len(bare) != 1 {
-		return skillab.Set{}, 0, refs, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file]`)
+		return skillab.Set{}, 0, refs, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file] [--keep dir]`)
 	}
 	slug := bare[0]
 
@@ -140,11 +141,12 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, abFlags, error
 }
 
 // abFlags are the options of `skill ab` beyond the exercise set: which versions to
-// compare and what the run may spend.
+// compare, what the run may spend and where its evidence is kept.
 type abFlags struct {
 	versionRefs
 	maxCost string
 	prices  string
+	keep    string
 }
 
 // spend reads the spend options before any model is resolved. A table that is named
@@ -267,7 +269,8 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 //
 // An arm that runs a named version installs it in its own store and reads its
 // references from its own tree, so the baseline never sees the candidate's files.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms) (skillab.Outcome, error) {
+// With keep set, [keepAttempt] saves the evidence before the directory is removed.
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms, keep string) (skillab.Outcome, error) {
 	slug := set.Skill
 	arm, version := "without", arms.baseline
 	if candidate {
@@ -342,11 +345,56 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 		_, _ = fmt.Fprintf(out, "    (the harness files could not be placed, so the attempt failed every check: %v)\n", err)
 		return outcome, nil
 	}
-	outcome.Passed = runVerification(ctx, workdir, exercise.Verify)
+	var said strings.Builder
+	var verifyOut string
+	outcome.Passed, verifyOut = verifyWithOutput(ctx, workdir, exercise.Verify)
+	fmt.Fprintf(&said, "== verify (passed: %t)\n%s\n", outcome.Passed, verifyOut)
 	for _, c := range exercise.Checks {
-		outcome.Checks[c.Name] = runVerification(ctx, workdir, c.Command)
+		var checkOut string
+		outcome.Checks[c.Name], checkOut = verifyWithOutput(ctx, workdir, c.Command)
+		fmt.Fprintf(&said, "== %s (passed: %t)\n%s\n", c.Name, outcome.Checks[c.Name], checkOut)
+	}
+	if keep != "" {
+		if ended != skillab.Finished {
+			fmt.Fprintf(&said, "== the run stopped: %s: %v\n", ended, rerr)
+		}
+		dir, err := keepAttempt(keep, exercise.Fixture, arm, repeat, map[string]string{
+			"report.txt":     report,
+			"transcript.txt": transcript,
+			"system.txt":     metered.firstSystem(),
+			"checks.txt":     said.String(),
+		})
+		if err != nil {
+			// Not fatal: the attempt is paid for and scored, and losing its evidence
+			// should not throw away the pairs already run.
+			_, _ = fmt.Fprintf(out, "    (the attempt's evidence could not be kept: %v)\n", err)
+		} else {
+			_, _ = fmt.Fprintf(out, "    kept: %s\n", dir)
+		}
 	}
 	return outcome, nil
+}
+
+// keepAttempt writes one attempt's evidence, files by name, to
+// keep/<fixture>/<arm>-<repeat>. A directory already there is refused rather than
+// merged, so files from two runs never mix.
+func keepAttempt(keep, fixture, arm string, repeat int, files map[string]string) (string, error) {
+	if fixture == "" {
+		fixture = "no-fixture"
+	}
+	dir := filepath.Join(keep, fixture, fmt.Sprintf("%s-%d", arm, repeat))
+	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		return "", err
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 // armOptions prepares one arm's store and returns the run options that make it that

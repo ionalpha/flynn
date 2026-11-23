@@ -195,14 +195,24 @@ func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream
 // runVerification runs the operator's command in a confined sandbox at workdir and
 // reports exit 0.
 func runVerification(ctx context.Context, workdir, command string) bool {
+	passed, _ := verifyWithOutput(ctx, workdir, command)
+	return passed
+}
+
+// verifyWithOutput is [runVerification] that also returns what the command printed, or
+// why it could not run, so a failed attempt can be read afterwards.
+func verifyWithOutput(ctx context.Context, workdir, command string) (bool, string) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
-		return false
+		return false, "the sandbox could not start: " + err.Error()
 	}
 	// Without Close every verified run leaves a container profile behind.
 	defer func() { _ = sb.Close() }()
 	res, err := sb.Exec(ctx, sandbox.Command{Line: command})
-	return err == nil && res.ExitCode == 0
+	if err != nil {
+		return false, "the command could not run: " + err.Error()
+	}
+	return res.ExitCode == 0, fmt.Sprintf("exit %d\n%s", res.ExitCode, res.Output)
 }
 
 // appendGroundTruth records the verdict and binds the run's success to it, in the
