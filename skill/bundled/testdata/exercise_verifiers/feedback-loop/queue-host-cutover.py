@@ -16,7 +16,7 @@ SHIPPED = {
 }
 OLD = "queue_host = old-mq.internal"
 NEW = "queue_host = mq.internal"
-NOISE = ("__pycache__", ".pytest_cache")
+NOISE = ("__pycache__", ".pytest_cache", ".flynn-ab")
 fails = []
 
 present = set()
