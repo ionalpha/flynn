@@ -14,7 +14,7 @@ fails = []
 if h("rows.csv") != "976774e30222abf6eb5822e12d5e8211d9be0fc3c62b36a2fb61d2de783f185c":
     fails.append("rows.csv was edited")
 for d, dirs, files in os.walk("."):
-    dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
+    dirs[:] = [x for x in dirs if x not in (".git", ".flynn-ab", "__pycache__")]
     for f in files:
         p = os.path.join(d, f)
         try:

@@ -17,7 +17,7 @@ def suite(cwd):
 def definitions(root):
     found = []
     for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in ("__pycache__", ".git", "tests") and not x.startswith("_probe")]
+        dirs[:] = [x for x in dirs if x not in ("__pycache__", ".git", ".flynn-ab", "tests") and not x.startswith("_probe")]
         for f in files:
             if f.endswith(".py"):
                 tree = ast.parse(open(os.path.join(d, f), encoding="utf-8").read())
