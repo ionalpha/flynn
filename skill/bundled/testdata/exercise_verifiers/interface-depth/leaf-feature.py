@@ -16,7 +16,7 @@ ORIGINAL = {"store.py", "exports.py", "reports.py"}
 for name in os.listdir("."):
     if name.endswith(".py") and name not in ORIGINAL and not name.startswith("test"):
         fails.append("a new module " + name + " was added for one function")
-    if os.path.isdir(name) and name not in ("__pycache__", ".git") and not name.startswith("_mut"):
+    if os.path.isdir(name) and name not in ("__pycache__", ".git", ".flynn-ab") and not name.startswith("_mut"):
         fails.append("a new directory " + name + " was added for one function")
 try:
     import reports

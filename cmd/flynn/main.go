@@ -399,7 +399,8 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 		}))
 	},
 	"watch": func(inv invocation, _ []string) int {
-		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
+		inv.noteShellPosture()
+		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.shell))
 	},
 	"review": routeReview,
 	"help":   func(inv invocation, _ []string) int { printUsage(inv.stdout); return 0 },
@@ -512,7 +513,10 @@ func routeMemory(inv invocation, rest []string) int {
 }
 
 func routeSkill(inv invocation, rest []string) int {
-	if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
+	if len(rest) > 1 && rest[1] == "ab" {
+		inv.noteShellPosture()
+	}
+	if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.shell, inv.stdout); err != nil {
 		if errors.Is(err, errSkillUsage) {
 			_, _ = fmt.Fprintln(inv.stderr, err)
 			return 2
@@ -620,7 +624,7 @@ func printUsage(w io.Writer) {
   flynn memory usage         show what memory was pushed at readers, what they used, and how alike the instances' pushed sets are
   flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
   flynn skill show <skill>   print one skill: what it is for, how runs have taken it up, and its body
-  flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
+  flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired; --against/--candidate compare two versions, --max-cost usd stops at a spend, --prices file prices the tokens
   flynn serve [--telegram-token T --telegram-allow ID] [--signal-tcp ADDR --signal-allow NUMBER] [--api-addr ADDR]  run as a service: answer chat messages from the allowed senders (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version

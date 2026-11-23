@@ -24,9 +24,17 @@ type toolCall struct {
 	input json.RawMessage
 }
 
-// pruneTranscript summarizes older and duplicate large tool results in one line, keeping
-// each tool's latest result, small results and errors verbatim, because large outputs
-// exhaust the budget fastest.
+// key names a call by its tool and its exact input bytes. Two spellings of the same
+// arguments count as two calls, which keeps a result that could have been pruned and
+// never prunes one that is still the latest.
+func (c toolCall) key() string { return c.name + "\x00" + string(c.input) }
+
+// pruneTranscript summarizes superseded and duplicate large tool results in one line,
+// keeping the latest result of each distinct call, small results and errors verbatim,
+// because large outputs exhaust the budget fastest. A call is its tool and its input, so
+// a rerun of a command supersedes the earlier run while a read of one file never hides a
+// read of another: an agent needs the code and its test in view together to edit, and
+// one sent back to re-read is stopped as stalled. Overflow is [compactView]'s job.
 //
 // It never mutates msgs, since the checkpoint is the lossless record, and never changes
 // the message or block count, so call/result pairing and the cached prefix survive. It
@@ -77,7 +85,7 @@ func indexCalls(msgs []llm.Message) map[string]toolCall {
 }
 
 type resultIndex struct {
-	latestByTool map[string]blockPos
+	latestByCall map[string]blockPos
 	// latestByBody lets an earlier identical body be pruned as a duplicate.
 	latestByBody map[uint64]blockPos
 	// bodyHash is computed once while indexing.
@@ -87,7 +95,7 @@ type resultIndex struct {
 // indexResults hashes only large bodies, because only large results are pruned.
 func indexResults(msgs []llm.Message, calls map[string]toolCall) resultIndex {
 	idx := resultIndex{
-		latestByTool: map[string]blockPos{},
+		latestByCall: map[string]blockPos{},
 		latestByBody: map[uint64]blockPos{},
 		bodyHash:     map[blockPos]uint64{},
 	}
@@ -97,7 +105,7 @@ func indexResults(msgs []llm.Message, calls map[string]toolCall) resultIndex {
 				continue
 			}
 			here := blockPos{mi, bi}
-			idx.latestByTool[calls[b.ToolResult.ToolUseID].name] = here
+			idx.latestByCall[calls[b.ToolResult.ToolUseID].key()] = here
 			if len(b.ToolResult.Content) > pruneResultThreshold {
 				h := hashString(b.ToolResult.Content)
 				idx.bodyHash[here] = h
@@ -136,7 +144,7 @@ func pruneResult(
 		return "", false
 	}
 	c := calls[r.ToolUseID]
-	if idx.latestByTool[c.name] == here {
+	if idx.latestByCall[c.key()] == here {
 		return "", false
 	}
 	if dup := idx.latestByBody[idx.bodyHash[here]]; dup != here {

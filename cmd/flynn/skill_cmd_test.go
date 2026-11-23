@@ -196,7 +196,7 @@ func TestSkillLsWithNothingToList(t *testing.T) {
 // under the new router.
 func TestSkillABIsRoutedThroughTheSkillCommand(t *testing.T) {
 	got := runCLIIn(t, t.TempDir(), "skill", "ab")
-	if got.code != 1 || !strings.Contains(got.stderr, "usage: flynn skill ab") {
+	if got.code != 1 || !strings.Contains(got.stderr, "usage: flynn skill ab") || !strings.Contains(got.stderr, "--max-cost") {
 		t.Fatalf("exit %d, stderr %q, want 1 and the ab usage", got.code, got.stderr)
 	}
 }
