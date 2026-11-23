@@ -146,10 +146,29 @@ func TestTrialRunsANamedVersionAndScoresEachCheck(t *testing.T) {
 	}
 	var out bytes.Buffer
 	model := llmtest.NewScripted(llmtest.SayText("done"))
+	keep := t.TempDir()
 	got, err := runTrial(ctx, &out, model, nil, harness.Plan{},
-		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v})
+		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v}, keep)
 	if err != nil {
 		t.Fatalf("trial: %v", err)
+	}
+	// What each check said is kept beside the transcript, so a failed check can be read.
+	checks, err := os.ReadFile(filepath.Join(keep, "no-fixture", "candidate-2", "checks.txt"))
+	if err != nil {
+		t.Fatalf("the attempt's checks were not kept: %v", err)
+	}
+	for _, want := range []string{"== verify (passed: true)", "== held-out (passed: false)\nexit 1", "== in-scope (passed: true)"} {
+		if !strings.Contains(string(checks), want) {
+			t.Errorf("checks.txt lacks %q:\n%s", want, checks)
+		}
+	}
+	// The skill's text is in the kept system prompt, which is how a reader confirms the
+	// arm had it, and not in the transcript, which checks grep.
+	if sys, err := os.ReadFile(filepath.Join(keep, "no-fixture", "candidate-2", "system.txt")); err != nil || !strings.Contains(string(sys), "candidate body") {
+		t.Errorf("the system prompt was not kept with the skill's text (err %v)", err)
+	}
+	if tr, err := os.ReadFile(filepath.Join(keep, "no-fixture", "candidate-2", "transcript.txt")); err != nil || !strings.Contains(string(tr), "done") || strings.Contains(string(tr), "candidate body") {
+		t.Errorf("the transcript was not kept, or carries the skill's text (err %v):\n%s", err, tr)
 	}
 	// The version's own text is what the run starts with, not the shipped copy's.
 	if reqs := model.Requests(); len(reqs) == 0 || !strings.Contains(reqs[0].System, "candidate body") {
@@ -196,5 +215,34 @@ func TestResolveArmsNamesWhatEachArmRuns(t *testing.T) {
 	}
 	if _, err := resolveArms(ctx, slug, versionRefs{candidate: "$(id)"}); err == nil {
 		t.Error("a candidate that cannot be read was accepted")
+	}
+}
+
+// Each attempt gets its own directory, and a second write to the same one is refused,
+// so two runs pointed at one --keep directory never mix their files.
+func TestKeepAttemptWritesOneDirectoryPerAttempt(t *testing.T) {
+	keep := t.TempDir()
+	files := map[string]string{"report.txt": "the report", "transcript.txt": "the transcript", "checks.txt": "== verify (passed: false)"}
+	dir, err := keepAttempt(keep, "", "without", 3, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(keep, "no-fixture", "without-3"); dir != want {
+		t.Errorf("kept in %s, want %s", dir, want)
+	}
+	for name, want := range files {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if _, err := keepAttempt(keep, "", "without", 3, map[string]string{"report.txt": "again"}); err == nil {
+		t.Error("a second write to the same attempt directory was accepted")
+	}
+	blocker := filepath.Join(keep, "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keepAttempt(blocker, "fix", "with", 1, files); err == nil {
+		t.Error("a keep path that is a file was accepted")
 	}
 }

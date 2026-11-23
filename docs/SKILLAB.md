@@ -23,6 +23,19 @@ Every attempt prints its tokens, turns, time and cost, and the report totals the
 
 A run stopped for making no progress, or by a step, token or spend budget, still fails its exercise, but the report counts it apart from a wrong answer, per arm, as `stalled` or `budget exhausted`. Any other early stop, such as a model error, counts as `aborted`. The verifier still grades whatever the run left behind.
 
+## Reading an attempt
+
+Each attempt's working directory is removed when it ends. `--keep <dir>` saves its evidence first, in `<dir>/<fixture>/<arm>-<repeat>/`:
+
+| File | Content |
+| --- | --- |
+| `report.txt` | The agent's final report. |
+| `transcript.txt` | The same transcript the checks read. |
+| `system.txt` | The first request's system prompt, where a loaded skill's text appears; it shows whether the arm had the skill. |
+| `checks.txt` | Each check's result and what it printed, and how the run stopped if it stopped early. |
+
+A directory that already exists is refused, so point each run at a new one. A verdict says how often an arm failed; these files say whether the skill or the harness caused it.
+
 ## Exercise file format
 
 A row is `[fixture] objective | verify command`. The new addition is a continuation line that names an extra check:
