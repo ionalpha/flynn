@@ -86,8 +86,8 @@ Run `./dev/check` until it is green before opening a PR.
   (`dev/commitcheck`). Nothing in CI checks commits that already exist, so the rule
   never asks for a pushed commit to be rewritten. Before the first push,
   `./dev/prcheck --title "<title>" --body-file <file>` checks every commit on the
-  branch (subject, sign-off, 72 columns, no tracker ids or AI attribution) and the
-  title and body by the rules `pr-body.yml` applies, since it is the same script.
+  branch (subject, sign-off, 72 columns, no tracker ids) and the title and body
+  by the rules `pr-body.yml` applies, since it is the same script.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
   you. GitHub renders a newline inside a paragraph as a line break, so a body wrapped
   like a commit message displays as ragged short lines. Lists, tables and fenced code

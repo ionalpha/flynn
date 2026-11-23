@@ -14,12 +14,10 @@
 # trailer, body lines of at most 72 columns (a line holding a URL, or with no
 # space to break at, is exempt). The body: the template's What, Why and How to
 # verify sections, no closing keyword without an issue number, one line per
-# paragraph. Everything: no AI attribution (a Co-Authored-By trailer or a
-# "generated with" line naming a model; the bare word claude is the name of a
-# backend Flynn drives), no numbered subtask ("subtask 3 of 9"), and no
+# paragraph. Everything: no numbered subtask ("subtask 3 of 9"), and no
 # 8-hex-digit token that is not a commit here, since that is the shape of an
-# internal tracker id a reader on GitHub cannot open. A shallow clone cannot tell a hash from an id, so that
-# rule is skipped there and says so.
+# internal tracker id a reader on GitHub cannot open. A shallow clone cannot
+# tell a hash from an id, so that rule is skipped there and says so.
 #
 # The body rules are the ones pr-body.yml enforces after a PR opens; that
 # workflow calls this script, so the local check and CI cannot drift apart.
@@ -47,9 +45,6 @@ shallow="$(git rev-parse --is-shallow-repository 2>/dev/null || echo true)"
 # subshell, and the failure it records would be lost with the subshell.
 scan_leaks() {
   what="$1"; text="$2"
-  if printf '%s\n' "$text" | grep -Eiq 'co-authored-by:.*(claude|anthropic|openai|gpt|copilot|gemini)|generated (with|by) (claude|ai|an ai)'; then
-    fail "$what: AI attribution; work ships under the human identity only"
-  fi
   if printf '%s\n' "$text" | grep -Eiq '\bsubtasks?[[:space:]]*#?[0-9]'; then
     fail "$what: names a numbered subtask; say what the change does, not where it sits in a plan"
   fi
