@@ -23,7 +23,9 @@ type driveConfig struct {
 	planning bool
 	proof    bool
 	skills   *skilltool.Set
-	gates    gateSetup
+	// loaded are skills whose full text goes in the system prompt, named in this order.
+	loaded []string
+	gates  gateSetup
 	// allowances are the irreversible actions outside the workspace this run may take. They
 	// ride the goal spec, so the waist checks them and the reconciler can tell an answered
 	// ask from an open one.
@@ -115,6 +117,16 @@ func withEventObserver(fn func(session.Event)) driveOption {
 // the outcome is credited to.
 func withSkills(s *skilltool.Set) driveOption {
 	return func(c *driveConfig) { c.skills = s }
+}
+
+// withLoadedSkills puts each named skill's full text in the system prompt, as
+// skill_read would return it, so the model has the procedure whether or not it would
+// have asked for it. A measurement of what a skill's content does needs this: with
+// the skill only offered, whether the model opens it is a second random outcome that
+// dilutes the effect being measured. A name that does not load stops the run before
+// any model call, because a run without the skill it was promised measures nothing.
+func withLoadedSkills(slugs ...string) driveOption {
+	return func(c *driveConfig) { c.loaded = slugs }
 }
 
 // withApproval requires a person to authorize each named action before the run takes
