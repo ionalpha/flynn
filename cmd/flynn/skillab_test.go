@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/sandbox/sandboxtest"
@@ -38,11 +39,11 @@ func writeExerciseSet(t *testing.T, slug, exercises string) string {
 // opening a store first would charge for a run that was never going to happen.
 func TestSkillABRefusesBeforeItSpends(t *testing.T) {
 	var out bytes.Buffer
-	if err := runSkillAB(nil, "", t.TempDir(), &out); err == nil {
+	if err := runSkillAB(nil, "", t.TempDir(), governed.ShellPolicy{}, &out); err == nil {
 		t.Fatal("a call naming no skill was accepted")
 	}
 	root := writeExerciseSet(t, "present", "do the thing | exit 0\n")
-	err := runSkillAB([]string{"--exercises", root, "absent"}, "", t.TempDir(), &out)
+	err := runSkillAB([]string{"--exercises", root, "absent"}, "", t.TempDir(), governed.ShellPolicy{}, &out)
 	if err == nil {
 		t.Fatal("a skill with no exercise set was accepted")
 	}
@@ -70,7 +71,7 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{}, "")
+			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{}, governed.ShellPolicy{}, "")
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -99,7 +100,7 @@ func TestTrialLoadsTheSkillOnlyOnTheArmThatHasIt(t *testing.T) {
 		var out bytes.Buffer
 		model := llmtest.NewScripted(llmtest.SayText("done"))
 		exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
-		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}, ""); err != nil {
+		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}, governed.ShellPolicy{}, ""); err != nil {
 			t.Fatalf("trial (with skill %v): %v", candidate, err)
 		}
 		reqs := model.Requests()
@@ -123,7 +124,7 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{}, "")
+	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{}, governed.ShellPolicy{}, "")
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}

@@ -384,7 +384,8 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 		}))
 	},
 	"watch": func(inv invocation, _ []string) int {
-		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
+		inv.noteShellPosture()
+		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.shell))
 	},
 	"review": routeReview,
 	"help":   func(inv invocation, _ []string) int { printUsage(inv.stdout); return 0 },
@@ -497,7 +498,10 @@ func routeMemory(inv invocation, rest []string) int {
 }
 
 func routeSkill(inv invocation, rest []string) int {
-	if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
+	if len(rest) > 1 && rest[1] == "ab" {
+		inv.noteShellPosture()
+	}
+	if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.shell, inv.stdout); err != nil {
 		if errors.Is(err, errSkillUsage) {
 			_, _ = fmt.Fprintln(inv.stderr, err)
 			return 2
