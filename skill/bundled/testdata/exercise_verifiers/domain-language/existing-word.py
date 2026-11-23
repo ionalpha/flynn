@@ -15,7 +15,7 @@ def words(name):
 
 
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__")]
     for name in files:
         if "client" in words(name.rsplit(".", 1)[0]) or "clients" in words(name.rsplit(".", 1)[0]):
             fails.append("a file is named " + name)

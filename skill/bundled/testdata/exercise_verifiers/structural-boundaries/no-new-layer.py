@@ -8,7 +8,7 @@ sys.path.insert(0, ".")
 fails = []
 ORIGINAL = {"catalog.py", "pricing.py"}
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__") and not d.startswith("_mut")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__") and not d.startswith("_mut")]
     if root != ".":
         fails.append("a new directory " + root + " was added for a discount code")
     for name in files:
