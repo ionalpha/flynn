@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/llm"
@@ -36,7 +37,7 @@ const defaultEvalRoot = "evals"
 // answer whether a procedure helps a model that has it: the retrieval table says
 // whether a skill is reachable and costs nothing, and this says whether reaching it
 // was worth the tokens.
-func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
+func runSkillAB(args []string, modelSpec, dataDir string, shell governed.ShellPolicy, out io.Writer) error {
 	set, repeats, flags, err := skillABArgs(args, out)
 	if err != nil {
 		return err
@@ -57,7 +58,7 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 	}
 	price := newPricer(table, spec)
 	return measureSkill(ctx, out, set, repeats, arms.names, limit, func(ctx context.Context, exercise skillab.Exercise, repeat int, candidate bool) (skillab.Outcome, error) {
-		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms, flags.keep)
+		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms, shell, flags.keep)
 	})
 }
 
@@ -260,9 +261,7 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 
 // runTrial is one arm of one pair: a run of the exercise's objective in a throwaway
 // workspace, graded after the agent has stopped by the exercise's verifier and its
-// named checks.
-//
-// Everything is fresh. A new data directory, so no skill learned or memory written
+// named checks. Everything is fresh. A new data directory, so no skill learned or memory written
 // by an earlier trial is recalled by this one; a new working directory, so the state
 // a previous run left behind cannot make the next exercise easier. Learning is off for
 // the same reason, and because a measurement that changed the thing it measures
@@ -270,8 +269,10 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 //
 // An arm that runs a named version installs it in its own store and reads its
 // references from its own tree, so the baseline never sees the candidate's files.
-// With keep set, [keepAttempt] saves the evidence before the directory is removed.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms, keep string) (skillab.Outcome, error) {
+// With keep set, [keepAttempt] saves the evidence before the directory is removed. Both
+// arms run commands under shell, the policy `flynn run` would use: the zero policy
+// refuses every command on Windows, and the comparison would grade an agent with no shell.
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms, shell governed.ShellPolicy, keep string) (skillab.Outcome, error) {
 	slug := set.Skill
 	arm, version := "without", arms.baseline
 	if candidate {
@@ -310,6 +311,7 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 	if err != nil {
 		return skillab.Outcome{}, err
 	}
+	opts = append(opts, withShellPolicy(shell))
 
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the

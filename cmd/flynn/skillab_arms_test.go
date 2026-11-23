@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/sandbox/sandboxtest"
@@ -148,7 +149,7 @@ func TestTrialRunsANamedVersionAndScoresEachCheck(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	keep := t.TempDir()
 	got, err := runTrial(ctx, &out, model, nil, harness.Plan{},
-		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v}, keep)
+		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v}, governed.ShellPolicy{}, keep)
 	if err != nil {
 		t.Fatalf("trial: %v", err)
 	}
