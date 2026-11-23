@@ -123,22 +123,41 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	sk, err := t.s.get(ctx, in.Skill)
+	text, id, err := t.s.render(ctx, in.Skill)
 	if err != nil {
 		return "", err
 	}
+	// Recorded after every refusal, so only a body that reached the model counts.
+	t.s.recordRead(id)
+	return text, nil
+}
+
+// Load returns the text skill_read would return for name, for a host that puts the
+// skill in front of the model without the model asking. It is not recorded in
+// [Set.Reads]: a body the model never asked for says nothing about whether the model
+// chose to use it, and Reads is what a run's outcome is credited to.
+func (s *Set) Load(ctx context.Context, name string) (string, error) {
+	text, _, err := s.render(ctx, name)
+	return text, err
+}
+
+// render is the body, its resource list and its notes, in that order, so a loaded
+// skill and a read one put the same text in front of the model.
+func (s *Set) render(ctx context.Context, name string) (text, id string, err error) {
+	sk, err := s.get(ctx, name)
+	if err != nil {
+		return "", "", err
+	}
 	body := strings.TrimSpace(sk.Body)
 	if body == "" {
-		return "", fmt.Errorf("%w: %s has no body", ErrUnreadable, sk.Slug)
+		return "", "", fmt.Errorf("%w: %s has no body", ErrUnreadable, sk.Slug)
 	}
 	if n := utf8.RuneCountInString(body); n > MaxBodyRunes {
-		return "", fmt.Errorf("%w: %s is %d characters, over the %d limit", ErrUnreadable, sk.Slug, n, MaxBodyRunes)
+		return "", "", fmt.Errorf("%w: %s is %d characters, over the %d limit", ErrUnreadable, sk.Slug, n, MaxBodyRunes)
 	}
-	// Recorded after every refusal, so only a body that reached the model counts.
-	t.s.recordRead(sk.ID)
 	// Resources are listed, not read, so the model knows which paths it may ask for.
 	out := []string{body}
-	res, note := t.s.resources(sk)
+	res, note := s.resources(sk)
 	switch {
 	case note != "":
 		// The body is still returned, with a note that the resource list is missing.
@@ -147,12 +166,12 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		out = append(out, "Resources for this skill, readable with skill_resource:\n- "+strings.Join(res, "\n- "))
 	}
 	// Notes go last, so the procedure is read before anything said about it.
-	if t.s.notes != nil {
-		if n := strings.TrimSpace(t.s.notes.ForSkill(ctx, sk.ID)); n != "" {
+	if s.notes != nil {
+		if n := strings.TrimSpace(s.notes.ForSkill(ctx, sk.ID)); n != "" {
 			out = append(out, n)
 		}
 	}
-	return strings.Join(out, "\n\n"), nil
+	return strings.Join(out, "\n\n"), sk.ID, nil
 }
 
 type resourceTool struct{ s *Set }

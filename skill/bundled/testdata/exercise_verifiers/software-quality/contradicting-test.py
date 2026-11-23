@@ -11,7 +11,7 @@ SHIPPED = {
     "test_ledger.py": "2470376db5381636d062172bf619ff989cc1831c22c1c5d471eca59355f349d8",
     "test_export.py": "ad62487483460da57754f32be0ea60046f69668f54bc05c6bc9cb166b2e87005",
 }
-NOISE = ("__pycache__", ".pytest_cache")
+NOISE = ("__pycache__", ".pytest_cache", ".flynn-ab")
 
 
 def h(p):

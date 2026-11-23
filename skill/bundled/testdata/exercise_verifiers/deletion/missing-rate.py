@@ -9,7 +9,7 @@ SHIPPED = {
     "tax.py": None,
     "test_tax.py": "062c0ab6302a7beba5ca50ad47e959516c120b16ac2df6c95f9b2add63f0a8e3",
 }
-NOISE = ("__pycache__", ".pytest_cache")
+NOISE = ("__pycache__", ".pytest_cache", ".flynn-ab")
 
 
 def h(p):

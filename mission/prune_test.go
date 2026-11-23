@@ -252,3 +252,36 @@ func TestPruneNamesAnUnpairedResultNeutrally(t *testing.T) {
 		t.Fatalf("last orphan was elided: %q", got)
 	}
 }
+
+func callWith(id, name, input string) llm.Message {
+	return llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{
+		{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: id, Name: name, Input: json.RawMessage(input)}},
+	}}
+}
+
+// An agent that reads a file and then the test for it needs both in view to make the
+// edit. Pruning the first read because a different file was read since sends it back
+// to read the file again, and a run that only re-reads is stopped as stalled. A later
+// result of the same call does supersede an earlier one.
+func TestPruneKeepsTheLatestResultOfEachDistinctCall(t *testing.T) {
+	code, tests := big("code"), big("tests")
+	msgs := []llm.Message{
+		callWith("1", "read", `{"path":"pricing.py"}`), resultMsg("1", code, false),
+		callWith("2", "read", `{"path":"test_pricing.py"}`), resultMsg("2", tests, false),
+		callWith("3", "bash", `{"command":"go test ./..."}`), resultMsg("3", big("run 1"), false),
+		callWith("4", "bash", `{"command":"go test ./..."}`), resultMsg("4", big("run 2"), false),
+	}
+	out := pruneTranscript(msgs, noSummarizer)
+	if got := out[1].Blocks[0].ToolResult.Content; got != code {
+		t.Errorf("the read of pricing.py was pruned after a read of another file: %q", got)
+	}
+	if got := out[3].Blocks[0].ToolResult.Content; got != tests {
+		t.Errorf("the latest read of test_pricing.py was pruned: %q", got)
+	}
+	if got := out[5].Blocks[0].ToolResult.Content; !strings.HasPrefix(got, "[pruned bash:") {
+		t.Errorf("an earlier run of the same command was kept: %q", got[:40])
+	}
+	if got := out[7].Blocks[0].ToolResult.Content; got != big("run 2") {
+		t.Errorf("the latest run of the command was pruned: %q", got[:40])
+	}
+}

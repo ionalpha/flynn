@@ -12,7 +12,7 @@ SHIPPED = {
     "names.txt": "ac84bee3fb10bdfcd54ada5a98b304a9d62a7e1e4a3034c7b164945017cb3250",
     "test_export.py": "2960bd4beaaa1dc8211c36aa6806dc93935e4b7c5ce76f7171ffa2615ec884f2",
 }
-NOISE = ("__pycache__", ".pytest_cache")
+NOISE = ("__pycache__", ".pytest_cache", ".flynn-ab")
 
 
 def h(p):

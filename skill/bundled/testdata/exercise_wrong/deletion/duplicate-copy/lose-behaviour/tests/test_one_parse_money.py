@@ -9,7 +9,7 @@ class OneParseMoney(unittest.TestCase):
     def test_single_definition(self):
         found = []
         for d, dirs, files in os.walk(ROOT):
-            dirs[:] = [x for x in dirs if x not in ("tests", "__pycache__", ".git")]
+            dirs[:] = [x for x in dirs if x not in ("tests", "__pycache__", ".git", ".flynn-ab")]
             for f in files:
                 if f.endswith(".py"):
                     with open(os.path.join(d, f), encoding="utf-8") as fh:

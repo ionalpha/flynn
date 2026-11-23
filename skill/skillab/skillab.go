@@ -1,7 +1,15 @@
 // Package skillab measures whether a skill helps: on the exercises it claims, does a
 // run with it beat a run without it? Each exercise ends in a command that passes or
 // fails. The two conditions differ by one skill, and runs repeat because run-to-run
-// variance exceeds the effect.
+// variance exceeds the effect. [Compare] also takes two named arms, so one version of a
+// skill can be measured against another and not only against none.
+//
+// An exercise has a primary Verify command and optional named [Check] commands. After
+// the agent stops, [Set.Stage] places the final report, the transcript, the pristine
+// fixture and any held-out files in the working directory, and the commands run there.
+// The primary check is tested at the full significance level and the declared
+// secondary checks share it by the Holm step-down method. Each attempt also reports
+// its [Cost]. See docs/SKILLAB.md for the format and what a verdict does not say.
 //
 // [NoDifference] is a verdict, and the action is deleting the skill. A set where
 // every run passes in both conditions cannot tell them apart, and [Report] says so.
@@ -26,6 +34,10 @@ import (
 type Exercise struct {
 	Objective string
 	Verify    string
+	// Checks are further named commands run after the agent stops, each passing or
+	// failing on its own. Verify decides the primary verdict; these say how a run
+	// that passed it went about it.
+	Checks []Check
 	// Fixture names the directory under [FixturesDir] copied in before the run;
 	// empty starts in an empty directory.
 	Fixture string
@@ -35,6 +47,16 @@ type Exercise struct {
 	// Source and Line locate the row for error messages.
 	Source string
 	Line   int
+}
+
+// Check is one named command whose exit status is a result in its own right: held-out
+// tests, a diff that stayed in scope, tests left intact, a final report that told
+// the truth.
+type Check struct {
+	// Name is lower-case letters, digits and hyphens, unique within the exercise,
+	// and never "verify", which is the primary check.
+	Name    string
+	Command string
 }
 
 // Name is the exercise's label in a report, its objective.
@@ -134,10 +156,18 @@ func path(dir, file string) string {
 
 const exerciseSep = "|"
 
+// checkMark opens a continuation line, which adds a named check to the exercise
+// above it.
+const checkMark = "+"
+
+// reservedCheck is the name of the primary check, the exercise's own verify command.
+const reservedCheck = "verify"
+
 // ParseExercises reads rows of `objective | verify command`, with `#` comments and
 // blank lines. Both columns are required. A row may open with a fixture,
 // `[broken-parser] objective | verify`, so the verifier stays last and can hold
-// pipes.
+// pipes. Lines beginning with `+` after a row add named checks to it, as
+// `+ heldout | command`; a file with none reads as it always did.
 func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error) {
 	var out []Exercise
 	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
@@ -146,6 +176,23 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 			line = line[:h]
 		}
 		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(strings.TrimLeft(line, " \t"), checkMark); ok {
+			if len(out) == 0 {
+				return nil, fmt.Errorf("skillab: %s line %d: a check belongs to the exercise above it, and there is none", source, i+1)
+			}
+			check, err := parseCheck(rest, source, i+1)
+			if err != nil {
+				return nil, err
+			}
+			last := &out[len(out)-1]
+			for _, c := range last.Checks {
+				if c.Name == check.Name {
+					return nil, fmt.Errorf("skillab: %s line %d: check %q is named twice on one exercise", source, i+1, check.Name)
+				}
+			}
+			last.Checks = append(last.Checks, check)
 			continue
 		}
 		fixture, line, err := splitFixture(line, source, i+1)
@@ -173,6 +220,40 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// parseCheck reads `name | command`.
+func parseCheck(rest, source string, num int) (Check, error) {
+	name, command, ok := strings.Cut(rest, exerciseSep)
+	if !ok {
+		return Check{}, fmt.Errorf("skillab: %s line %d: a check is `%s name %s command`", source, num, checkMark, exerciseSep)
+	}
+	c := Check{Name: strings.TrimSpace(name), Command: strings.TrimSpace(command)}
+	if !validCheckName(c.Name) {
+		return Check{}, fmt.Errorf("skillab: %s line %d: check name %q must be lower-case letters, digits and hyphens, starting with a letter or digit", source, num, c.Name)
+	}
+	if c.Name == reservedCheck {
+		return Check{}, fmt.Errorf("skillab: %s line %d: %q is the exercise's own verify command, so it cannot name a check", source, num, reservedCheck)
+	}
+	if c.Command == "" {
+		return Check{}, fmt.Errorf("skillab: %s line %d: check %q has no command", source, num, c.Name)
+	}
+	return c, nil
+}
+
+func validCheckName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '-' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // splitFixture treats an unclosed [ as an error, because reading it as prose would

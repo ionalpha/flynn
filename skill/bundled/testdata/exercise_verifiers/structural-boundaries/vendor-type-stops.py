@@ -28,7 +28,7 @@ def imports_vendor(tree):
 
 
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "acmepay") and not d.startswith("_mut")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__", "acmepay") and not d.startswith("_mut")]
     for name in files:
         p = os.path.normpath(os.path.join(root, name))
         if not name.endswith(".py") or name.startswith("test") or p == "payments.py":
