@@ -70,7 +70,7 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "any-skill"}, exercise, 1, true, abArms{})
+			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{})
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -84,6 +84,31 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 				t.Errorf("the trial did not say which arm it ran:\n%s", out.String())
 			}
 		})
+	}
+}
+
+// The arm with the skill starts with its full text and the arm without it does not.
+// With the skill only installed, both arms saw the same prompt whenever search did not
+// rank it among the skills offered, and the comparison measured nothing.
+func TestTrialLoadsTheSkillOnlyOnTheArmThatHasIt(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const marker = "The skill deletion is loaded for this run."
+	for _, candidate := range []bool{true, false} {
+		var out bytes.Buffer
+		model := llmtest.NewScripted(llmtest.SayText("done"))
+		exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
+		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}); err != nil {
+			t.Fatalf("trial (with skill %v): %v", candidate, err)
+		}
+		reqs := model.Requests()
+		if len(reqs) == 0 {
+			t.Fatalf("trial (with skill %v) made no model call", candidate)
+		}
+		if got := strings.Contains(reqs[0].System, marker); got != candidate {
+			t.Errorf("with skill %v: first request carries the skill: %v", candidate, got)
+		}
 	}
 }
 

@@ -145,10 +145,15 @@ func TestTrialRunsANamedVersionAndScoresEachCheck(t *testing.T) {
 		Checks:    []skillab.Check{{Name: "held-out", Command: "exit 1"}, {Name: "in-scope", Command: "exit 0"}},
 	}
 	var out bytes.Buffer
-	got, err := runTrial(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), nil, harness.Plan{},
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	got, err := runTrial(ctx, &out, model, nil, harness.Plan{},
 		skillab.Set{Skill: "demo"}, exercise, 2, true, abArms{candidate: v})
 	if err != nil {
 		t.Fatalf("trial: %v", err)
+	}
+	// The version's own text is what the run starts with, not the shipped copy's.
+	if reqs := model.Requests(); len(reqs) == 0 || !strings.Contains(reqs[0].System, "candidate body") {
+		t.Errorf("the run did not start with the candidate version's body")
 	}
 	if !got.Passed || got.Checks["held-out"] || !got.Checks["in-scope"] {
 		t.Errorf("outcome = passed %v, checks %v; want passed with held-out failing and in-scope passing", got.Passed, got.Checks)
