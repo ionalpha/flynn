@@ -11,6 +11,7 @@ import (
 
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/governed"
+	"github.com/ionalpha/flynn/internal/selection"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/skill/skilltool"
@@ -89,7 +90,10 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	if n := networkNotice(shell); n != "" && !readOnly {
 		_, _ = fmt.Fprintln(logw, n, "Serve with --read-only to expose no shell.")
 	}
-	kit, err := governed.NewKit(ctx, store.Log(), governed.WithWorkDir(dir), governed.WithSkills(skilltool.New(store.Skills())),
+	// skill_read serves through the data directory's selection, so a skill selection.json
+	// denies is no more readable by a client than by Flynn's own runs.
+	served := selection.Skills(store.Skills(), selectionConfig)
+	kit, err := governed.NewKit(ctx, store.Log(), governed.WithWorkDir(dir), governed.WithSkills(skilltool.New(served)),
 		governed.WithShellPolicy(shell))
 	if err != nil {
 		return err

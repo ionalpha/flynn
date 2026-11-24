@@ -161,11 +161,15 @@ func ledgerOutcomeLines(spec goal.Spec, status goal.Status) []string {
 // mode of it, and all of them record the same session and apply the same governance.
 func (r driveRequest) assembly() assembly {
 	c := r.cfg
+	var grant []string
+	if c.selection != nil {
+		grant = c.selection.grant
+	}
 	return assembly{
 		model: r.model, plan: r.plan, workdir: r.workdir, system: r.system,
 		rstore: r.rstore, jq: r.jq, log: r.log, skills: c.skills, runID: r.resumeID,
 		shell: c.shell, planning: c.planning, proof: c.proof, gates: c.gates,
-		budget: c.budget, fanout: r.fanout, ext: c.extAgent, toolset: c.toolset,
+		budget: c.budget, fanout: r.fanout, ext: c.extAgent, toolset: c.toolset, grant: grant,
 	}
 }
 
@@ -197,11 +201,16 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 // replays the prior conversation first, then tails the rest live.
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
-		return run.Resume(ctx, r.resumeID)
+		if err := run.Resume(ctx, r.resumeID); err != nil {
+			return err
+		}
+		recordSelection(ctx, r.out, r.log, r.cfg.selection, run.ID())
+		return nil
 	}
 	if _, err := run.Submit(ctx, r.goalSpec()); err != nil {
 		return err
 	}
+	recordSelection(ctx, r.out, r.log, r.cfg.selection, run.ID())
 	// The run's stream exists once the goal is submitted, which is the earliest the
 	// decision can be written to it.
 	recordProjectDecision(ctx, r.out, r.log, r.cfg.project, run.ID())
