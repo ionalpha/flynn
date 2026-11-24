@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -572,5 +573,135 @@ func TestREPLRecordsSelectionOncePerRun(t *testing.T) {
 	}
 	if s.runID == first || count(s.runID) != 1 {
 		t.Fatalf("after /clear: run %s (was %s) has %d selection events, want a new run with 1", s.runID, first, count(s.runID))
+	}
+}
+
+// A skill the selection denies cannot be put in the prompt by naming it to load at start,
+// and the same load succeeds without the deny, so the refusal comes from the selection.
+func TestDeniedSkillCannotBeStartLoaded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     selection.Config
+		wantErr bool
+	}{
+		{"no rules", selection.Config{}, false},
+		{"denied", selection.Config{Deny: []string{"secret-skill"}}, true},
+		{"bare", selection.Config{Bare: true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := memStore(t)
+			seedSelectionSkills(ctx, t, st)
+			plan := planFor(ctx, t, st, tc.cfg)
+			model := llmtest.NewScripted(llmtest.SayText("done"))
+			_, err := runLearningMission(ctx, io.Discard, model, harness.Plan{}, nil, t.TempDir(), selectionObjective, "", st, nil, false, nil,
+				withSelection(plan), withLoadedSkills("secret-skill"))
+			if got := errors.Is(err, errSkillNotLoaded); got != tc.wantErr {
+				t.Fatalf("start-load refused = %v, want %v (err = %v)", got, tc.wantErr, err)
+			}
+			if !tc.wantErr && !strings.Contains(model.Requests()[0].System, "SECRETBODY") {
+				t.Fatal("a permitted start-loaded skill is missing from the prompt")
+			}
+		})
+	}
+}
+
+// A command that does not apply the selection refuses its flags, so an operator is never
+// told a skill was withheld from something that can still load it.
+func TestSelectionFlagIsRefusedByACommandThatIgnoresIt(t *testing.T) {
+	for _, cmd := range []string{"serve", "mcp", "review", "runs", "skill"} {
+		t.Run("flynn "+cmd, func(t *testing.T) {
+			var errOut strings.Builder
+			code := routeCommand(cmd, []string{cmd}, invocation{
+				stdout:    &strings.Builder{},
+				stderr:    &errOut,
+				dataDir:   t.TempDir(),
+				selection: []string{"--no-skill"},
+			})
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2 (usage)", code)
+			}
+			if !strings.Contains(errOut.String(), "--no-skill") {
+				t.Fatalf("the operator is not told the selection was not applied: %s", errOut.String())
+			}
+		})
+	}
+	for cmd := range selectionCommands {
+		if _, ok := invocationCommands[cmd]; !ok && cmd != "" {
+			t.Errorf("selectionCommands names %q, which is not a command", cmd)
+		}
+	}
+}
+
+// The flags the router checks are the ones registerSelectionFlags defines, so a new
+// selection flag cannot slip past the refusal.
+func TestSelectionFlagsNamed(t *testing.T) {
+	fs := flag.NewFlagSet("flynn", flag.ContinueOnError)
+	f := registerSelectionFlags(fs)
+	_ = fs.String("model", "", "")
+	var all []string
+	fs.VisitAll(func(fl *flag.Flag) {
+		if fl.Name != "model" {
+			all = append(all, "-"+fl.Name+"="+selectionFlagValue(fl))
+		}
+	})
+	if err := fs.Parse(all); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.named(fs); len(got) != len(all) {
+		t.Fatalf("named = %v, want every selection flag", got)
+	}
+}
+
+// selectionFlagValue is a value fl parses: true for a bool flag, a name otherwise.
+func selectionFlagValue(fl *flag.Flag) string {
+	if b, ok := fl.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+		return "true"
+	}
+	return "x"
+}
+
+// `flynn mcp serve` reads skills through the data directory's selection, so a client
+// cannot read what selection.json denies, and can read it without the deny.
+func TestServeMCPSkillReadHonoursTheSelection(t *testing.T) {
+	mcpTestEnv(t)
+	t.Cleanup(func() { selectionConfig = selection.Config{} })
+	for _, tc := range []struct {
+		name    string
+		cfg     selection.Config
+		wantErr bool
+	}{
+		{"no rules", selection.Config{}, false},
+		{"denied", selection.Config{Deny: []string{"secret-skill"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dataDir := t.TempDir()
+			st, err := openDataStore(ctx, dataDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedSelectionSkills(ctx, t, st)
+			_ = st.Close()
+			selectionConfig = tc.cfg
+
+			in := mcpFrames(
+				`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`,
+				`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+				`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"skill_read","arguments":{"skill":"secret-skill"}}}`,
+			)
+			var out, logw bytes.Buffer
+			if err := serveMCP(ctx, dataDir, t.TempDir(), false, strings.NewReader(in), &out, &logw); err != nil {
+				t.Fatalf("serveMCP: %v", err)
+			}
+			call := mcpResult(t, mcpReplies(t, out.String())[2])
+			raw, _ := json.Marshal(call)
+			if got := call["isError"] == true; got != tc.wantErr {
+				t.Fatalf("skill_read refused = %v, want %v: %s", got, tc.wantErr, raw)
+			}
+			if got := strings.Contains(string(raw), "SECRETBODY"); got == tc.wantErr {
+				t.Fatalf("body returned = %v with refused = %v: %s", got, tc.wantErr, raw)
+			}
+		})
 	}
 }

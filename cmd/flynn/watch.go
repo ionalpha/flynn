@@ -52,6 +52,12 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool, shell gover
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	// Checked once, before watching starts, so a misspelt slug stops the command instead
+	// of failing every marker.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), false, false, false)
+	if err != nil {
+		return err
+	}
 
 	var distiller learn.Distiller
 	if learnEnabled {
@@ -65,7 +71,7 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool, shell gover
 		_, _ = fmt.Fprintf(out, "\n  marker %s\n  %s\n", m.Provenance(), m.Text)
 		objective := watchObjective(m)
 		if _, err := runLearningMission(ctx, out, model, plan, distiller, cwd, objective, "", store, signer, verbose, nil,
-			withShellPolicy(shell), withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
+			withShellPolicy(shell), withSelection(selPlan), withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
 			// Surface the failure and leave the marker in place (unretried until edited),
 			// so a transient run error does not silently swallow the request.
 			_, _ = fmt.Fprintf(out, "  marker run failed: %v\n", err)

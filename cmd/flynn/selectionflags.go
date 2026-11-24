@@ -41,6 +41,23 @@ func registerSelectionFlags(fs *flag.FlagSet) selectionFlags {
 	return f
 }
 
+// selectionCommands are the commands that apply the selection to the runs they start. The
+// router refuses a selection flag on any other, because ignoring it would let an operator
+// believe a skill was withheld from a run that could still load it.
+var selectionCommands = map[string]bool{"": true, "goal": true, "resume": true, "watch": true}
+
+// named is the selection flags the command line set, spelled as the operator typed them.
+func (f selectionFlags) named(fs *flag.FlagSet) []string {
+	var names []string
+	fs.Visit(func(fl *flag.Flag) {
+		switch fl.Name {
+		case "bare", "skills", "no-skill", "tools", "no-tools":
+			names = append(names, "--"+fl.Name)
+		}
+	})
+	return names
+}
+
 // resolve turns the parsed flags and the data directory's selection file into one
 // [selection.Config]. A flag the command line states replaces the file's; the deny lists
 // are joined.
@@ -159,6 +176,19 @@ func grantFor(cfg selection.Config, fanout, proof bool) []string {
 		grant = append(grant, evidence.VerifyItemAction)
 	}
 	return grant
+}
+
+// recallFrom is the skill store a run offers from and the memory store it recalls and
+// digests from. A bare plan returns no memory store, which is what tells the caller to
+// leave the digest out; a nil plan is the default selection and changes neither.
+func (p *selectionPlan) recallFrom(skills state.SkillStore, memories state.MemoryStore) (state.SkillStore, state.MemoryStore) {
+	if p == nil {
+		return skills, memories
+	}
+	if p.cfg.Bare {
+		return p.skills, nil
+	}
+	return p.skills, memories
 }
 
 // withSelection hands a resolved selection to a run.

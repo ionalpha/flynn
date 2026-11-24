@@ -282,6 +282,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		shell:        shellFlags.policy(*dataDir),
+		selection:    selFlags.named(fs),
 	})
 }
 
@@ -368,6 +369,9 @@ type invocation struct {
 	// shell is built from the flags once, so every entry point that drives a shell passes
 	// the same policy and none restates the defaults.
 	shell governed.ShellPolicy
+	// selection is the skill and tool selection flags the command line set, so the router
+	// can refuse them on a command that would ignore them.
+	selection []string
 }
 
 // exit maps an ok-or-error outcome to 0, or to 1 with the message on stderr.
@@ -429,6 +433,10 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	name := cmd
 	if target, ok := commandAliases[cmd]; ok {
 		name = target
+	}
+	if len(inv.selection) > 0 && !selectionCommands[name] {
+		_, _ = fmt.Fprintf(inv.stderr, "usage: %s chooses what a run is offered, so it applies to an interactive session, `flynn goal`, `flynn resume` and `flynn watch`, and not to flynn %s\n", inv.selection[0], cmd)
+		return 2
 	}
 	if fn, ok := invocationCommands[name]; ok {
 		return fn(inv, rest)
