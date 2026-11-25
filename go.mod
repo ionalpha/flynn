@@ -6,11 +6,11 @@ toolchain go1.27.3
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/aymanbagabas/go-udiff v0.4.1
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/aymanbagabas/go-udiff v0.4.2
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/google/go-cmp v0.7.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0
