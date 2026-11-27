@@ -113,6 +113,10 @@ type replSession struct {
 	project         projectctx.Decision
 	projectRecorded bool
 
+	// selection is the session's skill and tool selection, checked once at the start. It is
+	// recorded with the project decision, once per run.
+	selection *selectionPlan
+
 	recalled []string
 	// skillset serves skill bodies for every turn and accumulates what the session
 	// read across all of them. One set for the session, not one per turn: the outcome

@@ -13,7 +13,9 @@ import (
 )
 
 // driveConfig holds a run's optional levers. Its zero value (no budget, the strictest
-// shell policy) opens nothing, so leaving an option out is always safe.
+// shell policy) opens nothing. Leaving out the shell policy is safe and still wrong: on
+// Windows the strictest policy refuses every command, so every entry point passes
+// [withShellPolicy], and a test in this package fails one that does not.
 type driveConfig struct {
 	budget   budgetpkg.Limits
 	shell    governed.ShellPolicy
@@ -42,6 +44,9 @@ type driveConfig struct {
 	// project is the trust decision for the repository's instruction files. The zero value
 	// means none found, and adds, taints and records nothing.
 	project projectctx.Decision
+	// selection is the skills the run is offered and the tools it is granted. Nil leaves
+	// both at their defaults and adds nothing to the record.
+	selection *selectionPlan
 }
 
 type driveOption func(*driveConfig)

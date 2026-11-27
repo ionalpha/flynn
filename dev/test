@@ -30,6 +30,39 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # default (a single, cache-eligible run); set COUNT=2 to double-run. CI scopes
 # a COUNT=2 pass to a subset rather than paying it on the whole -race suite.
 count=${COUNT:+-count=$COUNT}
+# SHARD=<k>/<n> runs only the kth of n slices of the module's packages, so n CI
+# jobs can share a suite that is too slow for one runner. go test runs packages
+# in parallel on the runner's cores, so a package's wall time is mostly waiting
+# for a core behind every other package: on a three-core macOS runner cmd/flynn
+# took 321s for about 80s of its own work, against Go's 600s package timeout.
+# Packages are dealt heaviest first to the lightest slice, weighed by the bytes
+# of their test files. Their test count would be a worse guess: cmd/flynn has
+# ten times the tests of localmodel and a similar cost.
+if [ -n "${SHARD:-}" ]; then
+	k=${SHARD%%/*}
+	n=${SHARD##*/}
+	if ! printf '%s' "$SHARD" | grep -qE '^[1-9][0-9]*/[1-9][0-9]*$' || [ "$k" -gt "$n" ]; then
+		echo "dev/test: SHARD must be <k>/<n> with 1 <= k <= n; got $SHARD" >&2
+		exit 2
+	fi
+	if [ "$#" -ne 0 ]; then
+		echo "dev/test: SHARD picks the packages itself; pass no package arguments with it" >&2
+		exit 2
+	fi
+	pkgs=$(go list -f '{{.ImportPath}} {{.Dir}}' ./... | while read -r pkg dir; do
+		printf '%s %s\n' "$(cat "$dir"/*_test.go 2>/dev/null | wc -c | tr -d ' ')" "$pkg"
+	done | sort -k1,1nr -k2,2 | awk -v k="$k" -v n="$n" '
+		{
+			s = 1
+			for (i = 2; i <= n; i++) if (load[i] < load[s]) s = i
+			load[s] += $1
+			if (s == k) print $2
+		}')
+	echo "dev/test: shard $k of $n: $(printf '%s\n' "$pkgs" | awk 'NF { c++ } END { print c + 0 }') of $(go list ./... | wc -l | tr -d ' ') packages"
+	if [ -z "$pkgs" ]; then exit 0; fi
+	# shellcheck disable=SC2086  # one argument per package is the point.
+	set -- $pkgs
+fi
 if [ "$#" -eq 0 ]; then set -- ./...; fi
 # -race turns on checkptr, which validates every unsafe.Pointer conversion at run
 # time. modernc.org/sqlite is C transpiled to Go, so nearly every instruction in it
