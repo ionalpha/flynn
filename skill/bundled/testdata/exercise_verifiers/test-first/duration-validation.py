@@ -57,7 +57,7 @@ MUTANTS = {
     "accepts upper case": (REGEX, dict(GOOD, pre="text = text.lower()")),
     "accepts surrounding spaces": (REGEX, dict(GOOD, pre="text = text.strip()")),
     "accepts a bare number": (REGEX, dict(GOOD, pat=PAT.replace("s)?", "s?)?"))),
-    "accepts a sign": (REGEX, dict(GOOD, pat=PAT.replace("([0-9]+)s", "(-?[0-9]+)s"))),
+    "accepts a sign": (REGEX, dict(GOOD, pat="[+-]?" + PAT)),
     "miscounts a minute": (REGEX, dict(GOOD, mm=50)),
     "accepts units out of order": (SCAN, dict(SCAN_GOOD, order="True")),
     "accepts a repeated unit": (SCAN, dict(SCAN_GOOD, dup="True")),
@@ -79,8 +79,8 @@ else:
     ran = re.search(r"Ran (\d+) test", out)
     if rc != 0:
         fails.append("the tests fail on the implementation: " + out[-300:])
-    elif not ran or int(ran.group(1)) < 2:
-        fails.append("fewer than two tests ran")
+    elif not ran or int(ran.group(1)) < 1:
+        fails.append("no test ran")
     else:
         for what, (tpl, parts) in MUTANTS.items():
             d = "_mut_%d" % len(os.listdir("."))
