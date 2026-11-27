@@ -114,7 +114,7 @@ func main() {
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
 		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as `provider:model`")
-		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
+		dataDir     = fs.String("data-dir", defaultDataDir(), "`dir`ectory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
 		noBundled   = fs.Bool("no-bundled-skills", false, "run without the bundled skills, removing them from the store")
 		projFiles   = fs.String("project-files", "", "load AGENTS.md and CLAUDE.md: `mode` is ask (default), trust or skip")

@@ -57,7 +57,7 @@ Maintenance:
 Global flags:
   --model <provider:model>  model as provider:model (default
                             "anthropic:claude-opus-5-5")
-  --data-dir <string>       directory for the durable state database
+  --data-dir <dir>          directory for the durable state database
   -v, --verbose             show tool arguments, outputs and per-turn detail
   --version                 print the version and exit
   -h, --help                show help for flynn or for a command
