@@ -8,4 +8,10 @@ this repository's own schedulers.
 before `now` (an ISO date) and returns how many it removed.
 
 Deprecated names stay for at least one major version and warn with the version that
-removes them. Run the tests with `python3 -m unittest discover`.
+removes them. The warning names the replacement too.
+
+A public function is named for what it does to the data: `purge_*` destroys rows, `archive_*`
+moves them to the matching `*_archive` table. When a change of behaviour would make a name
+untrue, publish the function under a true name and deprecate the old one.
+
+Run the tests with `python3 -m unittest discover`.
