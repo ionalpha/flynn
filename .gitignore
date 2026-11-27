@@ -23,6 +23,13 @@ results.sarif
 .env
 *.local
 
+# Logs from local dev runs (./dev/check > .devcheck.log and similar). A run on a
+# developer machine can resolve that machine's real credentials, so its output is
+# never committed. Log files kept as test fixtures stay tracked.
+.devcheck.log
+*.log
+!**/testdata/**/*.log
+
 # Local tooling config
 CLAUDE.md
 .claude/
