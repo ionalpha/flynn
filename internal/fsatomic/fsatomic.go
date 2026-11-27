@@ -44,6 +44,32 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 // encoder) need not buffer them first. An error from fn abandons the write and is
 // returned unwrapped, so the caller's error vocabulary survives.
 func WriteStream(path string, perm os.FileMode, fn func(io.Writer) error) error {
+	return commit(path, perm, fn, func(tmp, dst string) (bool, error) {
+		return true, os.Rename(tmp, dst)
+	})
+}
+
+// CreateFile writes data to path at perm only if nothing is there yet. A reader sees
+// either no file or all of it, and of several callers racing to create path exactly
+// one succeeds; the others get an error matching [fs.ErrExist] and path keeps the
+// winner's contents. The temp file is hard-linked into place, which fails rather than
+// replaces when the name is taken, so a filesystem without hard links refuses every
+// call with an error that does not match [fs.ErrExist].
+func CreateFile(path string, data []byte, perm os.FileMode) error {
+	return commit(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}, func(tmp, dst string) (bool, error) {
+		// The link leaves the temp name behind; the deferred cleanup removes it.
+		return false, os.Link(tmp, dst)
+	})
+}
+
+// commit stages fn's output in a synced sibling temp file and has place put it at
+// path. place reports whether it consumed the temp file; one that did not leaves it
+// for removal. The directory is synced after a successful place so the new name is
+// durable.
+func commit(path string, perm os.FileMode, fn func(io.Writer) error, place func(tmp, dst string) (bool, error)) error {
 	dir := filepath.Dir(path)
 	tmp, err := createTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -69,9 +95,12 @@ func WriteStream(path string, perm os.FileMode, fn func(io.Writer) error) error 
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	consumed, err := place(tmpName, path)
+	if err != nil {
 		return err
 	}
-	tmpName = "" // committed; nothing to clean up
+	if consumed {
+		tmpName = ""
+	}
 	return syncDir(dir)
 }
