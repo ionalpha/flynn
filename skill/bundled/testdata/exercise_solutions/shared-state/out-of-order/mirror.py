@@ -10,7 +10,7 @@ class Mirror:
 def on_order_updated(mirror, api, event):
     """Handle {"order": id, "status": s, "version": n}, sent when an order changes.
 
-    The event only says that the order changed: it can be old, repeated or wrong,
+    The event only says that the order changed: it can be old or repeated,
     and the one that mattered may never arrive. The service holds the current
     order, so read it, and keep the row unless what was read is newer. An outage
     raises ApiDown for the queue to redeliver and leaves the row as it is.

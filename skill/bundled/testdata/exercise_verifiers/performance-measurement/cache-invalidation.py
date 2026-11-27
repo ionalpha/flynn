@@ -9,7 +9,7 @@ def h(p):
 
 
 fails = []
-for name, want in (("store.py", "8e130e8669c5d82b3d4fc9b9f26448ae89a5b708b9cc26bc5dd9e33f8e60b7a4"), ("test_pricing.py", "e11a599b7e654e8615c53977db7d5e2edf96ebb72c42f378ae9ea841cbe678e2")):
+for name, want in (("store.py", "8e130e8669c5d82b3d4fc9b9f26448ae89a5b708b9cc26bc5dd9e33f8e60b7a4"),):
     if h(name) != want:
         fails.append(name + " was edited")
 

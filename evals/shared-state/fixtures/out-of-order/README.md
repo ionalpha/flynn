@@ -9,3 +9,5 @@ order, `{"status": ..., "version": n}`, where the version rises with every chang
 Reads can come from a replica that is a moment behind.
 
 Run the tests with `python3 -m unittest discover -q`.
+
+A bug fix here ships with a test that fails on the code before the fix.
