@@ -64,7 +64,7 @@ jobs:
           fi
 
   test:
-    name: Test (${{ matrix.os }} / Go ${{ matrix.go }})
+    name: Test (${{ matrix.os }} / Go ${{ matrix.go }}${{ matrix.os == 'macos-latest' && format(' / shard {0} of 3', matrix.shard) || '' }})
     needs: setup
     runs-on: ${{ matrix.os }}
     strategy:
@@ -75,6 +75,21 @@ jobs:
         # line stays at 1.26, the floor for an importer: it makes the Green Tea GC
         # the default, adds crypto/hpke, and satisfies modernc.org/sqlite.
         go: ["1.27"]
+        # macOS runs the suite as three jobs, each a third of the packages (see SHARD
+        # in dev/test). Its runner has three cores, and with every package at once
+        # cmd/flynn spent most of its time waiting for one, close to Go's 10 minute
+        # package timeout. The other platforms run one job; their shard 2 and 3 are
+        # excluded below.
+        shard: [1, 2, 3]
+        exclude:
+          - os: ubuntu-latest
+            shard: 2
+          - os: ubuntu-latest
+            shard: 3
+          - os: windows-latest
+            shard: 2
+          - os: windows-latest
+            shard: 3
     steps:
       # Actions are pinned to a full commit SHA; Dependabot (.github/dependabot.yml) bumps them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -155,6 +170,7 @@ jobs:
         # platform-only code is about 140 lines, too little to pay for a slower leg.
         env:
           COVER: ${{ matrix.os != 'macos-latest' && '-covermode=atomic -coverpkg=./... -coverprofile=coverage.out' || '' }}
+          SHARD: ${{ matrix.os == 'macos-latest' && format('{0}/3', matrix.shard) || '' }}
         run: ./dev/test
 
       # Coverage is only a number until something fails when it drops. The floor

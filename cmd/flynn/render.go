@@ -57,11 +57,20 @@ func renderEvent(w io.Writer, ev session.Event, verbose bool) {
 		_, _ = fmt.Fprintf(w, "\nstalled: %s\n", ev.Err)
 	case session.KindProjectContext:
 		_, _ = fmt.Fprintf(w, "  %s\n", projectContextLine(ev))
+	case session.KindSelection:
+		_, _ = fmt.Fprintf(w, "  %s\n", selectionLine(ev))
 	default:
 		// Governance and record events (action.*, record.*) share the run's stream but
 		// are not shown in the flat text transcript this renderer draws; the interactive
 		// session renders them inline and in its panels.
 	}
+}
+
+// selectionLine is the transcript line for a run's skill and tool selection. It is the
+// readout of what the run was offered, drawn from the recorded event so a live run and
+// a later `flynn inspect` say the same thing.
+func selectionLine(ev session.Event) string {
+	return "selection: " + ev.Reason + "; " + strings.ReplaceAll(ev.Text, "\n", "; ")
 }
 
 // projectContextLine is the transcript line for a project-file trust decision: whether
