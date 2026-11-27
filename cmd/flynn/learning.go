@@ -60,8 +60,16 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// The digest pushes what this install knows whether or not the objective mentions it,
 	// which a pull-only store cannot do. Recall pulls what the objective's words match,
 	// plus skills to offer, and records what was surfaced so the run is told what it saw.
-	system := governed.WithWake(ctx, mem, defaultSystemPrompt, out)
-	block, recalled, _ := recallContext(ctx, skills, memories, objective)
+	//
+	// A bare run gets none of that: no digest, no recalled memory. Skills are offered from
+	// the selection's view of the store, so a denied skill is neither named in the prompt
+	// nor readable through skill_read; learning below keeps the unfiltered store.
+	offered, recallMemory := cfg.selection.recallFrom(skills, memories)
+	system := defaultSystemPrompt
+	if recallMemory != nil {
+		system = governed.WithWake(ctx, mem, defaultSystemPrompt, out)
+	}
+	block, recalled, _ := recallContext(ctx, offered, recallMemory, objective)
 	if block != "" {
 		system += "\n\n" + block
 	}
@@ -71,9 +79,10 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	//
 	// Loading a skill also surfaces what past runs learned from it and counts that as a
 	// use of those memories: the pull side of the digest's push.
-	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
+	skillset := skilltool.New(offered, skilltool.WithNotes(mem.SkillNotes()))
 	// A loaded skill comes from the toolset the run will use, so a caller's override
-	// (a skill version with its own resources) is what the prompt carries.
+	// (a skill version with its own resources) is what the prompt carries, and a skill
+	// the selection denies cannot be loaded at start either.
 	loader := skillset
 	if cfg.skills != nil {
 		loader = cfg.skills
