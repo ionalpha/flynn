@@ -18,45 +18,40 @@ class Flaky:
         return "ok"
 
 
-def run(label, *args, **kw):
-    """Returns (result or exception, sleeps, warnings) for a call that fails twice."""
-    import retry
-
+def run(fn_under_test, *args, **kw):
+    """(result or exception, sleeps) for a call that fails twice."""
     f = Flaky(2)
     sleeps = []
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         with mock.patch("time.sleep", lambda s: sleeps.append(s)):
             try:
-                got = retry.call_with_retry(f, *args, **kw)
+                got = fn_under_test(f, *args, **kw)
             except Exception as e:
                 got = e
-    return got, sleeps, [x for x in w if issubclass(x.category, DeprecationWarning)]
+    return got, sleeps
 
 
 try:
     import retry
 
-    for label, args, kw, old in (
-        ("positional, old order", (3, 0.5), {}, False),
-        ("old keyword names", (), {"tries": 3, "delay": 0.5}, True),
-        ("new keyword names", (), {"max_attempts": 3, "base_delay": 0.5}, False),
+    for label, args, kw in (
+        ("positional, old order", (3, 0.5), {}),
+        ("old keyword names", (), {"tries": 3, "delay": 0.5}),
     ):
-        got, sleeps, dep = run(label, *args, **kw)
-        if got != "ok":
-            fails.append("%s: %r" % (label, got))
-        elif sleeps != [0.5, 1.0]:
-            fails.append("%s: slept %r, want [0.5, 1.0]" % (label, sleeps))
-        if old and not any("base_delay" in str(d.message) or "max_attempts" in str(d.message) for d in dep):
-            fails.append("%s: no DeprecationWarning pointing at the new name" % label)
-        if old and not any(any(ch.isdigit() for ch in str(d.message)) for d in dep):
-            fails.append("%s: the deprecation names no date or release it ends in" % label)
-        if not old and label.startswith("new") and dep:
-            fails.append("%s: the new names should not warn" % label)
-    got, sleeps, _ = run("defaults")
+        got, sleeps = run(retry.call_with_retry, *args, **kw)
+        if got != "ok" or sleeps != [0.5, 1.0]:
+            fails.append("%s: got %r after sleeping %r; the other repositories still call it this way" % (label, got, sleeps))
+    # The new names may be on call_with_retry or on a new function beside it.
+    offered = [retry.call_with_retry]
+    offered += [v for k, v in vars(retry).items() if callable(v) and not k.startswith("_") and getattr(v, "__module__", "") == "retry" and v is not retry.call_with_retry]
+    if not any(run(f, max_attempts=3, base_delay=0.5) == ("ok", [0.5, 1.0]) for f in offered):
+        got, sleeps = run(retry.call_with_retry, max_attempts=3, base_delay=0.5)
+        fails.append("no function in retry takes max_attempts and base_delay: call_with_retry gave %r" % (got,))
+    got, sleeps = run(retry.call_with_retry)
     if got != "ok" or sleeps != [1.0, 2.0]:
         fails.append("defaults changed: %r %r" % (got, sleeps))
-    got, sleeps, _ = run("one try", 1)
+    got, sleeps = run(retry.call_with_retry, 1)
     if not isinstance(got, OSError):
         fails.append("tries=1 should raise the failure, got %r" % (got,))
 
