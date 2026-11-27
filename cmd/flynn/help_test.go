@@ -13,7 +13,7 @@ func TestRenderHelpListsCommandsAndShortcuts(t *testing.T) {
 	var buf bytes.Buffer
 	renderHelp(&buf)
 	out := buf.String()
-	for _, want := range []string{"/model", "/models", "/seal", "/fork", "shortcuts:", "ctrl+d", "FLYNN_TUI_ALTSCREEN"} {
+	for _, want := range []string{"/model", "/models", "/seal", "/fork", "Shortcuts", "ctrl+d", "FLYNN_TUI_ALTSCREEN"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
@@ -28,7 +28,7 @@ func TestShellHelpShowsListing(t *testing.T) {
 	waitIdle(t, host)
 
 	tr := ui.transcript()
-	if !strings.Contains(tr, "commands:") || !strings.Contains(tr, "/model") {
+	if !strings.Contains(tr, "Commands") || !strings.Contains(tr, "/model") {
 		t.Fatalf("/help did not print the listing to the scrollback:\n%s", tr)
 	}
 	if strings.Contains(tr, "TURN_SHOULD_NOT_RUN") {
@@ -44,7 +44,7 @@ func TestShellQuestionMarkShowsHelp(t *testing.T) {
 	waitIdle(t, host)
 
 	tr := ui.transcript()
-	if !strings.Contains(tr, "commands:") {
+	if !strings.Contains(tr, "Commands") {
 		t.Fatalf("? did not show the help listing:\n%s", tr)
 	}
 	if strings.Contains(tr, "TURN_SHOULD_NOT_RUN") {

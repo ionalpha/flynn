@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/session"
@@ -74,8 +75,10 @@ func (p *govPanel) Render(width int) []string {
 	}
 
 	var rows []string
-	add := func(role theme.Role, text string) {
-		rows = append(rows, p.th.Render(role, screen.Truncate(text, width)))
+	// Hosts, objectives and results come from the model and its tools, so every row
+	// is made inert.
+	add := func(role theme.Role, s string) {
+		rows = append(rows, p.th.Render(role, screen.Truncate(text.Inert(s), width)))
 	}
 
 	add(theme.Heading, "governance  (ctrl+o to close)")

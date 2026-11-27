@@ -184,9 +184,9 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 		}
 		if _, err := s.runTurn(ctx, line, nil, sigCh); err != nil {
 			if errors.Is(err, context.Canceled) {
-				_, _ = fmt.Fprintln(s.out, "  (turn cancelled)")
+				s.plainBlock(blockCancelled, "turn cancelled")
 			} else {
-				_, _ = fmt.Fprintf(s.out, "  error: %v\n", err)
+				s.plainBlock(blockError, "error: "+err.Error())
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/internal/tui/input"
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/internal/tui/theme"
@@ -194,8 +195,9 @@ func (w *approvalPrompt) Render(width int) []string {
 	}
 
 	var rows []string
-	add := func(role theme.Role, text string) {
-		rows = append(rows, w.th.Render(role, screen.Truncate(text, width)))
+	// The action and host come from the model, so every row is made inert.
+	add := func(role theme.Role, s string) {
+		rows = append(rows, w.th.Render(role, screen.Truncate(text.Inert(s), width)))
 	}
 
 	add(theme.Heading, "approval required  (enter allow · esc deny · tab switches field)")
