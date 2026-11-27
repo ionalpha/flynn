@@ -79,7 +79,10 @@ and both are right about a different half. The resolution:
 - Ignore the fields you do not read. Never reject a payload for carrying something
   extra, and never fail a parse on an unrecognised member.
 - Handle an unrecognised case rather than crashing on it. A status you have never
-  seen should route to a default branch that says so, not to an assertion.
+  seen should route to a default branch that says so, not to an assertion, and its
+  value should pass through as received. Where the producer says it may add fields
+  or values, accept both in the same change: a parser fixed for new fields that
+  still rejects a new status fails at the next addition.
 - Preserve what you pass on. If a payload travels through you, dropping the members
   you did not understand silently breaks the two systems either side of you.
 
@@ -162,9 +165,14 @@ single implementation, mark the old one deprecated with a date and a pointer to 
 replacement, and leave it working. Removing it later is a separate change with its
 own evidence standard, and the `deletion` skill owns that step.
 
-This section is reasoning rather than a measured finding, and it is worth saying so.
-Nothing published measures how often an agent treats the callers it can see as all of
-them. The rule follows from what a checkout is.
+Add at the smallest unit that changed. A renamed parameter or field goes on the same
+function or payload, which then accepts both spellings and refuses a call that gives
+both with different values. A second function under a new name leaves every caller of
+the old one unable to use the new spelling, so add one only for what the old
+signature cannot express. Positional parameters cannot be reordered additively: keep
+the order, or make the new names keyword or named arguments, and say which you did.
+The deprecation warning itself names the removal release or date. Where the project
+sets none, propose one and say it is a proposal.
 
 ## Design the first version so the second is additive
 

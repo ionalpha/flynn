@@ -169,6 +169,12 @@ granted rather than something it inherits by being unrecognised. Preserve that
 default. An error that reaches the router unclassified is not a candidate for a retry
 loop.
 
+Making a call safe to repeat changes nothing else about how it fails. Keep the
+attempt limit unless asked to change it. An error you do not retry, and the last
+error once the limit is spent, reach the caller as they did before. Collecting
+failures into the result and carrying on turns a raised error into a success that no
+existing caller will check.
+
 To make the unknown case safe, give the operation an **idempotency key** derived from
 the request, not generated per attempt, and have the receiving side record the key
 with the result before answering. A repeat then returns the stored result rather than
@@ -201,6 +207,12 @@ must re-read the live resource (`reconcile/manager.go`), and why the manager
 re-enqueues every live resource on a `DefaultResync` interval: the bus is at-most-once,
 so a lost hint has to be recovered by resync rather than turning into work that never
 happens.
+
+Take nothing but the identity. Merging the notification's payload into what you read,
+or falling back to the payload when the read fails, restores the bug exactly when
+things are going wrong. A failed read means the state is unknown: keep what you have
+and let the failure surface so the event is delivered again. Where the read itself can
+be stale, compare the version you read with the version you hold.
 
 The cost is real and worth paying knowingly. You do more reads, and you must make the
 handler safe to run when nothing changed.

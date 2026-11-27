@@ -108,8 +108,7 @@ the one a diff shows.
 The result is a boundary that reads as excellent and does nothing. A package defines
 its port, the contract is small, the direction is right, a host could implement it.
 Nobody has, so the capability it fronts silently does not exist, and the code path
-that needs it either stalls or does nothing at all without saying so. This is the
-failure of every ports-and-adapters guide in circulation, none of which mentions it.
+that needs it either stalls or does nothing at all without saying so.
 
 So every port carries one of three verdicts, written where the port is defined:
 
@@ -156,6 +155,11 @@ the other implements it. This is correct when one side is the rule and the other
 mechanism serving it, and wrong when they are peers, because then it produces an
 interface nobody else will ever implement.
 
+Then ask who installs the implementation. Wiring done as a side effect of importing
+some module works only in processes that happen to import it, and every other one
+fails at the call. Wire it somewhere every entry point passes through, and run the
+callers that never import the implementing side. If you cannot, use the first fix.
+
 Extract the shared piece into its own package, last, and only when it is a coherent
 thing you can name without saying "common", "shared" or "util". A package named for
 its role in the cycle rather than for what it is becomes the next cycle.
@@ -198,8 +202,14 @@ undone by reverting one commit.
 
 ## Prove the change did not erode what it landed in
 
-Structural damage does not fail a test suite, which is why it accumulates. Three
-things are worth checking on the way out, and all three are cheap:
+Structural damage does not fail a test suite, which is why it accumulates. Four
+things are worth checking on the way out, and all four are cheap:
+
+Everything that borrows what you changed still runs. When what a function returns
+gains a field, column or case, search for every file that imports it and run each
+one, including those the request never mentioned. A module named for one feature is
+often reused by another, and a suite that covers only the first stays green while the
+second crashes.
 
 The rule you relied on still runs. If you placed code according to a boundary, run
 the check that enforces it and see it pass, and if there was no check, say that the

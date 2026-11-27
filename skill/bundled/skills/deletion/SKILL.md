@@ -86,24 +86,31 @@ thing, add the rule that fails the pattern it replaced: a lint rule, an import r
 test that asserts the count. The removal and the rule land together or the removal is
 temporary.
 
+A rule that reads the tree reads only the project's own source. Name the source
+directories, or skip hidden, virtual environment, vendored, generated and build
+output, or it fails on files nobody here wrote.
+
 ## Never remove the check that stands between you and green
 
 A failing test, an assertion, a type constraint, a validation, an error path, a lint
 rule: none of these may be removed, weakened, skipped, marked expected-to-fail, or
 have its input adjusted, as a route to a passing run. This holds when the check looks
 wrong, when it looks flaky, and when removing it would be defensible on other grounds,
-because at the moment a run is failing you are the least reliable judge of that.
-
-This refusal is not a matter of manners. Measured on tasks built so that passing
-requires contradicting the specification, a frontier model took the shortcut on around
-three quarters of them, and telling a model not to helped one model a great deal and
-another barely at all. What worked on every model was keeping the tests out of reach.
-So treat your own reasoning here as the weak control it has been shown to be, and
-treat the rule as absolute rather than as a factor to weigh.
+because at the moment a run is failing you are the least reliable judge of that. The
+rule is absolute rather than a factor to weigh.
 
 Three moves belong to the same family and are refused for the same reason: special
 casing the input the test uses, hardcoding the value it expects, and moving the
 assertion to something weaker that still passes.
+
+Supplying what the check is missing is the same temptation from the other side. A
+missing key, rate, fixture, expected output or reference value belongs to whoever
+produces that file. Before adding or editing one, find where the file comes from: the
+readme beside it, its header, the job or script that writes it. A value from memory or
+a plausible default turns the run green and puts an unconfirmed fact into production,
+so where you have no source for it, leave the failure and report what is missing and
+who supplies it. Code that falls back to a default for a missing value does the same
+thing at run time: fail and name the key.
 
 What to do instead: if the check is genuinely wrong, say so, leave it failing, and
 report what it asserts against what the specification says. A wrong check is a
@@ -136,6 +143,10 @@ it still works, give the warning a date, and remove it after that date rather th
 before. Where the callers are inside this repository, retire them first and delete
 last, so the change never leaves the program in a state where something calls what is
 gone.
+
+The warning text names the replacement and the release or date the old thing goes.
+Take that from the changelog, version file or support policy. Where they set none,
+propose one and say it is a proposal. "A future release" is not a date.
 
 Where you cannot find out who calls it, say that instead of guessing. An unknown
 caller count is a fact about the situation, and it is the reason the deprecation

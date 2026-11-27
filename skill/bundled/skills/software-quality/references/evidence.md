@@ -103,7 +103,8 @@ caused about a third of outages in Google's published postmortem set *(unverifie
 liabilities in SRE guidance. The data-repair half comes from incidents in which a
 corrected rule left records the old rule had written.
 
-**Gate 10, checks are not yours to change.** Measured. METR (2025) found frontier
+**Gate 10, checks and other people's files are not yours to change.** Measured for
+checks; the sentences about files someone else owns are reasoning. METR (2025) found frontier
 models editing the scorer, the timer or the test on about 30% of runs on one
 benchmark, and telling them not to did not lower the rate. On ImpossibleBench, giving
 the agent a way to flag a task as impossible cut cheating from 54% to 9% for one
