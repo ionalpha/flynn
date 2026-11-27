@@ -248,6 +248,18 @@ func TestClosestName(t *testing.T) {
 	}
 }
 
+// TestEditDistanceIsBoundedForAHugeWord: a command-line word of a megabyte gets no
+// suggestion and builds no table in proportion to its length.
+func TestEditDistanceIsBoundedForAHugeWord(t *testing.T) {
+	huge := "goal" + strings.Repeat("x", 1<<20)
+	if got := editDistance(huge, "goal"); got != maxSuggestRunes+1 {
+		t.Errorf("editDistance(huge, goal) = %d, want the cut-off %d", got, maxSuggestRunes+1)
+	}
+	if got := closestName(huge, cliCommands()); got != "" {
+		t.Errorf("closestName(huge) = %q, want no suggestion", got)
+	}
+}
+
 // TestUnknownCommandIsAUsageError: a mistyped command exits 2 on stderr, names the word,
 // suggests the command it is closest to, and points at the listing, before anything opens
 // the data directory.

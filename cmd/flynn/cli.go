@@ -577,11 +577,20 @@ func closestName(word string, cmds []cliCommand) string {
 	return best
 }
 
+// maxSuggestRunes bounds the words [editDistance] compares. The word comes from the
+// command line, and the table is the product of the two lengths, so an argument of
+// megabytes would otherwise allocate in proportion; no command name comes near it.
+const maxSuggestRunes = 64
+
 // editDistance is the optimal string alignment distance: insertions, deletions,
 // substitutions and the swap of two adjacent letters each cost one, since a swap is
-// the commonest typo.
+// the commonest typo. A word over [maxSuggestRunes] is no near miss of any name, so
+// it gets a distance past every limit without the table being built.
 func editDistance(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
+	if len(ra) > maxSuggestRunes || len(rb) > maxSuggestRunes {
+		return maxSuggestRunes + 1
+	}
 	d := make([][]int, len(ra)+1)
 	for i := range d {
 		d[i] = make([]int, len(rb)+1)
