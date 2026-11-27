@@ -36,6 +36,7 @@ to them (`make test` == `./dev/test`); use the scripts directly to pass args.
 ./dev/fix       # dev/fmt plus golangci-lint --fix (applies linter autofixes too)
 ./dev/vuln      # govulncheck
 ./dev/apidiff   # API compatibility against the last release tag (needs the tags)
+./dev/prcheck   # before the first push: branch commits, and the PR title and body
 ./dev/pr        # open a PR against main using the template (needs gh)
 ```
 
@@ -82,8 +83,11 @@ Run `./dev/check` until it is green before opening a PR.
   with DCO (`git commit -s`). Wrap the message body at 72 columns. The `commit-msg`
   hook in `.githooks/` (armed by `./dev/check`) checks the subject before git creates
   the commit, and CI checks the pull request title by the same rule
-  (`dev/commitcheck`). Nothing checks commits that already exist, so the rule never
-  asks for a pushed commit to be rewritten.
+  (`dev/commitcheck`). Nothing in CI checks commits that already exist, so the rule
+  never asks for a pushed commit to be rewritten. Before the first push,
+  `./dev/prcheck --title "<title>" --body-file <file>` checks every commit on the
+  branch (subject, sign-off, 72 columns, no tracker ids) and the title and body
+  by the rules `pr-body.yml` applies, since it is the same script.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
   you. GitHub renders a newline inside a paragraph as a line break, so a body wrapped
   like a commit message displays as ragged short lines. Lists, tables and fenced code

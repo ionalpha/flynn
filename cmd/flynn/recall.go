@@ -35,7 +35,11 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		return "", nil, nil
 	}
 	sk := skillrecall.Recall(ctx, skills, objective, recallLimit)
-	mem := rankMemory(terms, gatherMemory(ctx, memories, terms))
+	// A nil store is a bare run: skills may still be offered, memory is not recalled.
+	var mem []state.MemoryItem
+	if memories != nil {
+		mem = rankMemory(terms, gatherMemory(ctx, memories, terms))
+	}
 	if len(sk) == 0 && len(mem) == 0 {
 		return "", nil, nil
 	}

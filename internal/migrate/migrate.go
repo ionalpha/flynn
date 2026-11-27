@@ -92,6 +92,22 @@ func Run(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	return nil
 }
 
+// Digest identifies the migration set in fsys by every file's name and SHA-256, so two
+// sets with the same digest produce the same schema. It fails where [Run] would fail
+// to load the set.
+func Digest(fsys fs.FS) (string, error) {
+	migs, err := load(fsys)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, m := range migs {
+		// A hash.Hash never returns an error from Write.
+		_, _ = h.Write([]byte(m.name + "\x00" + m.checksum + "\x00"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 type migration struct {
 	version  int
 	name     string
