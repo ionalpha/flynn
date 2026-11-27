@@ -61,7 +61,7 @@ func TestRunReportsAStoreItCannotOpen(t *testing.T) {
 		{"inspect", "some-run"},
 		{"get", "instances"},
 		{"describe", "instances", "one"},
-		{"diff", "instances", "one"},
+		{"diff", "instances", "one", "two"},
 		{"watch"},
 		{"deps", "check"},
 		{"integrations", "show", "httpbin"},

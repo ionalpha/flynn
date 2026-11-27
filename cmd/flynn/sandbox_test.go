@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -133,13 +134,15 @@ func TestSandboxCommandRejectsUsageErrors(t *testing.T) {
 }
 
 func TestSandboxCommandIsRegistered(t *testing.T) {
-	if _, ok := dataDirCommands["sandbox"]; !ok {
+	if c := findCLI("sandbox"); c == nil || c.local == nil {
 		t.Fatal("flynn sandbox is not registered")
 	}
-	var usage bytes.Buffer
-	printUsage(&usage)
-	if !strings.Contains(usage.String(), "flynn sandbox check") {
-		t.Fatal("the usage text does not list flynn sandbox check")
+	var page bytes.Buffer
+	if code := showHelp(&page, io.Discard, rootFlagSet(t), []string{"sandbox"}); code != 0 {
+		t.Fatalf("flynn help sandbox exited %d", code)
+	}
+	if !strings.Contains(page.String(), "flynn sandbox check") {
+		t.Fatal("the sandbox page does not list flynn sandbox check")
 	}
 }
 

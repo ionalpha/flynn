@@ -1,0 +1,66 @@
+Flynn is an autonomous software agent whose runs are governed and recorded.
+
+Usage:
+  flynn [flags] <command> [args]
+  flynn [flags]
+
+With no command, flynn starts an interactive session in a terminal.
+
+Start and drive work:
+  goal          Drive an objective to completion in the current directory
+  resume        Continue a parked or interrupted run
+  steer         Redirect a run that is still going
+  kill          Stop a run that is still going
+  watch         Run each ai! or ai? comment in the working tree as a turn
+  review        Review a pull request and submit a verdict
+
+Inspect runs and the record:
+  runs          List past runs with their id, phase and objective
+  inspect       Replay a past run's recorded events
+  status        Show the live overview, or one run's phase and progress
+  ps            List instances with their live, heartbeat-aware state
+  get           List the resources of a kind
+  describe      Show one resource's fields and recent change history
+  diff          Show the fields that differ between two resources
+  spine         Verify or export a run's signed record
+
+Models:
+  models        Browse the model catalog and manage local models
+  init          Set up a model on this machine and make it the default
+
+Integrations and extensions:
+  auth          Store and manage API keys and integration credentials
+  integrations  List integrations, show one, or call an operation
+  extensions    Link, list, call or remove a local extension
+  deps          List and install the external tools integrations need
+  playbook      List the playbooks or run one
+  mcp           Serve the toolset to an MCP client over stdio
+
+Memory and skills:
+  memory        Review, promote and forget what this install remembers
+  skill         List and show skills, or measure whether one helps
+  regrade       Re-grade learned skills against the working directory
+
+Run as a service:
+  serve         Answer chat messages and expose the monitor API
+  deploy        Deploy through a hosting extension and track the service
+  services      List or remove the managed services
+
+Maintenance:
+  version       Print the running build, or list the releases
+  upgrade       Replace this binary with a newer verified release
+  notices       Show the security advisories and notices for this build
+  db            Print, back up or reset the state database
+  sandbox       Check whether this host allows the sandbox
+  help          Show help for flynn, a command or the flags
+
+Global flags:
+  --model <provider:model>  model as provider:model (default
+                            "anthropic:claude-opus-5-5")
+  --data-dir <string>       directory for the durable state database
+  -v, --verbose             show tool arguments, outputs and per-turn detail
+  --version                 print the version and exit
+  -h, --help                show help for flynn or for a command
+
+Run 'flynn help <command>' for a command's usage, flags and examples.
+Run 'flynn help flags' for every flag, and 'flynn help goal' for goal specs.

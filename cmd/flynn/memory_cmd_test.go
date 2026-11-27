@@ -13,9 +13,14 @@ import (
 )
 
 func TestDispatchMemoryUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {}, {"list"}, {"consolidated"}} {
+	for _, args := range [][]string{nil, {}} {
 		if err := dispatchMemory(args, "", t.TempDir(), &bytes.Buffer{}); !errors.Is(err, errMemoryUsage) {
 			t.Errorf("dispatchMemory(%q) = %v, want the usage error", args, err)
+		}
+	}
+	for _, word := range []string{"list", "consolidated"} {
+		if err := dispatchMemory([]string{word}, "", t.TempDir(), &bytes.Buffer{}); !errors.Is(err, unknownCommand("memory", word)) {
+			t.Errorf("dispatchMemory(%q) = %v, want the unknown-command error", word, err)
 		}
 	}
 	// The subcommand that exists reaches the sweep, which then fails on its own
@@ -202,7 +207,7 @@ func TestRunConsolidationReportsItsOwnFailures(t *testing.T) {
 // subcommand nobody has written, or one missing its argument, is a usage error
 // rather than a crash.
 func TestRunMemoryCommandRouting(t *testing.T) {
-	if got := runCLI(t, "memory"); got.code != 2 || !strings.Contains(got.stderr, "consolidate [--max-calls n]") {
+	if got := runCLI(t, "memory"); got.code != 2 || !strings.Contains(got.stderr, "usage: flynn memory") {
 		t.Errorf("flynn memory = %+v, want the usage line and exit 2", got)
 	}
 	if got := runCLI(t, "memory", "forget"); got.code != 2 {
