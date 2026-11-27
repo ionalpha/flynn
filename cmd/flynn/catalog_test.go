@@ -239,7 +239,7 @@ func TestRunIntegrationsDispatch(t *testing.T) {
 		t.Fatalf("error = %v, want a usage error", err)
 	}
 	err := runIntegrations([]string{"nope"}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error = %v, want an unknown-subcommand error", err)
 	}
 	// The listing subcommand runs the whole durable path.

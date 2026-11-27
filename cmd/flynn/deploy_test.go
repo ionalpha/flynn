@@ -574,7 +574,7 @@ func TestServicesRemove(t *testing.T) {
 // before it opens the durable store.
 func TestRunServicesUnknownSubcommand(t *testing.T) {
 	err := runServices([]string{"nope"}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error = %v, want an unknown-subcommand error", err)
 	}
 }

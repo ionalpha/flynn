@@ -16,12 +16,8 @@ import (
 // aside so the next run recreates a fresh one, which is the recovery for a database left
 // by an incompatible build; backup copies it without disturbing it.
 func runDB(args []string, dataDir string) error {
-	const usage = "usage: flynn db <path|backup|reset>\n" +
-		"  path    print the data directory and database path\n" +
-		"  backup  copy the database into a new backup directory\n" +
-		"  reset   move the database aside (backed up) so the next run recreates it"
 	if len(args) < 1 {
-		return errors.New(usage)
+		return usageErr("db")
 	}
 	if dataDir == "" || dataDir == ":memory:" {
 		return errors.New("db: the data directory is in-memory; there is no database file")
@@ -51,7 +47,7 @@ func runDB(args []string, dataDir string) error {
 		_, _ = fmt.Fprintf(os.Stdout, "database backed up to %s\na fresh one is created on the next run\n", dir)
 		return nil
 	default:
-		return errors.New(usage)
+		return unknownCommand("db", args[0])
 	}
 }
 

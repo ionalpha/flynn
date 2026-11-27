@@ -116,7 +116,7 @@ func TestSkillCommandRefusals(t *testing.T) {
 		wantErr  string
 	}{
 		{"no subcommand", []string{"skill"}, 2, "usage: flynn skill"},
-		{"unknown subcommand", []string{"skill", "frobnicate"}, 2, "usage: flynn skill"},
+		{"unknown subcommand", []string{"skill", "frobnicate"}, 2, `flynn skill: unknown command "frobnicate"`},
 		{"ls with an argument", []string{"skill", "ls", "extra"}, 2, "usage: flynn skill"},
 		{"show without a skill", []string{"skill", "show"}, 2, "usage: flynn skill"},
 		{"show an unknown skill", []string{"skill", "show", "no-such-skill"}, 1, "flynn skill ls"},
@@ -192,12 +192,12 @@ func TestSkillLsWithNothingToList(t *testing.T) {
 	}
 }
 
-// TestSkillABIsRoutedThroughTheSkillCommand: ab keeps its own usage and its own errors
-// under the new router.
+// TestSkillABIsRoutedThroughTheSkillCommand: ab keeps its own usage, reported as a usage
+// error that points at its page.
 func TestSkillABIsRoutedThroughTheSkillCommand(t *testing.T) {
 	got := runCLIIn(t, t.TempDir(), "skill", "ab")
-	if got.code != 1 || !strings.Contains(got.stderr, "usage: flynn skill ab") || !strings.Contains(got.stderr, "--max-cost") {
-		t.Fatalf("exit %d, stderr %q, want 1 and the ab usage", got.code, got.stderr)
+	if got.code != 2 || !strings.Contains(got.stderr, "usage: flynn skill ab") || !strings.Contains(got.stderr, "flynn help skill ab") {
+		t.Fatalf("exit %d, stderr %q, want 2 and the ab usage", got.code, got.stderr)
 	}
 }
 
