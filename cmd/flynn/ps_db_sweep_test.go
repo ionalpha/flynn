@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,14 +92,15 @@ func TestRunDBPathAndBackup(t *testing.T) {
 	}
 }
 
-// TestRunDBRefusesWhatItCannotAct checks the two refusals: an unknown or missing subcommand
-// prints the usage, and an in-memory data directory has no database file to act on.
+// TestRunDBRefusesWhatItCannotAct checks the refusals: a missing subcommand prints the
+// usage, an unknown one is named, and an in-memory data directory has no database file to
+// act on.
 func TestRunDBRefusesWhatItCannotAct(t *testing.T) {
-	for _, args := range [][]string{nil, {"vacuum"}} {
-		err := runDB(args, t.TempDir())
-		if err == nil || !strings.Contains(err.Error(), "usage: flynn db") {
-			t.Errorf("runDB(%v) = %v, want the usage", args, err)
-		}
+	if err := runDB(nil, t.TempDir()); err == nil || !strings.Contains(err.Error(), "usage: flynn db") {
+		t.Errorf("runDB() = %v, want the usage", err)
+	}
+	if err := runDB([]string{"vacuum"}, t.TempDir()); !errors.Is(err, unknownCommand("db", "vacuum")) {
+		t.Errorf("runDB(vacuum) = %v, want the unknown-command error", err)
 	}
 	if err := runDB([]string{"path"}, ":memory:"); err == nil || !strings.Contains(err.Error(), "in-memory") {
 		t.Errorf("an in-memory data dir has no database file, got %v", err)

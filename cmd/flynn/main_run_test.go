@@ -61,24 +61,24 @@ func TestRunVersionFlag(t *testing.T) {
 	}
 }
 
-// TestRunHelp: `flynn help` writes the command summary to stdout and succeeds, while an
-// unrecognised subcommand writes the same summary to stderr and exits 2. The stream is
-// the difference: help was asked for, a typo was not.
+// TestRunHelp: `flynn help` writes the command listing to stdout and succeeds, while an
+// unrecognised command is named on stderr with a pointer to the listing and exits 2. The
+// stream is the difference: help was asked for, a typo was not.
 func TestRunHelp(t *testing.T) {
 	help := runCLI(t, "help")
 	if help.code != 0 {
 		t.Fatalf("help exit = %d, want 0", help.code)
 	}
-	if !strings.Contains(help.stdout, "flynn goal") {
-		t.Fatalf("help did not print the usage to stdout:\n%s", help.stdout)
+	if !strings.Contains(help.stdout, "\n  goal ") {
+		t.Fatalf("help did not print the listing to stdout:\n%s", help.stdout)
 	}
 
 	typo := runCLI(t, "nosuchcommand")
 	if typo.code != 2 {
-		t.Fatalf("unknown subcommand exit = %d, want 2", typo.code)
+		t.Fatalf("unknown command exit = %d, want 2", typo.code)
 	}
-	if !strings.Contains(typo.stderr, "flynn goal") {
-		t.Fatalf("an unknown subcommand did not print the usage to stderr:\n%s", typo.stderr)
+	if !strings.Contains(typo.stderr, `unknown command "nosuchcommand"`) || !strings.Contains(typo.stderr, "Run 'flynn help'") {
+		t.Fatalf("an unknown command was not named with a pointer to the listing:\n%s", typo.stderr)
 	}
 	if typo.stdout != "" {
 		t.Fatalf("a usage error must not write to stdout, got %q", typo.stdout)
@@ -98,8 +98,8 @@ func TestRunUsageErrorsExitTwo(t *testing.T) {
 		{"inspect with no run id", []string{"inspect"}, "usage: flynn inspect"},
 		{"replay with no run id", []string{"replay"}, "usage: flynn inspect"},
 		{"resume with no run id", []string{"resume"}, "usage: flynn resume"},
-		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill ls | flynn skill show"},
-		{"skill with an unknown subcommand", []string{"skill", "nope"}, "usage: flynn skill ls | flynn skill show"},
+		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill"},
+		{"skill with an unknown subcommand", []string{"skill", "nope"}, `flynn skill: unknown command "nope"`},
 		{"goal with a goal spec that does not exist", []string{"--goal-spec", "no-such-spec.json", "goal"}, "error:"},
 	}
 	for _, tc := range cases {
@@ -128,7 +128,7 @@ func TestRunBadFlagIsAUsageError(t *testing.T) {
 // without --profile, so it is refused up front rather than running a soak that watches
 // nothing.
 func TestRunLeakWatchNeedsABundle(t *testing.T) {
-	got := runCLI(t, "--leak-watch", "help")
+	got := runCLI(t, "--leak-watch", "version")
 	if got.code != 2 {
 		t.Fatalf("exit = %d, want 2", got.code)
 	}
@@ -142,7 +142,7 @@ func TestRunLeakWatchNeedsABundle(t *testing.T) {
 // command's own exit code is unaffected by the profiler.
 func TestRunProfileBundleIsWritten(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
-	got := runCLI(t, "--profile", dir, "help")
+	got := runCLI(t, "--profile", dir, "version")
 	if got.code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", got.code, got.stderr)
 	}
@@ -155,8 +155,8 @@ func TestRunProfileBundleIsWritten(t *testing.T) {
 	}
 }
 
-// TestRunDataDirCommandDispatch: the table-driven subcommands share one path, so a
-// success returns 0 and a failure reports the error on stderr and returns 1.
+// TestRunDataDirCommandDispatch: the registry's data-directory commands share one path,
+// so a success returns 0 and a mistyped subcommand is a usage error that exits 2.
 func TestRunDataDirCommandDispatch(t *testing.T) {
 	ok := runCLI(t, "version")
 	if ok.code != 0 {
@@ -164,10 +164,10 @@ func TestRunDataDirCommandDispatch(t *testing.T) {
 	}
 
 	bad := runCLI(t, "extensions", "nosuchsubcommand")
-	if bad.code != 1 {
-		t.Fatalf("a failing subcommand exit = %d, want 1", bad.code)
+	if bad.code != 2 {
+		t.Fatalf("a mistyped subcommand exit = %d, want 2", bad.code)
 	}
-	if !strings.Contains(bad.stderr, "error:") || !strings.Contains(bad.stderr, "unknown subcommand") {
+	if !strings.Contains(bad.stderr, `flynn extensions: unknown command "nosuchsubcommand"`) {
 		t.Fatalf("stderr = %q, want the subcommand's error", bad.stderr)
 	}
 }
@@ -383,31 +383,15 @@ func TestDefaultDataDirIsNamedForTheBuild(t *testing.T) {
 	}
 }
 
-// TestPrintUsageListsEverySubcommand: the summary is the only discovery surface for the
-// command set, so a subcommand that dispatches must appear in it. The subcommands are
-// read from the two dispatch tables, so a new entry is checked without being listed here.
-func TestPrintUsageListsEverySubcommand(t *testing.T) {
+// TestTopHelpListsEveryCommand: the top-level page is the only discovery surface for the
+// command set, so every command the registry routes must appear on it.
+func TestTopHelpListsEveryCommand(t *testing.T) {
 	var buf bytes.Buffer
-	printUsage(&buf)
+	writeTopHelp(&buf, rootFlagSet(t))
 	out := buf.String()
-	var names []string
-	for name := range invocationCommands {
-		names = append(names, name)
-	}
-	for name := range dataDirCommands {
-		names = append(names, name)
-	}
-	for _, name := range names {
-		if name == "help" {
-			continue // the summary is what help prints
-		}
-		if !strings.Contains(out, "flynn "+name) {
-			t.Errorf("the usage summary does not mention `flynn %s`", name)
-		}
-	}
-	for alias, target := range commandAliases {
-		if invocationCommands[target] == nil && dataDirCommands[target] == nil {
-			t.Errorf("alias %q names %q, which nothing dispatches", alias, target)
+	for _, c := range cliCommands() {
+		if !strings.Contains(out, "\n  "+c.name+" ") {
+			t.Errorf("the top-level page does not list %q", c.name)
 		}
 	}
 }

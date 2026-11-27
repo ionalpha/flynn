@@ -40,7 +40,7 @@ func dispatchSteer(args []string, dataDir string) error {
 // steerRun is dispatchSteer with the destination named, so a test reads what it prints.
 func steerRun(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 2 {
-		return errors.New(`usage: flynn steer <run-id> "<instruction>"`)
+		return usageErr("steer")
 	}
 	instruction := strings.TrimSpace(strings.Join(args[1:], " "))
 	if instruction == "" {

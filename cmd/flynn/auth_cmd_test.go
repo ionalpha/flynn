@@ -251,7 +251,7 @@ func TestRunAuthDispatch(t *testing.T) {
 		t.Fatal("expected bare `auth` to print its usage as an error")
 	}
 	err := runAuth([]string{"nosuchverb"}, dataDir)
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error = %v, want an unknown-subcommand refusal", err)
 	}
 
