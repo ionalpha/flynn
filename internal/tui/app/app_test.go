@@ -392,3 +392,26 @@ func TestCaptureOwnsInputAheadOfComposer(t *testing.T) {
 		t.Fatalf("submit after clearing capture = %q, want hi", got)
 	}
 }
+
+// TestStatusFuncRebuildsForWidth proves a status set with SetStatusFunc is built
+// for the current width at each paint, so a resize gets a line made to fit rather
+// than the old one cut short.
+func TestStatusFuncRebuildsForWidth(t *testing.T) {
+	s := start(t, nil)
+	s.app.SetStatusFunc(func(width int) string {
+		if width < 40 {
+			return "narrow-status"
+		}
+		return "wide-status"
+	})
+	s.awaitOutput(t, "wide-status")
+	before := len(s.out.String())
+	s.app.Resize(30, 8)
+	eventually(t, func() bool {
+		return strings.Contains(s.out.String()[before:], "narrow-status")
+	}, func() {
+		t.Fatalf("status not rebuilt for the new width; tail:\n%q", s.out.String()[before:])
+	})
+	s.app.SetStatus("fixed")
+	s.awaitOutput(t, "fixed")
+}
