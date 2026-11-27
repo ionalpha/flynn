@@ -355,3 +355,67 @@ func TestSubcommandPagesListTheirParent(t *testing.T) {
 		t.Errorf("flynn help flags: exit %d, stdout:\n%s", flags.code, flags.stdout)
 	}
 }
+
+// TestHelpRenderingFallbacks covers the cases the registry does not exercise today: a
+// writer that is a file but no terminal, a left column too wide to share a line, a
+// summary that wraps on a narrow page, and lookups of names that do not exist.
+func TestHelpRenderingFallbacks(t *testing.T) {
+	f, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if got := helpWidth(f); got != 80 {
+		t.Errorf("helpWidth(a plain file) = %d, want 80", got)
+	}
+
+	p := &page{width: 40}
+	p.rows([][2]string{{"--short", "fits"}, {"--" + strings.Repeat("x", 40), "starts below"}})
+	if !strings.Contains(p.b.String(), strings.Repeat("x", 40)+"\n") || !strings.Contains(p.b.String(), "starts below") {
+		t.Errorf("a left column past 30 columns does not put its description on the next line:\n%s", p.b.String())
+	}
+
+	p = &page{width: 40}
+	p.commandRows([][2]string{{"goal", "a summary long enough that a forty column page has to wrap it"}})
+	if lines := strings.Split(strings.TrimSpace(p.b.String()), "\n"); len(lines) < 2 {
+		t.Errorf("a long summary on a narrow page did not wrap:\n%s", p.b.String())
+	}
+
+	if got := rootFlagRow(flag.NewFlagSet("empty", flag.ContinueOnError), "nope"); got != [2]string{"--nope", ""} {
+		t.Errorf("rootFlagRow(an undefined flag) = %q", got)
+	}
+	if got := synopsis("no-such-command"); got != "" {
+		t.Errorf("synopsis(an unknown path) = %q, want empty", got)
+	}
+	if got := suggestCommand("no-such-command", "x"); got != "" {
+		t.Errorf("suggestCommand under an unknown path = %q, want empty", got)
+	}
+}
+
+// TestRootRefusalsAreUsageErrors: a bad root flag value, a bad goal flag, and no command
+// with no terminal to start a session in each exit 2 and say what to read.
+func TestRootRefusalsAreUsageErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"bad project-files", []string{"--project-files", "sometimes", "version"}, "flynn help flags"},
+		{"bad goal flag", []string{"goal", "--no-such-flag", "x"}, "flynn help goal"},
+	}
+	if !stdinIsTerminal() {
+		cases = append(cases, struct {
+			name string
+			args []string
+			want string
+		}{"no command and no terminal", nil, "Start and drive work:"})
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := runCLIIn(t, t.TempDir(), c.args...)
+			if got.code != 2 || !strings.Contains(got.stderr, c.want) {
+				t.Fatalf("exit %d, stderr %q, want 2 and %q", got.code, got.stderr, c.want)
+			}
+		})
+	}
+}
