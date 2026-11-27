@@ -65,6 +65,10 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), extAgent != nil, false, false)
+	if err != nil {
+		return err
+	}
 	reg, err := governed.Registry()
 	if err != nil {
 		return err
@@ -107,6 +111,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		verbose:      verbose,
 		cwd:          cwd,
 		store:        store,
+		selection:    &selPlan,
 		reg:          reg,
 		signer:       signer,
 		dataDir:      dataDir,
@@ -143,7 +148,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// because the question is asked on it. An external agent CLI reads its own project
 	// files, so only a native session decides.
 	if extAgent == nil {
-		s.project = projectDecision(cwd, dataDir)
+		s.project = projectDecisionFor(cwd, dataDir)
 	}
 	if s.started {
 		// A resumed run carries no opening turn to build its instructions on, so it gets
