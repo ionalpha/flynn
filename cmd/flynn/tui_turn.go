@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/llm"
@@ -115,7 +116,7 @@ func (h *sessionHost) start(t queuedTurn) {
 	h.rendered = false
 	h.live.set("thinking...")
 	h.pokeLive()
-	h.s.grantStatus = h.onGrant
+	h.s.grantStatus = h.onGrant("thinking...")
 
 	h.turns.Add(1)
 	go func() {
@@ -139,23 +140,26 @@ func (h *sessionHost) start(t queuedTurn) {
 }
 
 // onGrant shows a long sandbox grant on the live line, and returns the line to
-// thinking when it ends, so a first turn in a large tree reads as progress.
-func (h *sessionHost) onGrant(p sandbox.GrantProgress) {
-	if p.Done {
-		h.live.set("thinking...")
-	} else {
-		h.live.set(grantStatusText(p) + " (Esc cancels)")
+// after when it ends, so a first turn in a large tree reads as progress.
+func (h *sessionHost) onGrant(after string) func(sandbox.GrantProgress) {
+	return func(p sandbox.GrantProgress) {
+		if p.Done {
+			h.live.set(after)
+		} else {
+			h.live.set(grantStatusText(p, "Esc cancels"))
+		}
+		h.pokeLive()
 	}
-	h.pokeLive()
 }
 
-// grantStatusText names the grant under way.
-func grantStatusText(p sandbox.GrantProgress) string {
-	text := "granting the sandbox write access to " + p.Dir
-	if p.Files > 0 {
-		text += fmt.Sprintf(": %d files", p.Files)
+// grantStatusText names the grant under way. The directory comes last because
+// the live line is cut at the terminal's width, and a long path must not push the
+// elapsed time or the way to cancel off the screen.
+func grantStatusText(p sandbox.GrantProgress, cancel string) string {
+	if waited := p.Elapsed.Round(time.Second); waited > 0 {
+		cancel = waited.String() + ", " + cancel
 	}
-	return text + "..."
+	return "granting sandbox access (" + cancel + "): " + shortPath(p.Dir)
 }
 
 // startShell runs one composer shell command as the current turn: echoed
@@ -196,7 +200,7 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 		h.note(blockError, "shell mode unavailable: "+msg)
 		return
 	}
-	res, err := h.run.Exec(sandbox.WithGrantProgress(ctx, h.onGrant), sandbox.Command{Line: cmdLine})
+	res, err := h.run.Exec(sandbox.WithGrantProgress(ctx, h.onGrant("")), sandbox.Command{Line: cmdLine})
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		h.note(blockCancelled, "command cancelled")

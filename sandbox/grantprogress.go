@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // GrantProgress reports a directory access grant that has to rewrite the access
@@ -12,8 +13,8 @@ import (
 type GrantProgress struct {
 	// Dir is the directory being granted.
 	Dir string
-	// Files is how many objects under Dir have been rewritten so far.
-	Files int64
+	// Elapsed is how long this launch has waited for the grant.
+	Elapsed time.Duration
 	// Done is set on the last report, whether the grant finished, failed or was
 	// cancelled.
 	Done bool
@@ -22,8 +23,10 @@ type GrantProgress struct {
 type grantProgressKey struct{}
 
 // WithGrantProgress returns a context that makes launches under it call fn while
-// they grant a directory. fn runs on the launching goroutine's thread, so it must
-// return quickly. Cancelling the context stops the grant.
+// they wait on a grant that has run long enough to look like a hang. A grant that
+// finishes sooner is not reported. fn runs on the launching goroutine, so it must
+// return quickly. Cancelling the context ends the launch's wait; Windows cannot
+// interrupt the rewrite, which carries on while the process lives.
 func WithGrantProgress(ctx context.Context, fn func(GrantProgress)) context.Context {
 	return context.WithValue(ctx, grantProgressKey{}, fn)
 }

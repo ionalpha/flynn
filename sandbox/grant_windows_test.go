@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,11 +27,11 @@ type grantRecorder struct {
 func (r *grantRecorder) install(t *testing.T) {
 	t.Helper()
 	prev := setTreeDACL
-	setTreeDACL = func(ctx context.Context, dir string, acl *windows.ACL) error {
+	setTreeDACL = func(dir string, acl *windows.ACL) error {
 		r.mu.Lock()
 		r.dirs = append(r.dirs, dir)
 		r.mu.Unlock()
-		return prev(ctx, dir, acl)
+		return prev(dir, acl)
 	}
 	t.Cleanup(func() { setTreeDACL = prev })
 
@@ -84,6 +85,42 @@ func sidFor(t *testing.T, l *Local) *windows.SID {
 		t.Fatal(err)
 	}
 	return sid
+}
+
+// waitForGrants blocks until no grant is running on dir.
+func waitForGrants(dir string) {
+	slot := grantSlot(dir)
+	<-slot
+	slot <- struct{}{}
+}
+
+// holdGrants makes every propagating write wait until release is called, standing
+// in for a walk over a large tree. Install it after the recorder.
+func holdGrants(t *testing.T, dir string) (started <-chan struct{}, release func()) {
+	t.Helper()
+	entered := make(chan struct{}, 16)
+	gate := make(chan struct{})
+	release = sync.OnceFunc(func() { close(gate) })
+	prev := setTreeDACL
+	setTreeDACL = func(dir string, acl *windows.ACL) error {
+		entered <- struct{}{}
+		<-gate
+		return prev(dir, acl)
+	}
+	t.Cleanup(func() {
+		release()
+		// A write still running must end before the seam and the tree go away.
+		waitForGrants(dir)
+		setTreeDACL = prev
+	})
+	return entered, release
+}
+
+func reportEvery(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := grantReportEvery
+	grantReportEvery = d
+	t.Cleanup(func() { grantReportEvery = prev })
 }
 
 // TestEnsureGrantSkipsAGrantAlreadyInPlace covers the ways a grant is repeated:
@@ -194,56 +231,106 @@ func TestGrantEntryRemovedIsRedone(t *testing.T) {
 	}
 }
 
-// TestCancelledGrantReturnsAndIsNotTrusted cancels a grant after it has rewritten
-// some files. It must return the cancellation, stop short of the tree's end, and
-// leave no marker, so the next launch completes it.
-func TestCancelledGrantReturnsAndIsNotTrusted(t *testing.T) {
+// TestExtraDirectoryRevokedByAnotherLocalIsGrantedAgain covers two Locals on one
+// root, which share an identity: closing one revokes the extra directories.
+func TestExtraDirectoryRevokedByAnotherLocalIsGrantedAgain(t *testing.T) {
 	var rec grantRecorder
 	rec.install(t)
-	prevEvery := grantProgressEvery
-	grantProgressEvery = 1
-	t.Cleanup(func() { grantProgressEvery = prevEvery })
-
 	l := newGrantLocal(t, t.TempDir())
-	const files = 3000
-	makeTree(t, l.root, files)
+	extra := t.TempDir()
+	sid := sidFor(t, l)
+	ctx := context.Background()
+	if err := l.grantDir(ctx, extra, sid); err != nil {
+		t.Fatal(err)
+	}
+	if err := revokeDirAccess(extra, sid); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.grantDir(ctx, extra, sid); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.count(extra); got != 2 {
+		t.Fatalf("a revoked extra directory was written %d times, want 2", got)
+	}
+}
+
+// TestCancelledGrantReturnsAndTheNextLaunchWaits cancels a grant whose write has
+// not returned. The caller must get the cancellation with no marker left, and a
+// later launch must wait for the running write rather than start another.
+func TestCancelledGrantReturnsAndTheNextLaunchWaits(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	l := newGrantLocal(t, t.TempDir())
+	started, release := holdGrants(t, l.root)
 	sid := sidFor(t, l)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var seen int64
-	ctx = WithGrantProgress(ctx, func(p GrantProgress) {
-		seen = max(seen, p.Files)
-		if p.Files >= 20 {
-			cancel()
+	result := make(chan error, 1)
+	go func() { result <- l.grantDir(ctx, l.root, sid) }()
+	<-started
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a cancelled grant returned %v, want context.Canceled", err)
 		}
-	})
-	err := l.grantDir(ctx, l.root, sid)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("a cancelled grant returned %v, want context.Canceled", err)
-	}
-	if seen >= files {
-		t.Fatalf("the walk visited %d objects after cancellation, want it to stop early", seen)
+	case <-time.After(10 * time.Second):
+		t.Fatal("a cancelled grant waited for the write")
 	}
 	if grantMarked(l.root, sid, fileAllAccess) {
-		t.Fatal("a cancelled grant left a completion marker")
+		t.Fatal("an unfinished grant left a completion marker")
 	}
 
-	if err := newGrantLocal(t, l.root).grantDir(context.Background(), l.root, sid); err != nil {
+	next := newGrantLocal(t, l.root)
+	short, stop := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer stop()
+	if err := next.grantDir(short, l.root, sid); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a launch during a running grant returned %v, want it to wait", err)
+	}
+
+	release()
+	if err := next.grantDir(context.Background(), l.root, sid); err != nil {
 		t.Fatal(err)
 	}
-	if got := rec.count(l.root); got != 2 {
-		t.Fatalf("the grant after a cancelled one propagated %d times in total, want 2", got)
+	if got := rec.count(l.root); got != 1 {
+		t.Fatalf("a cancelled grant that finished was written %d times, want 1", got)
 	}
 }
 
-// TestPreCancelledGrantReturnsPromptly checks a context cancelled before the
-// grant starts is honoured without a marker.
-func TestPreCancelledGrantReturnsPromptly(t *testing.T) {
+// TestFailedGrantIsNotTrusted covers a write that fails: the error reaches the
+// caller and no marker from an earlier grant survives it.
+func TestFailedGrantIsNotTrusted(t *testing.T) {
 	var rec grantRecorder
 	rec.install(t)
 	l := newGrantLocal(t, t.TempDir())
-	makeTree(t, l.root, 100)
+	sid := sidFor(t, l)
+	ctx := context.Background()
+	if err := l.grantDir(ctx, l.root, sid); err != nil {
+		t.Fatal(err)
+	}
+	if err := revokeDirAccess(l.root, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	refused := errors.New("refused")
+	prev := setTreeDACL
+	setTreeDACL = func(string, *windows.ACL) error { return refused }
+	t.Cleanup(func() { setTreeDACL = prev })
+	if err := newGrantLocal(t, l.root).grantDir(ctx, l.root, sid); !errors.Is(err, refused) {
+		t.Fatalf("a failed grant returned %v", err)
+	}
+	if grantMarked(l.root, sid, fileAllAccess) {
+		t.Fatal("a failed grant kept the marker of the earlier one")
+	}
+}
+
+// TestPreCancelledGrantWritesNothing checks a context cancelled before the grant
+// starts is honoured.
+func TestPreCancelledGrantWritesNothing(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	l := newGrantLocal(t, t.TempDir())
 	sid := sidFor(t, l)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -251,34 +338,100 @@ func TestPreCancelledGrantReturnsPromptly(t *testing.T) {
 	if err := l.grantDir(ctx, l.root, sid); !errors.Is(err, context.Canceled) {
 		t.Fatalf("grant under a cancelled context returned %v, want context.Canceled", err)
 	}
-	if grantMarked(l.root, sid, fileAllAccess) {
-		t.Fatal("a cancelled grant left a completion marker")
+	waitForGrants(l.root)
+	if got := rec.count(l.root); got != 0 {
+		t.Fatalf("a pre-cancelled grant wrote %d times", got)
 	}
 }
 
-// TestGrantReportsProgress checks the status a host shows instead of a hang.
-func TestGrantReportsProgress(t *testing.T) {
+// TestGrantKeepsAProtectedSubdirectoryProtected guards the choice of call that
+// setTreeDACL documents: a directory with inheritance turned off must not receive
+// the sandbox identity.
+func TestGrantKeepsAProtectedSubdirectoryProtected(t *testing.T) {
 	var rec grantRecorder
 	rec.install(t)
-	prevEvery := grantProgressEvery
-	grantProgressEvery = 1
-	t.Cleanup(func() { grantProgressEvery = prevEvery })
-
 	l := newGrantLocal(t, t.TempDir())
-	makeTree(t, l.root, 100)
+	closed := filepath.Join(l.root, "closed")
+	if err := os.Mkdir(closed, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	own, err := readDACL(closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(closed, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, own, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := sddl(t, closed)
+
+	if err := l.grantDir(context.Background(), l.root, sidFor(t, l)); err != nil {
+		t.Fatal(err)
+	}
+	if after := sddl(t, closed); after != before {
+		t.Fatalf("the grant rewrote a protected subdirectory:\n before %s\n after  %s", before, after)
+	}
+}
+
+func sddl(t *testing.T, dir string) string {
+	t.Helper()
+	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sd.String()
+}
+
+// TestLongGrantIsReported checks the status a host shows instead of a hang, and
+// that it is closed off when the grant ends.
+func TestLongGrantIsReported(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	reportEvery(t, time.Millisecond)
+	l := newGrantLocal(t, t.TempDir())
+	_, release := holdGrants(t, l.root)
+
 	var reports []GrantProgress
-	ctx := WithGrantProgress(context.Background(), func(p GrantProgress) { reports = append(reports, p) })
+	ctx := WithGrantProgress(context.Background(), func(p GrantProgress) {
+		reports = append(reports, p)
+		if len(reports) == 3 {
+			release()
+		}
+	})
 	if err := l.grantDir(ctx, l.root, sidFor(t, l)); err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) < 3 {
-		t.Fatalf("got %d reports, want a start, progress and an end: %+v", len(reports), reports)
+	if len(reports) < 4 {
+		t.Fatalf("got %d reports, want several while waiting and an end: %+v", len(reports), reports)
 	}
-	if first := reports[0]; first.Dir != l.root || first.Files != 0 || first.Done {
-		t.Fatalf("first report = %+v, want the directory with no files yet", first)
+	if first := reports[0]; first.Dir != l.root || first.Elapsed <= 0 || first.Done {
+		t.Fatalf("first report = %+v", first)
 	}
 	if last := reports[len(reports)-1]; !last.Done {
 		t.Fatalf("last report = %+v, want Done", last)
+	}
+}
+
+// TestQuickGrantIsNotReported keeps a small directory from flashing a status.
+func TestQuickGrantIsNotReported(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	reportEvery(t, time.Hour)
+	l := newGrantLocal(t, t.TempDir())
+	ctx := WithGrantProgress(context.Background(), func(p GrantProgress) { t.Errorf("reported %+v", p) })
+	if err := l.grantDir(ctx, l.root, sidFor(t, l)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCancelledLaunchDoesNotFallBack keeps a user's cancellation from being read
+// as the host refusing confinement.
+func TestCancelledLaunchDoesNotFallBack(t *testing.T) {
+	l := newGrantLocal(t, t.TempDir(), WithBestEffortConfinement(func(err error) { t.Errorf("fell back: %v", err) }))
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
+		if l.fallBack(fmt.Errorf("sandbox: grant working directory: %w", err), true) {
+			t.Fatalf("%v ran the command at the floor", err)
+		}
 	}
 }
 

@@ -39,9 +39,8 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if s.grantStatus != nil {
-		turnCtx = sandbox.WithGrantProgress(turnCtx, s.grantStatus)
-	}
+	// A nil grantStatus reports nothing.
+	turnCtx = sandbox.WithGrantProgress(turnCtx, s.grantStatus)
 
 	if sigCh != nil {
 		watchStop := make(chan struct{})
