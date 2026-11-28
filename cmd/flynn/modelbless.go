@@ -50,6 +50,13 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 		return errors.New("models bless: a model reference is required, for example `flynn models bless hf:Qwen/Qwen2.5-7B-Instruct-AWQ`")
 	}
 
+	if err := refuseFlagWords("models bless", args); err != nil {
+		return err
+	}
+	if len(args) > 1 {
+		return usageErrf("models bless", "unexpected argument %q", args[1])
+	}
+
 	owner, repo, err := parseHubRef(args[0])
 	if err != nil {
 		return fmt.Errorf("models bless: %w", err)

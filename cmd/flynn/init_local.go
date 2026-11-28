@@ -73,10 +73,9 @@ type initChoice struct {
 // the live values are the same functions the `flynn models` subcommands call, and a test
 // substitutes scripted ones.
 type initEnv struct {
-	in      *bufio.Reader
-	out     io.Writer
-	yes     bool
-	dataDir string
+	in  *bufio.Reader
+	out io.Writer
+	yes bool
 
 	// machine judges fit; it is [resolveMachine] with no override, so the verdicts match
 	// `flynn models --local --fit`.
@@ -135,7 +134,6 @@ func liveInitEnv(dataDir string, in io.Reader, out io.Writer, yes bool) initEnv 
 		in:       bufio.NewReader(in),
 		out:      out,
 		yes:      yes,
-		dataDir:  dataDir,
 		machine:  resolveMachine,
 		catalog:  loadCatalog,
 		profiles: func(ctx context.Context) harness.ProfileSource { return localProfileSource(ctx, dataDir) },

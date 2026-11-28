@@ -40,6 +40,10 @@ func runMCP(args []string, dataDir string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	// A stray word stops the flag parse, which would drop a --read-only written after it.
+	if fs.NArg() > 0 {
+		return usageErrf("mcp serve", "unexpected argument %q", fs.Arg(0))
+	}
 
 	dir := *workdir
 	if dir == "" {

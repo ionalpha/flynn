@@ -211,6 +211,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
+	if fs.NArg() > 0 {
+		return serveConfig{}, usageErrf("serve", "unexpected argument %q", fs.Arg(0))
+	}
 
 	// Neither a channel nor API auth is required here; the caller decides what "nothing to
 	// do" means.
