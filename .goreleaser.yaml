@@ -41,6 +41,72 @@ nfpms:
       - rpm
       - apk
 
+# Package-manager channels. Each one pushes to a repository outside this one, which the
+# workflow's GITHUB_TOKEN cannot write, so they use PACKAGES_TOKEN. Without that secret
+# (a fork, a local snapshot) they render but do not upload, so a missing token cannot
+# fail a release halfway through publishing. `auto` also skips pre-releases: a package
+# manager has no candidate channel, and an rc there would reach every user on update.
+# `flynn upgrade` refuses to replace a binary installed by any of these managers
+# (internal/selfupdate), so the manager stays the only thing that updates it.
+homebrew_casks:
+  - name: flynn
+    repository:
+      owner: ionalpha
+      name: homebrew-tap
+      token: '{{ index .Env "PACKAGES_TOKEN" }}'
+    directory: Casks
+    homepage: https://github.com/ionalpha/flynn
+    description: A secure agent operating system in a single Go binary.
+    license: Apache-2.0
+    binaries: [flynn]
+    skip_upload: '{{ if index .Env "PACKAGES_TOKEN" }}auto{{ else }}true{{ end }}'
+    # The binary is not notarized, so macOS would quarantine it and Gatekeeper would
+    # block the first run. Its integrity is the signed checksum and provenance this
+    # release publishes, which Homebrew's own sha256 check is pinned to.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/flynn"]
+          end
+
+scoops:
+  - name: flynn
+    repository:
+      owner: ionalpha
+      name: scoop-bucket
+      token: '{{ index .Env "PACKAGES_TOKEN" }}'
+    directory: bucket
+    homepage: https://github.com/ionalpha/flynn
+    description: A secure agent operating system in a single Go binary.
+    license: Apache-2.0
+    skip_upload: '{{ if index .Env "PACKAGES_TOKEN" }}auto{{ else }}true{{ end }}'
+
+# WinGet takes a pull request to microsoft/winget-pkgs from a fork, which Microsoft's
+# validation and a moderator review before `winget install IonAlpha.Flynn` sees it.
+winget:
+  - name: flynn
+    package_identifier: IonAlpha.Flynn
+    publisher: Ion Alpha
+    short_description: A secure agent operating system in a single Go binary.
+    homepage: https://github.com/ionalpha/flynn
+    license: Apache-2.0
+    license_url: https://github.com/ionalpha/flynn/blob/main/LICENSE
+    release_notes_url: "https://github.com/ionalpha/flynn/releases/tag/{{ .Tag }}"
+    tags: [agent, ai, cli, sandbox]
+    skip_upload: '{{ if index .Env "PACKAGES_TOKEN" }}auto{{ else }}true{{ end }}'
+    repository:
+      owner: ionalpha
+      name: winget-pkgs
+      branch: "IonAlpha.Flynn-{{ .Version }}"
+      token: '{{ index .Env "PACKAGES_TOKEN" }}'
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+
 # Multi-architecture container images built from the same signed binary and pushed to
 # both GHCR and Docker Hub. Each architecture is built and pushed as its own suffixed
 # tag; the docker_manifests below fuse them into a single multi-arch tag that resolves
