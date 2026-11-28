@@ -11,6 +11,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/google/go-cmp v0.7.0
 	github.com/klauspost/compress v1.20.4
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0
@@ -20,6 +21,7 @@ require (
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
+	golang.org/x/tools v0.52.0
 	modernc.org/sqlite v1.62.0
 	pgregory.net/rapid v1.3.0
 )
@@ -43,6 +45,8 @@ require (
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

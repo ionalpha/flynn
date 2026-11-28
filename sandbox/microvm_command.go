@@ -16,6 +16,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/closeerr"
 	"github.com/ionalpha/flynn/internal/procexec"
 	"github.com/ionalpha/flynn/procs"
 )
@@ -277,7 +278,7 @@ func (c *commandMachine) track(s *cmdServing) bool {
 
 // writeManifest names the file with os.CreateTemp so concurrent calls never share
 // a manifest.
-func (c *commandMachine) writeManifest(kind string, man manifest) (string, error) {
+func (c *commandMachine) writeManifest(kind string, man manifest) (path string, err error) {
 	data, err := json.Marshal(man)
 	if err != nil {
 		return "", fault.Wrap(fault.Terminal, "microvm_manifest", err)
@@ -286,12 +287,14 @@ func (c *commandMachine) writeManifest(kind string, man manifest) (string, error
 	if err != nil {
 		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
 	}
+	defer func() {
+		closeerr.Keep(&err, f)
+		if err != nil {
+			path, err = "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
+		return "", err
 	}
 	return f.Name(), nil
 }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/bits"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -186,8 +188,9 @@ func NewTable(rows ...Price) (*Table, error) {
 		k := tableKey(p.Provider, p.Model)
 		t.rows[k] = append(t.rows[k], p)
 	}
-	for k, rs := range t.rows {
-		sort.Slice(rs, func(i, j int) bool { return rs[i].Effective.Before(rs[j].Effective) })
+	for _, k := range slices.Sorted(maps.Keys(t.rows)) {
+		rs := t.rows[k]
+		sort.SliceStable(rs, func(i, j int) bool { return rs[i].Effective.Before(rs[j].Effective) })
 		for i := 1; i < len(rs); i++ {
 			if rs[i].Effective.Equal(rs[i-1].Effective) {
 				return nil, fmt.Errorf("usage: two price rows for %s", rs[i].ID())
