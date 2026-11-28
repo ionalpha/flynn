@@ -44,6 +44,8 @@ type childRec struct {
 	scope    resource.Scope
 	pool     string
 	released bool
+	// enqueued is set once this process has handed the child to its runtime.
+	enqueued bool
 }
 
 // Option configures a Spawner.
@@ -186,7 +188,7 @@ func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, re
 	}
 
 	s.mu.Lock()
-	s.children[child.Name] = &childRec{scope: scope, pool: pool}
+	s.children[child.Name] = &childRec{scope: scope, pool: pool, enqueued: true}
 	s.mu.Unlock()
 	return child.Name, nil
 }
@@ -291,6 +293,9 @@ func (s *Spawner) Poll(ctx context.Context, ids []string) ([]mission.ChildResult
 			s.finish(ctx, id)
 		default:
 			allDone = false
+			if err := s.takeUp(ctx, r); err != nil {
+				return nil, false, err
+			}
 		}
 	}
 	return results, allDone, nil
@@ -311,6 +316,27 @@ func (s *Spawner) adopt(child resource.Resource, parent resource.Resource) {
 		pool = spec.BudgetPool
 	}
 	s.children[child.Name] = &childRec{scope: child.Scope, pool: pool}
+}
+
+// takeUp enqueues an unfinished child this process has not enqueued, one an
+// earlier process spawned. A runtime runs only the goals it was handed, so
+// without this a resumed fan-out waits forever.
+func (s *Spawner) takeUp(ctx context.Context, child resource.Resource) error {
+	s.adopt(child, child)
+	s.mu.Lock()
+	rec := s.children[child.Name]
+	done := rec.enqueued
+	s.mu.Unlock()
+	if done || s.enqueue == nil {
+		return nil
+	}
+	if err := s.enqueue(ctx, child.Key()); err != nil {
+		return fault.Wrap(fault.Classify(err), "spawn_take_up", err)
+	}
+	s.mu.Lock()
+	rec.enqueued = true
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Spawner) finish(ctx context.Context, id string) {

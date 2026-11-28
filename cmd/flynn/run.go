@@ -107,6 +107,19 @@ func (r driveRequest) execute(ctx context.Context) (result, source string, trans
 	return result, run.ID(), transcript, runErr
 }
 
+// adoptNamedRun prepares a run the operator named for resuming: one stored
+// without a working directory or grant takes this invocation's, and says so.
+func adoptNamedRun(ctx context.Context, out io.Writer, run *governed.Run, id, workdir string) error {
+	adopted, err := run.Adopt(ctx, id)
+	if err != nil {
+		return err
+	}
+	if adopted {
+		_, _ = fmt.Fprintf(out, "  note: this run recorded no working directory or tool grant; recorded this invocation's (%s)\n", workdir)
+	}
+	return nil
+}
+
 // ledgerOutcome reads the run's goal after it settles and says how much of its plan was
 // proven. A run that does not require proof can finish with items left unproven, and the
 // model's answer is not where an operator should have to learn that: the model is told to
@@ -214,6 +227,9 @@ func modelLine(m modelChoice) string {
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
 		recordModelChoice(ctx, r.out, r.log, r.cfg.model, r.resumeID)
+		if err := adoptNamedRun(ctx, r.out, run, r.resumeID, r.workdir); err != nil {
+			return err
+		}
 		if err := run.Resume(ctx, r.resumeID); err != nil {
 			return err
 		}

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -412,6 +413,54 @@ func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, 
 	rt.driven.add(r)
 	rt.manager.Enqueue(r.Key())
 	return r, nil
+}
+
+// Adopt records this runtime's confinement on a stored goal that has none, and
+// on the goals it owns, and reports whether it wrote one. It is for an operator
+// naming a goal to resume: [Runtime.Resume] and the worker refuse a goal with no
+// record. A record already present is never replaced.
+func (rt *Runtime) Adopt(ctx context.Context, name string) (bool, error) {
+	root, err := rt.store.Get(ctx, goal.Kind, resource.Scope{}, name)
+	if err != nil {
+		return false, err
+	}
+	spec, err := goal.DecodeSpec(root)
+	if err != nil || spec.Confinement != nil || rt.confinement == nil {
+		return false, err
+	}
+	all, err := rt.store.List(ctx, goal.Kind, root.Scope, resource.Everything())
+	if err != nil {
+		return false, fmt.Errorf("runtime: list the goal's children: %w", err)
+	}
+	tree := []resource.Resource{root}
+	for i := 0; i < len(tree); i++ {
+		for _, r := range all {
+			if slices.ContainsFunc(r.OwnerReferences, func(o resource.OwnerReference) bool { return o.ID == tree[i].ID }) {
+				tree = append(tree, r)
+			}
+		}
+	}
+	// Children first: an interrupted adoption leaves the root without a record,
+	// so the next one finishes it.
+	for _, r := range slices.Backward(tree) {
+		if _, err := resource.UpdateByID(ctx, rt.store, r.ID, rt.record); err != nil {
+			return false, fmt.Errorf("runtime: record the confinement of goal %s: %w", r.Name, err)
+		}
+	}
+	return true, nil
+}
+
+func (rt *Runtime) record(r *resource.Resource) error {
+	spec, err := goal.DecodeSpec(*r)
+	if err != nil {
+		return err
+	}
+	if spec.Confinement != nil {
+		return resource.ErrSkipUpdate
+	}
+	spec.Confinement = rt.confinement
+	r.Spec, err = json.Marshal(spec)
+	return err
 }
 
 // Start runs the manager and worker until ctx is cancelled and both stop, and

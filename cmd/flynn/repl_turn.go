@@ -150,6 +150,9 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 		return "", err
 	}
 	if s.started {
+		if err := adoptNamedRun(turnCtx, s.out, run, s.runID, s.cwd); err != nil {
+			return "", err
+		}
 		if err := run.Resume(turnCtx, s.runID); err != nil {
 			return "", err
 		}

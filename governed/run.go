@@ -135,6 +135,13 @@ func (r *Run) Resume(ctx context.Context, id string) error {
 	return nil
 }
 
+// Adopt gives run id this assembly's working directory and grant if it records
+// none, and reports whether it did. Call it before [Run.Resume] only when an
+// operator named the run. See [runtime.Runtime.Adopt].
+func (r *Run) Adopt(ctx context.Context, id string) (bool, error) {
+	return r.rt.Adopt(ctx, id)
+}
+
 // Do runs spec to the end. Nothing it starts outlives the call. A stall or cancellation
 // returns a filled [Result] and an error.
 func (r *Run) Do(ctx context.Context, spec goal.Spec) (Result, error) {

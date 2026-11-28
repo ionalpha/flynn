@@ -150,7 +150,7 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	}
 	if w.claims != nil && !w.claims.Accepts(claimed[0]) {
 		// A queue that ignores the filter handed over another process's step. It is not
-		// run or settled, so its lease lapses and its owner can claim it.
+		// run or settled, so its lease lapses; the claim still counted an attempt.
 		return false, nil
 	}
 	return true, w.runStep(ctx, claimed[0])

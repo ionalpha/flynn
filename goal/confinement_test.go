@@ -64,6 +64,29 @@ type rejectAll struct{}
 
 func (rejectAll) Accepts(jobs.Job) bool { return false }
 
+// The cost [jobs.Filter] documents: a queue that ignores it spends another
+// process's attempts until the job is dead, though no worker ran it.
+func TestAQueueIgnoringTheFilterExhaustsAnotherProcessesAttempts(t *testing.T) {
+	ctx := context.Background()
+	m := clock.NewManual(time.Unix(0, 0))
+	q := jobs.NewMemory(jobs.WithClock(m))
+	j, err := q.Enqueue(ctx, jobs.EnqueueParams{Queue: StepQueue, Kind: StepJobKind, Payload: []byte("elsewhere"), MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := NewWorker(nil, unfiltered{q}, m, nil, WithClaimFilter(rejectAll{}))
+	for range 3 {
+		if ran, err := w.ProcessOnce(ctx); ran || err != nil {
+			t.Fatalf("ProcessOnce = %t, %v, want nothing run", ran, err)
+		}
+		m.Advance(24 * time.Hour)
+	}
+	got, err := q.Get(ctx, j.ID)
+	if err != nil || got.State != jobs.StateDead || got.Attempt != 2 {
+		t.Fatalf("job = %s after %d attempts, %v, want dead after 2", got.State, got.Attempt, err)
+	}
+}
+
 func TestWorkerDoesNotRunAStepItsQueueShouldHaveWithheld(t *testing.T) {
 	ctx := context.Background()
 	m := clock.NewManual(time.Unix(0, 0))

@@ -77,6 +77,10 @@ type ClaimParams struct {
 
 // Filter selects the jobs a worker may lease. A backend calls it while claiming, under its
 // own lock or transaction, so it must not call the queue or the store.
+//
+// A [Queue] must apply it. One that ignores it leases other workers' jobs, and each such
+// claim counts an attempt, so a job can reach its limit and die without its owner ever
+// running it. A worker that refuses the job cannot give the attempt back.
 type Filter interface {
 	Accepts(j Job) bool
 }
@@ -95,7 +99,8 @@ type Queue interface {
 	// Enqueue returns the job with its ID and defaults applied.
 	Enqueue(ctx context.Context, p EnqueueParams) (Job, error)
 	// Claim leases up to Limit jobs that are [Claimable] and accepted by the
-	// filter, in RunAt, creation and ID order, incrementing each Attempt.
+	// filter, in RunAt, creation and ID order, incrementing each Attempt. A job
+	// the [Filter] rejects must not be leased or counted.
 	Claim(ctx context.Context, p ClaimParams) ([]Job, error)
 	// Complete returns [ErrNotRunning] for a job that is not running.
 	Complete(ctx context.Context, id string) error
