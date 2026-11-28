@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"context"
+	"io/fs"
 
 	"github.com/ionalpha/flynn/fault"
 )
@@ -44,6 +45,16 @@ type Sandbox interface {
 	Walk(ctx context.Context, root string) ([]string, error)
 	// Close releases the sandbox's resources, such as its scratch directory.
 	Close() error
+}
+
+// DirReader is an optional capability of a [Sandbox] that can read one directory
+// at a time, which lets a search skip a subtree without listing it. Both methods
+// reject a path outside the root, and take paths relative to it.
+type DirReader interface {
+	// Stat follows a symlink that stays inside the root.
+	Stat(ctx context.Context, path string) (fs.FileInfo, error)
+	// ReadDir returns the entries sorted by name.
+	ReadDir(ctx context.Context, dir string) ([]fs.DirEntry, error)
 }
 
 // ErrDenied covers a path escaping the root and, in stronger tiers, a denied

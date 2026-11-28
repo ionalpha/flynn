@@ -392,6 +392,7 @@ injected. Not implementing one is supported; the table gives the fallback.
 | `resource.AnyScopeGetter` | a backend with a name index | the caller falls back to `ListAll` and a name scan |
 | `state.UsageProvider` | `storage/sqlite.Store` | a caller that records model usage finds no store, says so, and carries on, because losing the account of a call is no reason to fail the run that made it |
 | `sandbox.Contained` | `sandbox.Local` with confinement, the container and microVM backends | the sandbox is treated as the weakest tier, so an unknown tier is never assumed to contain more than it proves |
+| `sandbox.DirReader` | `sandbox.Local` | the grep and glob tools list everything under the search path once through `Walk`, so a large tree is enumerated in full before ignored directories are dropped, and glob lists files only |
 | `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
 | `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |
 

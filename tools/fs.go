@@ -1,22 +1,14 @@
 package tools
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/ionalpha/flynn/llm"
 )
-
-// maxGrepMatches caps grep output so a broad pattern cannot flood the model's
-// context.
-const maxGrepMatches = 500
 
 // --- read -------------------------------------------------------------------
 
@@ -152,131 +144,4 @@ func (t editTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		return "", err
 	}
 	return "edited " + in.Path, nil
-}
-
-// --- glob -------------------------------------------------------------------
-
-type globTool struct{ s *Set }
-
-func (globTool) Def() llm.Tool {
-	return llm.Tool{
-		Name:        "glob",
-		Description: "List files matching a glob pattern (e.g. 'src/*.go'), relative to the working directory.",
-		InputSchema: json.RawMessage(`{
-  "type": "object",
-  "required": ["pattern"],
-  "properties": {
-    "pattern": {"type": "string", "description": "Glob pattern, relative to the working directory."}
-  },
-  "additionalProperties": false
-}`),
-	}
-}
-
-func (t globTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
-	var in struct {
-		Pattern string `json:"pattern"`
-	}
-	if err := json.Unmarshal(input, &in); err != nil {
-		return "", err
-	}
-	matches, err := t.s.sb.Glob(ctx, in.Pattern)
-	if err != nil {
-		return "", err
-	}
-	if len(matches) == 0 {
-		return "no matches", nil
-	}
-	sort.Strings(matches)
-	return strings.Join(matches, "\n"), nil
-}
-
-// --- grep -------------------------------------------------------------------
-
-type grepTool struct{ s *Set }
-
-func (grepTool) Def() llm.Tool {
-	return llm.Tool{
-		Name:        "grep",
-		Description: "Search file contents for a regular expression, recursively under an optional sub-path. Returns matching lines as path:line:text.",
-		InputSchema: json.RawMessage(`{
-  "type": "object",
-  "required": ["pattern"],
-  "properties": {
-    "pattern": {"type": "string", "description": "Regular expression to search for."},
-    "path": {"type": "string", "description": "Sub-directory to search under, relative to the working directory. Omit to search everything."}
-  },
-  "additionalProperties": false
-}`),
-	}
-}
-
-func (t grepTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
-	var in struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path"`
-	}
-	if err := json.Unmarshal(input, &in); err != nil {
-		return "", err
-	}
-	re, err := regexp.Compile(in.Pattern)
-	if err != nil {
-		return "", fmt.Errorf("grep: invalid pattern: %w", err)
-	}
-	root := in.Path
-	if root == "" {
-		root = "."
-	}
-	files, err := t.s.sb.Walk(ctx, root)
-	if err != nil {
-		return "", err
-	}
-
-	matches := make([]string, 0)
-	truncated := false
-	for _, f := range files {
-		b, err := t.s.sb.ReadFile(ctx, f)
-		if err != nil || isBinary(b) {
-			continue
-		}
-		// The scanner reuses one buffer, so only matching lines allocate. Its
-		// ceiling is the file size, so a long line (minified JS, JSONL) cannot hit
-		// bufio.ErrTooLong at the default 64KB limit.
-		sc := bufio.NewScanner(bytes.NewReader(b))
-		sc.Buffer(make([]byte, 0, 64*1024), len(b)+1)
-		for i := 1; sc.Scan(); i++ {
-			if re.Match(sc.Bytes()) {
-				matches = append(matches, fmt.Sprintf("%s:%d:%s", f, i, sc.Text()))
-				if len(matches) >= maxGrepMatches {
-					truncated = true
-					break
-				}
-			}
-		}
-		if truncated {
-			break
-		}
-	}
-	if len(matches) == 0 {
-		return "no matches", nil
-	}
-	out := strings.Join(matches, "\n")
-	if truncated {
-		out += fmt.Sprintf("\n... (truncated at %d matches)", maxGrepMatches)
-	}
-	return out, nil
-}
-
-// isBinary reports a NUL byte in the first chunk, so grep skips binary files.
-func isBinary(b []byte) bool {
-	n := len(b)
-	if n > 8000 {
-		n = 8000
-	}
-	for _, c := range b[:n] {
-		if c == 0 {
-			return true
-		}
-	}
-	return false
 }
