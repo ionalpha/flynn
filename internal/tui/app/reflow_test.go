@@ -41,6 +41,24 @@ func TestWidthChangeLaysTheTranscriptOutAgain(t *testing.T) {
 	})
 }
 
+// A reflow lays out the latest 5000 blocks; older ones are no longer kept.
+func TestReflowKeepsTheLatestBlocks(t *testing.T) {
+	s := start(t, nil)
+	blocks := make([]screen.Component, 5001)
+	for i := range blocks {
+		blocks[i] = widthBlock("block" + strconv.Itoa(i))
+	}
+	s.app.Append(blocks...)
+	s.awaitOutput(t, "block5000@40")
+
+	s.app.Resize(25, 12)
+	s.awaitOutput(t, "block5000@25")
+	out := s.out.String()
+	if strings.Contains(out, "block0@25") || !strings.Contains(out, "block1@25") {
+		t.Fatal("the reflow did not keep exactly the latest blocks")
+	}
+}
+
 // A block appended after the window changed, before anything has reported the
 // change, is laid out at the new width.
 func TestAppendReadsTheSizeFirst(t *testing.T) {

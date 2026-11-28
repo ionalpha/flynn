@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/internal/projectctx"
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/internal/tui/theme"
+	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/session"
 )
 
@@ -46,6 +49,36 @@ func TestTranscriptBlocksReflow(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A notice raised outside a turn reaches the shell as a transcript block.
+func TestShellNoticeIsPainted(t *testing.T) {
+	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted())
+	pr, pw := io.Pipe()
+	out := &syncOut{}
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false, nil)
+	s.notice("recalled-earlier-work")
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+	a.Quit()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	host.shutdown()
+	_ = pw.Close()
+	if !strings.Contains(out.String(), "recalled-earlier-work") {
+		t.Errorf("notice not painted: %q", out.String())
+	}
+}
+
+func TestReplayReportsAnUnreadableHistory(t *testing.T) {
+	host, ui := newSlashHost(t, constModel{text: "unused"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	host.doReplay(ctx)
+	if tr := ui.transcript(); !strings.Contains(tr, "replay failed") {
+		t.Errorf("read failure not reported:\n%s", tr)
+	}
 }
 
 // Prose uses every column right of the gutter.

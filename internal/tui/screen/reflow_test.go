@@ -74,6 +74,16 @@ func TestFullWidthRowsAreNotErased(t *testing.T) {
 	}
 }
 
+// Write errors are sticky, so a reflow on a torn-down terminal does nothing.
+func TestReflowAfterAWriteError(t *testing.T) {
+	p := screen.NewPainter(failWriter{}, 20, 6)
+	p.Paint([]string{"live"})
+	p.Reflow([]string{"new"}, []string{"other"})
+	if live := p.Live(); len(live) != 0 && live[0] == "other" {
+		t.Errorf("reflow ran after a write error: %q", live)
+	}
+}
+
 func TestReflowReplacesEverythingCommitted(t *testing.T) {
 	var out bytes.Buffer
 	p := screen.NewPainter(&out, 20, 6)
