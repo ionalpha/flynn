@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runInteractive runs the no-subcommand interactive session: a read-eval-print loop
@@ -174,6 +175,11 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	defer signal.Stop(sigCh)
 
 	s.notice = func(text string) { _, _ = fmt.Fprintf(s.out, "  %s\n", text) }
+	s.grantStatus = func(p sandbox.GrantProgress) {
+		if p.Files == 0 && !p.Done {
+			_, _ = fmt.Fprintf(s.out, "  %s (Ctrl-C cancels)\n", grantStatusText(p))
+		}
+	}
 	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, s.modelSpec)
 	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)

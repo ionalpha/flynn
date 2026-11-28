@@ -116,6 +116,7 @@ func (h *sessionHost) start(t queuedTurn) {
 	h.rendered = false
 	h.live.set("thinking...")
 	h.pokeLive()
+	h.s.grantStatus = h.onGrant
 
 	h.turns.Add(1)
 	go func() {
@@ -136,6 +137,26 @@ func (h *sessionHost) start(t queuedTurn) {
 		}
 		h.next()
 	}()
+}
+
+// onGrant shows a long sandbox grant on the live line, and returns the line to
+// thinking when it ends, so a first turn in a large tree reads as progress.
+func (h *sessionHost) onGrant(p sandbox.GrantProgress) {
+	if p.Done {
+		h.live.set("thinking...")
+	} else {
+		h.live.set(grantStatusText(p) + " (Esc cancels)")
+	}
+	h.pokeLive()
+}
+
+// grantStatusText names the grant under way.
+func grantStatusText(p sandbox.GrantProgress) string {
+	text := "granting the sandbox write access to " + p.Dir
+	if p.Files > 0 {
+		text += fmt.Sprintf(": %d files", p.Files)
+	}
+	return text + "..."
 }
 
 // startShell runs one composer shell command as the current turn: echoed
@@ -176,7 +197,7 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 		h.ui.Append("  shell mode unavailable: " + msg)
 		return
 	}
-	res, err := h.run.Exec(ctx, sandbox.Command{Line: cmdLine})
+	res, err := h.run.Exec(sandbox.WithGrantProgress(ctx, h.onGrant), sandbox.Command{Line: cmdLine})
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		h.ui.Append("  (command cancelled)")
