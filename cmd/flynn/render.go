@@ -66,10 +66,21 @@ func renderEvent(w io.Writer, ev session.Event, verbose bool) {
 		block(blockNotice, projectContextLine(ev))
 	case session.KindSelection:
 		block(blockNotice, selectionLine(ev))
+	case session.KindSandboxGrant:
+		renderGrant(block, ev, verbose)
 	default:
 		// Governance and record events (action.*, record.*) share the run's stream but
 		// are not shown in the flat text transcript this renderer draws; the interactive
 		// session renders them inline and in its panels.
+	}
+}
+
+// renderGrant writes a recorded wait on a sandbox grant. The closing record
+// carries the whole wait; the opening one repeats what a live run already
+// announced, and is shown on request.
+func renderGrant(block func(blockKind, string), ev session.Event, verbose bool) {
+	if verbose || ev.SandboxGrant == nil || ev.SandboxGrant.State != session.GrantStarted {
+		block(blockNotice, grantLine(ev))
 	}
 }
 

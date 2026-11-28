@@ -162,6 +162,10 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		s.system = s.withProjectPrompt(defaultSystemPrompt)
 	}
 
+	// Granting a large tree takes minutes, so it overlaps the typing and the first
+	// model call. Tools that read in-process do not wait for it.
+	defer grantAhead(ctx, shell.GrantWorkdir, cwd)()
+
 	if plain || !stdoutIsTerminal() {
 		if seed != "" {
 			_, _ = fmt.Fprint(s.out, seed)
@@ -203,7 +207,7 @@ func (s *replSession) lineGrantStatus() func(sandbox.GrantProgress) {
 			return
 		}
 		if _, said := waiting.LoadOrStore(p.Dir, true); !said {
-			s.plainBlock(blockNotice, grantStatusText(p, "Ctrl-C cancels"))
+			s.plainBlock(blockNotice, grantStatusText(p, "Ctrl-C cancels", 0))
 		}
 	}
 }

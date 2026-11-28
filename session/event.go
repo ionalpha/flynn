@@ -99,6 +99,13 @@ const (
 	// the mode (bare or custom) and Text one line each for the skills offered, the skills
 	// denied and the tools granted. Written once per run, by the operator's flags.
 	KindSelection Kind = "run.selection"
+
+	// KindSandboxGrant records a command waiting while the sandbox was given access
+	// to a directory, so a slow turn can be explained from its record. SandboxGrant
+	// names the directory, the state and the wait so far, and Err says why a failed
+	// grant failed. A grant too short to be reported leaves no record. Written by
+	// the system.
+	KindSandboxGrant Kind = "sandbox.grant"
 )
 
 // Event types the dispatch waist and the sealer write onto a run's stream,
@@ -228,6 +235,8 @@ type Event struct {
 	Attachment *ClientAttachment `json:"attachment,omitempty"`
 	// Budget is the ceiling change (budget.extended).
 	Budget *BudgetExtension `json:"budget,omitempty"`
+	// SandboxGrant is the wait on a directory grant (sandbox.grant).
+	SandboxGrant *SandboxGrant `json:"sandboxGrant,omitempty"`
 }
 
 // Usage is one turn's token cost, copied from the model port's accounting so a
