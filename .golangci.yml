@@ -105,7 +105,9 @@ linters:
     # for production code.
     # A small high-signal set, not the default one. evalOrder catches
     # `return v, json.Unmarshal(b, &v)`: the spec does not say whether v is read
-    # before or after the call, so the zero value can be returned.
+    # before or after the call, so the zero value can be returned. ruleguard runs
+    # the project's own rules from dev/rules.go; failOn makes a rules file that
+    # does not load a lint failure, where the default is to log it and pass.
     gocritic:
       disable-all: true
       enabled-checks:
@@ -115,6 +117,11 @@ linters:
         - filepathJoin
         - regexpSimplify
         - equalFold
+        - ruleguard
+      settings:
+        ruleguard:
+          rules: "${base-path}/dev/rules.go"
+          failOn: all
     gocyclo:
       # Set by (*core).projectRecords and resolveReviewCredentials.
       min-complexity: 21

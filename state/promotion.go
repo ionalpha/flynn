@@ -64,5 +64,5 @@ func PromotedSet(rows []MemoryPromotion) map[string]bool {
 // SortPromotions orders rows by item id, so every backend returns the same
 // order.
 func SortPromotions(rows []MemoryPromotion) {
-	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
 }

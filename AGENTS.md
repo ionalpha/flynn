@@ -45,7 +45,11 @@ Run `./dev/check` until it is green before opening a PR.
 ## Standards
 
 - **Format:** `gofumpt` + `goimports` (local prefix `github.com/ionalpha/flynn`).
-- **Lint:** `golangci-lint` must pass (see `.golangci.yml`).
+- **Lint:** `golangci-lint` must pass (see `.golangci.yml`). Project rules are in
+  `dev/rules.go` (ruleguard); a new rule comes with a bad and a good example under
+  `internal/rigor/testdata/ruleguard`. In the deterministic packages, a map range that
+  can reach output must iterate sorted keys, or say why order cannot matter with
+  `//ordered:ok <reason>` on the line above.
 - **Tests:** add tests with behavior changes; prefer table-driven and property-based
   tests. The race detector must stay clean.
 - **Comments:** doc comments are the published API reference (`go doc`, pkg.go.dev),

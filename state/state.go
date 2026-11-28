@@ -564,7 +564,7 @@ type MemoryStore interface {
 func SortRecall(q RecallQuery, items []MemoryItem) {
 	byScore := q.Order == OrderRelevance
 	byScope := q.RanksByScope()
-	sort.Slice(items, func(i, j int) bool {
+	sort.SliceStable(items, func(i, j int) bool {
 		if byScore && items[i].Score != items[j].Score {
 			return items[i].Score > items[j].Score
 		}
