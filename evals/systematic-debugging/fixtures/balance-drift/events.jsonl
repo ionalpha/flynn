@@ -1,0 +1,6 @@
+{"customer": "acme", "amount": "40.00"}
+{"customer": "birch", "amount": "1,250.00"}
+{"customer": "acme", "amount": "-15.50"}
+{"customer": "cedar", "amount": "310.25"}
+{"customer": "acme", "amount": "2,000.00"}
+{"customer": "birch", "amount": "-99.99"}
