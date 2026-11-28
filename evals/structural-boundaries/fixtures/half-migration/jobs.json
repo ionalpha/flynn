@@ -1,0 +1,7 @@
+{
+  "sales": "sales_report:run",
+  "stock": "stock_report:run",
+  "finance": "finance_report:run",
+  "payroll": "payroll_report:run",
+  "audit": "audit_report:run"
+}
