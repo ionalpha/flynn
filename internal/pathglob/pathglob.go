@@ -106,9 +106,9 @@ func split(s string) []string {
 // searched tree, so a hostile one must stay cheap. prev[j] records whether the
 // pattern so far matches the first j name segments.
 func matchSegments(pat, name []string) bool {
-	prev := make([]bool, len(name)+1)
-	cur := make([]bool, len(name)+1)
-	prev[0] = true
+	// One cell per prefix of name, the empty prefix first.
+	prev := append([]bool{true}, make([]bool, len(name))...)
+	cur := append([]bool{false}, make([]bool, len(name))...)
 	for _, p := range pat {
 		if p == "**" {
 			// ** matches zero segments (prev[j]) or one more (cur[j-1]).

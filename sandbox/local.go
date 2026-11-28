@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -522,11 +523,12 @@ func (l *Local) Stat(ctx context.Context, path string) (fs.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	abs, err := l.resolve(path)
+	root, rel, err := l.openRoot(path)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(abs)
+	defer func() { _ = root.Close() }()
+	info, err := root.Stat(rel)
 	if err != nil {
 		return nil, l.relErr(path, err)
 	}
@@ -538,15 +540,41 @@ func (l *Local) ReadDir(ctx context.Context, dir string) ([]fs.DirEntry, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	abs, err := l.resolve(dir)
+	root, rel, err := l.openRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(abs)
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(rel)
 	if err != nil {
 		return nil, l.relErr(dir, err)
 	}
+	defer func() { _ = f.Close() }()
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, l.relErr(dir, err)
+	}
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	return entries, nil
+}
+
+// openRoot opens the sandbox root and names path relative to it. Access through
+// the returned [os.Root] cannot leave the root even if a link is swapped in
+// after the path was checked.
+func (l *Local) openRoot(path string) (*os.Root, string, error) {
+	abs, err := l.resolve(path)
+	if err != nil {
+		return nil, "", err
+	}
+	rel, err := filepath.Rel(l.root, abs)
+	if err != nil {
+		return nil, "", l.relErr(path, err)
+	}
+	root, err := os.OpenRoot(l.root)
+	if err != nil {
+		return nil, "", l.relErr(path, err)
+	}
+	return root, rel, nil
 }
 
 // relErr names the path as the caller gave it, keeping the host path out.
