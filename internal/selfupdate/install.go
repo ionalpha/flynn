@@ -87,9 +87,15 @@ var managedPaths = map[string]string{
 	"/opt/homebrew/Cellar":              "Homebrew",
 	"/usr/local/Cellar":                 "Homebrew",
 	"/home/linuxbrew/.linuxbrew/Cellar": "Homebrew",
-	`C:\Program Files`:                  "a system installer",
-	`C:\Program Files (x86)`:            "a system installer",
-	`C:\ProgramData\chocolatey`:         "Chocolatey",
+	// A cask keeps the binary under Caskroom and links it into bin; the link resolves
+	// here, so the Cellar entries alone miss every cask install.
+	"/opt/homebrew/Caskroom":              "Homebrew",
+	"/usr/local/Caskroom":                 "Homebrew",
+	"/home/linuxbrew/.linuxbrew/Caskroom": "Homebrew",
+	`C:\Program Files`:                    "a system installer",
+	`C:\Program Files (x86)`:              "a system installer",
+	`C:\ProgramData\chocolatey`:           "Chocolatey",
+	`C:\ProgramData\scoop`:                "Scoop",
 }
 
 // managedBy reports the package manager that owns a path, if one does.
@@ -100,15 +106,55 @@ func managedBy(p string) (string, bool) {
 			return owner, true
 		}
 	}
-	// A binary under a Go toolchain's bin directory came from `go install`, which should
-	// remove it. The caller resolved the binary's symlinks, so this side is resolved
-	// too: where the Go directory is reached through a link (a symlinked home, macOS's
-	// /var through /private/var) a textual prefix misses, and a missed owner means
-	// overwriting a file another tool holds.
-	if gobin := resolveDir(filepath.Join(goPath(), "bin")); gobin != "bin" && under(clean, gobin) {
-		return "go install", true
+	for _, m := range userManagedDirs() {
+		// The caller resolved the binary's symlinks, so this side is resolved too: where
+		// the directory is reached through a link (a symlinked home, macOS's /var through
+		// /private/var) a textual prefix misses, and a missed owner means overwriting a
+		// file another tool holds.
+		if under(clean, resolveDir(m.dir)) {
+			return m.owner, true
+		}
 	}
 	return "", false
+}
+
+// managedDir is a package manager's install directory that depends on the user or the
+// environment, so it cannot be a fixed entry in [managedPaths].
+type managedDir struct{ dir, owner string }
+
+// userManagedDirs lists the install directories, found from the home directory or the
+// environment, of the package managers Flynn is published through or commonly installed
+// by. A directory that comes out relative (an unset variable, no home) is dropped: under("")
+// on POSIX would match every absolute path and refuse every upgrade.
+func userManagedDirs() []managedDir {
+	var out []managedDir
+	add := func(dir, owner string) {
+		if dir != "" && filepath.IsAbs(dir) {
+			out = append(out, managedDir{filepath.Clean(dir), owner})
+		}
+	}
+	// A binary under a Go toolchain's bin directory came from `go install`, which
+	// should remove it.
+	if gp := goPath(); gp != "" {
+		add(filepath.Join(gp, "bin"), "go install")
+	}
+	home, _ := os.UserHomeDir()
+	// Scoop runs the binary through a shim, and the running executable is the real file
+	// under apps. SCOOP and SCOOP_GLOBAL move the roots.
+	if root := os.Getenv("SCOOP"); root != "" {
+		add(filepath.Join(root, "apps"), "Scoop")
+	} else if home != "" {
+		add(filepath.Join(home, "scoop", "apps"), "Scoop")
+	}
+	if root := os.Getenv("SCOOP_GLOBAL"); root != "" {
+		add(filepath.Join(root, "apps"), "Scoop")
+	}
+	// WinGet unpacks a portable package for one user here and links it from
+	// WinGet\Links; a machine-wide install goes under Program Files, already listed.
+	if local := os.Getenv("LOCALAPPDATA"); local != "" {
+		add(filepath.Join(local, "Microsoft", "WinGet", "Packages"), "WinGet")
+	}
+	return out
 }
 
 // under reports whether path sits inside dir. Windows paths are compared without regard to
