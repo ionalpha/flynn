@@ -1,4 +1,13 @@
-import os, shutil, sys, tempfile
+import os, shutil, sys
+
+
+def scratch():
+    d = os.path.abspath("verify-tmp")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    return d
+
+
 sys.path.insert(0, ".")
 fails = []
 try:
@@ -7,7 +16,7 @@ try:
     want = {"north": 100, "south": 250, "west": 40, "east": 5}
     if got != want:
         fails.append("the shipped data totals %r, want %r" % (got, want))
-    d = tempfile.mkdtemp(dir=".")
+    d = scratch()
     try:
         nl = chr(10)
         stores, sales = os.path.join(d, "stores.csv"), os.path.join(d, "sales.csv")

@@ -1,4 +1,13 @@
-import json, os, shutil, sys, tempfile
+import json, os, shutil, sys
+
+
+def scratch():
+    d = os.path.abspath("verify-tmp")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    return d
+
+
 sys.path.insert(0, ".")
 fails = []
 try:
@@ -8,7 +17,7 @@ try:
     if got != want:
         fails.append("balances.json still shows %r, want %r" % (got, want))
     import sync
-    d = tempfile.mkdtemp(dir=".")
+    d = scratch()
     try:
         with open(os.path.join(d, "opening.json"), "w") as f:
             json.dump({"z": 100}, f)

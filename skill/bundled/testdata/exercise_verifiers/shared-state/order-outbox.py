@@ -1,7 +1,16 @@
-import os, shutil, sqlite3, sys, tempfile
+import os, shutil, sqlite3, sys
+
+
+def scratch():
+    d = os.path.abspath("verify-tmp")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    return d
+
+
 sys.path.insert(0, ".")
 fails = []
-d = tempfile.mkdtemp(dir=".")
+d = scratch()
 try:
     import app
 
