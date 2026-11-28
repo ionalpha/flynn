@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -41,7 +42,7 @@ func (s *replSession) compact(ctx context.Context) (int, error) {
 		// than silently compacting a transcript that is not the one the harness will read.
 		return 0, errors.New("/compact is not available in a " + s.ext.driver.Name() + " session: the external agent holds the conversation and manages its own context")
 	}
-	summary, err := summarizeConversation(ctx, s.model, s.transcript)
+	summary, err := summarizeConversation(ctx, s.model, s.carriedContext, s.transcript)
 	if err != nil {
 		return 0, err
 	}
@@ -61,17 +62,51 @@ func (s *replSession) compact(ctx context.Context) (int, error) {
 
 // summarizeConversation asks the model to compress a transcript into a concise summary
 // that preserves the objective, decisions, established facts, changed state, and what
-// remains, so the assistant can continue with far less context.
-func summarizeConversation(ctx context.Context, model llm.Model, transcript []llm.Message) (string, error) {
-	msgs := make([]llm.Message, 0, len(transcript)+1)
-	msgs = append(msgs, transcript...)
-	msgs = append(msgs, llm.Text(llm.RoleUser, "Summarize the conversation so far as compactly as possible while losing nothing critical: the objective, decisions made, facts established, files or state changed, and what remains to do. Output only the summary."))
+// remains, so the assistant can continue with far less context. earlier is the summary a
+// previous compaction carried, which the new one must keep or it is lost on the second
+// /compact.
+//
+// The transcript goes to the model as one text message, never as its own messages. It
+// records the tool calls but not their results, and a provider rejects a tool_use block
+// that no tool_result follows (Anthropic answers HTTP 400).
+func summarizeConversation(ctx context.Context, model llm.Model, earlier string, transcript []llm.Message) (string, error) {
+	var b strings.Builder
+	if earlier != "" {
+		b.WriteString(earlier)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Conversation:\n")
+	b.WriteString(transcriptText(transcript))
+	b.WriteString("\nSummarize the conversation above as compactly as possible while losing nothing critical: the objective, decisions made, facts established, files or state changed, and what remains to do. Output only the summary.")
 	resp, err := model.Generate(ctx, llm.Request{
 		System:   "You compact a conversation into a concise summary that lets the assistant continue with far less context, preserving every critical detail.",
-		Messages: msgs,
+		Messages: []llm.Message{llm.Text(llm.RoleUser, b.String())},
 	})
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(resp.Message.TextContent()), nil
+}
+
+// toolInputLimit bounds each tool call's arguments in [transcriptText], so one large
+// write cannot fill the summarizer's context.
+const toolInputLimit = 300
+
+// transcriptText renders a transcript as plain lines, one per text block or tool call,
+// with each call's arguments cut to [toolInputLimit] bytes.
+func transcriptText(transcript []llm.Message) string {
+	var b strings.Builder
+	for _, m := range transcript {
+		if text := strings.TrimSpace(m.TextContent()); text != "" {
+			fmt.Fprintf(&b, "%s: %s\n", m.Role, text)
+		}
+		for _, tu := range m.ToolUses() {
+			input := string(tu.Input)
+			if len(input) > toolInputLimit {
+				input = strings.ToValidUTF8(input[:toolInputLimit], "") + "..."
+			}
+			fmt.Fprintf(&b, "%s: [called %s %s]\n", m.Role, tu.Name, input)
+		}
+	}
+	return b.String()
 }
