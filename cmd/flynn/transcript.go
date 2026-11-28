@@ -6,7 +6,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/internal/tui/render"
+	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/session"
 )
@@ -67,11 +69,11 @@ func bodyWidth(width int) int {
 // text when markdown yields nothing for a non-empty source. A bare "16." parses as an
 // empty ordered-list item and renders to no lines, so a short numeric answer would be
 // dropped; the fallback shows it verbatim instead.
-func (v *transcriptView) prose(text string, width int) []string {
-	if lines := inset(v.md.Render(text, bodyWidth(width))); len(lines) > 0 {
+func (v *transcriptView) prose(src string, width int) []string {
+	if lines := inset(v.md.Render(src, bodyWidth(width))); len(lines) > 0 {
 		return lines
 	}
-	return inset(strings.Split(strings.TrimRight(text, "\n"), "\n"))
+	return inset(strings.Split(strings.TrimRight(text.Inert(src), "\n"), "\n"))
 }
 
 // lines renders one event into the scrollback lines that follow it, wrapped to
@@ -93,20 +95,20 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		return v.toolCall(ev, width)
 	case session.KindToolResult:
 		if ev.IsError {
-			return []string{v.th.Render(theme.Rejected, "  !! "+ev.Tool+" failed: "+oneLine(ev.Result, 200))}
+			return layBlock(v.th, blockToolError, ev.Tool+" failed: "+oneLine(ev.Result, 200), width)
 		}
-		return nil
+		return []string{layRow(v.th, blockToolResult, ev.Tool+": "+resultSummary(ev.Result), width)}
 	case session.KindActionRejected:
 		// A refused action is the run hitting a governance boundary: always shown,
 		// next to the work it stopped, with the denial's fault class.
-		return []string{v.th.Render(theme.Rejected, "  ✗ "+actionLabel(ev)+" rejected: "+faultText(ev.Fault))}
+		return layBlock(v.th, blockRejected, actionLabel(ev)+" rejected: "+faultText(ev.Fault), width)
 	case session.KindActionCompleted:
 		// A clean completion is silent (the tool result already showed its outcome);
 		// one that ran but errored surfaces the fault class as a warning.
 		if ev.Fault == "" {
 			return nil
 		}
-		return []string{v.th.Render(theme.Warning, "  !! "+actionLabel(ev)+" failed: "+ev.Fault)}
+		return layBlock(v.th, blockWarning, actionLabel(ev)+" failed: "+ev.Fault, width)
 	case session.KindConverged:
 		text := strings.TrimSpace(ev.Text)
 		if text == "" || text == v.lastAssistant {
@@ -114,13 +116,13 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		}
 		return v.prose(text, width)
 	case session.KindStalled:
-		return []string{v.th.Render(theme.Error, "  stalled: "+ev.Err)}
+		return layBlock(v.th, blockError, "stalled: "+ev.Err, width)
 	case session.KindProjectContext:
 		// The trust decision for the repository's instruction files is shown wherever the
 		// run is, so a session never reads files its user was not told about.
-		return []string{v.th.Render(theme.Muted, "  "+projectContextLine(ev))}
+		return layBlock(v.th, blockNotice, projectContextLine(ev), width)
 	case session.KindSelection:
-		return []string{v.th.Render(theme.Muted, "  "+selectionLine(ev))}
+		return layBlock(v.th, blockNotice, selectionLine(ev), width)
 	default:
 		// session.started (the shell echoes the prompt itself), turn.started,
 		// turn.completed, and action.admitted carry no transcript line; their
@@ -134,11 +136,7 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 // for a write or edit the diff of the change, so the transcript shows what the agent
 // did rather than only that it called a tool.
 func (v *transcriptView) toolCall(ev session.Event, width int) []string {
-	head := "  → " + ev.Tool
-	if target := toolTarget(ev.Input); target != "" {
-		head += " " + target
-	}
-	header := v.th.Render(theme.ToolName, head)
+	header := toolHead(v.th, ev.Tool, toolTarget(ev.Input), width)
 	diff := v.toolDiff(ev, width)
 	if len(diff) == 0 {
 		return []string{header}
@@ -223,7 +221,11 @@ func faultText(fault string) string {
 // the shell's live busy/queue state, styled by role so a theme restyles it
 // without touching this. Segments with nothing to say are omitted, so a run that
 // has not started yet shows only its record state.
-func statusBadge(th *theme.Theme, p session.Projection, busy bool, queued int) string {
+//
+// width is the row it must fit: hints are dropped lowest priority first until the
+// line fits, so a narrow terminal keeps the badge and the most useful keys instead
+// of cutting the row off mid-word. 0 keeps every hint.
+func statusBadge(th *theme.Theme, p session.Projection, busy bool, queued, width int) string {
 	var segs []string
 
 	segs = append(segs, th.Render(recordRole(p.Record), string(p.Record)))
@@ -248,11 +250,21 @@ func statusBadge(th *theme.Theme, p session.Projection, busy bool, queued int) s
 	}
 
 	badge := strings.Join(segs, th.Render(theme.Muted, " · "))
-	hint := statusHint(busy, queued)
-	if badge == "" {
-		return hint
+	gap := ""
+	if badge != "" {
+		gap = "   "
 	}
-	return badge + th.Render(theme.Muted, "  —  ") + hint
+	room := 0
+	if width > 0 {
+		if room = width - screen.Width(badge+gap); room < 1 {
+			return badge
+		}
+	}
+	hint := fitHints(statusHints(busy, queued), room)
+	if hint == "" {
+		return badge
+	}
+	return badge + gap + hint
 }
 
 // recordRole maps a record state to its badge role, so the state's color tracks
@@ -317,7 +329,7 @@ func (a *activity) Render(int) []string {
 func activityFor(ev session.Event) (string, bool) {
 	switch ev.Kind {
 	case session.KindToolCall:
-		return "running " + ev.Tool + "...", true
+		return "running " + text.Inert(ev.Tool) + "...", true
 	case session.KindToolResult:
 		return "thinking...", true
 	case session.KindTurnStarted:

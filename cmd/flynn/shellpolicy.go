@@ -22,12 +22,12 @@ type shellFlags struct {
 // registerShellFlags declares the shell policy flags on fs.
 func registerShellFlags(fs *flag.FlagSet) shellFlags {
 	return shellFlags{
-		maxMemory:        fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) caps it at half this machine's physical memory. Bounds a memory bomb or a command that keeps starting copies of itself; enforced where the platform supports it (a Windows job object today)."),
-		maxProcs:         fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop."),
-		allowNet:         fs.Bool("allow-network", false, "give the commands the agent runs the host's network. By default they run with none, so a command cannot send what it reads anywhere; this is needed for git over the network, package installs and anything else a command fetches. Windows cannot deny the network, so there they have it unless --require-network-denial is passed. The choice is recorded on the run's stream."),
-		allowCreds:       fs.Bool("allow-credential-reads", false, "leave the Flynn data directory and the host's credential locations (~/.ssh, cloud and CLI login tokens, keychain sockets) readable to the commands the agent runs. By default they are hidden on Linux and macOS; Windows cannot hide a path from a command, so there they stay readable unless --require-credential-hiding is passed. The choice is recorded on the run's stream."),
-		requireHidden:    fs.Bool("require-credential-hiding", false, "refuse to run a command where the platform cannot hide the Flynn data directory and the credential locations from it (Windows today), rather than running it with them readable. Has no effect on Linux and macOS, which always hide them unless --allow-credential-reads is passed."),
-		requireNetDenial: fs.Bool("require-network-denial", false, "refuse to run a command where the platform cannot deny it the network (Windows today), rather than running it with the host's network. Has no effect on Linux and macOS, which always deny it unless --allow-network is passed."),
+		maxMemory:        fs.Int("max-memory", 0, "cap a command's memory at this many `MiB`; 0 is half of the RAM"),
+		maxProcs:         fs.Int("max-processes", 0, "cap a command at `n` processes; 0 is the OS backstop"),
+		allowNet:         fs.Bool("allow-network", false, "give the commands the agent runs the host's network"),
+		allowCreds:       fs.Bool("allow-credential-reads", false, "leave the data directory and credential locations readable to commands"),
+		requireHidden:    fs.Bool("require-credential-hiding", false, "refuse a command where credential locations cannot be hidden from it"),
+		requireNetDenial: fs.Bool("require-network-denial", false, "refuse a command where the network cannot be denied to it"),
 	}
 }
 

@@ -12,8 +12,8 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// errSkillUsage is the usage line for `flynn skill`.
-var errSkillUsage = errors.New("usage: flynn skill ls | flynn skill show <skill> | flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file] [--keep dir]")
+// errSkillUsage refuses a `flynn skill` command line with the group's synopsis.
+var errSkillUsage = usageErr("skill")
 
 // skillListDescriptionWidth caps the description column of `flynn skill ls`, so one
 // long description does not push every row past the width of a terminal. The whole
@@ -29,18 +29,18 @@ func dispatchSkill(args []string, modelSpec, dataDir string, shell governed.Shel
 	switch args[0] {
 	case "ls", "list":
 		if len(args) != 1 {
-			return errSkillUsage
+			return usageErr("skill ls")
 		}
 		return listSkills(dataDir, out)
 	case "show":
 		if len(args) != 2 {
-			return errSkillUsage
+			return usageErr("skill show")
 		}
 		return showSkill(dataDir, args[1], out)
 	case "ab":
 		return runSkillAB(args[1:], modelSpec, dataDir, shell, out)
 	default:
-		return errSkillUsage
+		return unknownCommand("skill", args[0])
 	}
 }
 

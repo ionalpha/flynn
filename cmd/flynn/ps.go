@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -23,7 +22,7 @@ import (
 // refreshes this process's own Instance record, so the live process always appears.
 func dispatchPs(args []string, dataDir string) error {
 	if len(args) > 0 {
-		return errors.New("usage: flynn ps")
+		return usageErr("ps")
 	}
 	ctx := context.Background()
 	durable, err := openDataStore(ctx, dataDir)

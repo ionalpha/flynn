@@ -244,7 +244,7 @@ func TestMemoryUsageCommandOverADataDir(t *testing.T) {
 	if got := out.String(); !strings.Contains(got, "nothing has been pushed") {
 		t.Fatalf("output = %q, want the untouched-store line", got)
 	}
-	if err := dispatchMemory([]string{"usage", "--everything"}, "", dir, &out); !errors.Is(err, errMemoryUsage) {
+	if err := dispatchMemory([]string{"usage", "--everything"}, "", dir, &out); !errors.Is(err, usageErr("memory usage")) {
 		t.Fatalf("flynn memory usage --everything = %v, want the usage error", err)
 	}
 }

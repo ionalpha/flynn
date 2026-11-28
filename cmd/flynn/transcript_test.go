@@ -52,8 +52,8 @@ func TestTranscriptShortNumericAnswerNotDropped(t *testing.T) {
 }
 
 // TestTranscriptViewConversation covers the conversation events: the model's
-// prose renders (as markdown), a tool call names the tool, and a clean tool
-// result and the per-turn bookkeeping stay out of the transcript.
+// prose renders (as markdown), a tool call names the tool, a clean tool result
+// takes one row, and the per-turn bookkeeping stays out of the transcript.
 func TestTranscriptViewConversation(t *testing.T) {
 	v := newTranscriptView(theme.Default())
 
@@ -63,8 +63,8 @@ func TestTranscriptViewConversation(t *testing.T) {
 	if got := renderLines(v, session.Event{Kind: session.KindToolCall, Tool: "read_file"}); !strings.Contains(got, "read_file") {
 		t.Fatalf("tool call not rendered: %q", got)
 	}
-	if got := renderLines(v, session.Event{Kind: session.KindToolResult, Tool: "read_file", Result: "ok"}); got != "" {
-		t.Fatalf("a clean tool result must stay out of the transcript, got %q", got)
+	if got := renderLines(v, session.Event{Kind: session.KindToolResult, Tool: "read_file", Result: "ok\nmore"}); !strings.Contains(got, "ok (+1 lines)") || strings.Contains(got, "\n") {
+		t.Fatalf("a clean tool result takes one summary row, got %q", got)
 	}
 	if got := renderLines(v, session.Event{Kind: session.KindTurnCompleted, Turn: 1}); got != "" {
 		t.Fatalf("turn.completed must fold into the badge, not the transcript, got %q", got)
@@ -124,7 +124,7 @@ func TestStatusBadge(t *testing.T) {
 	th := theme.Default()
 
 	// A fresh run shows its record state and the idle hint.
-	idle := statusBadge(th, session.NewProjection(), false, 0)
+	idle := statusBadge(th, session.NewProjection(), false, 0, 0)
 	if !strings.Contains(idle, "recording") || !strings.Contains(idle, "enter sends") {
 		t.Fatalf("idle badge missing record state or hint: %q", idle)
 	}
@@ -140,7 +140,7 @@ func TestStatusBadge(t *testing.T) {
 	} {
 		p = session.Reduce(p, ev)
 	}
-	busy := statusBadge(th, p, true, 2)
+	busy := statusBadge(th, p, true, 2, 0)
 	for _, want := range []string{"sealed", "semi-trusted code", "1 blocked", "1 turns", "1.2k in", "working...", "2 queued"} {
 		if !strings.Contains(busy, want) {
 			t.Fatalf("busy badge missing %q:\n%s", want, busy)

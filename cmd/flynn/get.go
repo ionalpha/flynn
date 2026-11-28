@@ -142,7 +142,7 @@ func dispatchGet(args []string, dataDir string) error {
 // what a test reads.
 func getResources(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 1 {
-		return errors.New("usage: flynn get <kind> (instances, agents, runs, ...)")
+		return usageErr("get")
 	}
 	ctx := context.Background()
 	durable, err := openDataStore(ctx, dataDir)
@@ -180,7 +180,7 @@ func dispatchDescribe(args []string, dataDir string) error {
 // describeResource is dispatchDescribe with the destination named.
 func describeResource(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 2 {
-		return errors.New("usage: flynn describe <kind> <name-or-id>")
+		return usageErr("describe")
 	}
 	ctx := context.Background()
 	durable, err := openDataStore(ctx, dataDir)
@@ -221,7 +221,7 @@ func dispatchDiff(args []string, dataDir string) error {
 // diffResources is dispatchDiff with the destination named.
 func diffResources(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 3 {
-		return errors.New("usage: flynn diff <kind> <name-or-id> <name-or-id>")
+		return usageErr("diff")
 	}
 	ctx := context.Background()
 	durable, err := openDataStore(ctx, dataDir)

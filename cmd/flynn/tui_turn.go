@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/internal/tui/editor"
-	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -126,13 +125,13 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.pokeLive()
 		switch {
 		case errors.Is(err, context.Canceled):
-			h.ui.Append("  (turn cancelled)")
+			h.note(blockCancelled, "turn cancelled")
 		case err != nil:
-			h.ui.Append("  error: " + err.Error())
+			h.note(blockError, "error: "+err.Error())
 		case !h.rendered:
 			// The turn finished cleanly but produced nothing to show (a weak model
 			// that emitted only whitespace), so say so rather than leave a blank.
-			h.ui.Append(h.th.Render(theme.Muted, "  (no response)"))
+			h.note(blockNotice, "no response")
 		}
 		h.next()
 	}()
@@ -150,7 +149,7 @@ func (h *sessionHost) startShell(cmdLine string) {
 	h.mu.Unlock()
 	h.refreshStatus()
 
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "! ")+h.th.Render(theme.UserText, cmdLine), "")
+	h.echo(blockShell, cmdLine)
 	h.turns.Add(1)
 	go func() {
 		defer h.turns.Done()
@@ -165,7 +164,7 @@ func (h *sessionHost) startShell(cmdLine string) {
 // not zero. Cancellation reads as a cancelled command, not an error.
 func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 	if cmdLine == "" {
-		h.ui.Append(h.th.Render(theme.Status, "  usage: !<command> runs a shell command in "+h.s.cwd))
+		h.note(blockNotice, "usage: !<command> runs a shell command in "+shortPath(h.s.cwd))
 		return
 	}
 	if h.run == nil {
@@ -173,26 +172,26 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 		if h.runErr != nil {
 			msg = h.runErr.Error()
 		}
-		h.ui.Append("  shell mode unavailable: " + msg)
+		h.note(blockError, "shell mode unavailable: "+msg)
 		return
 	}
 	res, err := h.run.Exec(ctx, sandbox.Command{Line: cmdLine})
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
-		h.ui.Append("  (command cancelled)")
+		h.note(blockCancelled, "command cancelled")
 		return
 	case err != nil:
-		h.ui.Append("  error: " + err.Error())
+		h.note(blockError, "error: "+err.Error())
 		return
 	}
 	var lines []string
 	if out := strings.TrimRight(res.Output, "\n"); out != "" {
 		for _, line := range strings.Split(out, "\n") {
-			lines = append(lines, h.th.Render(theme.ToolOutput, "  "+strings.TrimRight(line, "\r")))
+			lines = append(lines, layBlock(h.th, blockOutput, line, h.ui.Width())...)
 		}
 	}
 	if res.ExitCode != 0 {
-		lines = append(lines, h.th.Render(theme.Rejected, fmt.Sprintf("  exit %d", res.ExitCode)))
+		lines = append(lines, layBlock(h.th, blockToolError, fmt.Sprintf("exit %d", res.ExitCode), 0)...)
 	}
 	if len(lines) > 0 {
 		h.ui.Append(lines...)

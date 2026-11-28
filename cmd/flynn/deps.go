@@ -37,7 +37,7 @@ func runDeps(args []string, dataDir string) error {
 	case "install", "ensure":
 		run = depsInstall
 	default:
-		return fmt.Errorf("deps: unknown subcommand %q (want ls, check, or install)", args[0])
+		return unknownCommand("deps", args[0])
 	}
 	ctx := context.Background()
 	rt, err := openDepsRuntime(ctx, dataDir)
@@ -150,7 +150,7 @@ func depStatus(rep dependency.Report) string {
 
 func depsInstall(ctx context.Context, rt *depsRuntime, out io.Writer, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn deps install <name>")
+		return usageErr("deps install")
 	}
 	name := args[0]
 	if _, err := rt.store.Get(ctx, name); err != nil {
