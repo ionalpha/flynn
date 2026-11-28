@@ -18,8 +18,9 @@ func (s *Store) Jobs() jobs.Queue { return &jobQueue{s} }
 type jobQueue struct{ p *Store }
 
 var (
-	_ jobs.Queue = (*jobQueue)(nil)
-	_ jobs.Waker = (*jobQueue)(nil)
+	_ jobs.Queue    = (*jobQueue)(nil)
+	_ jobs.Waker    = (*jobQueue)(nil)
+	_ jobs.Releaser = (*jobQueue)(nil)
 )
 
 // Ready signals only this process's writes; polling covers other processes.
@@ -98,13 +99,12 @@ func (q *jobQueue) Claim(ctx context.Context, p jobs.ClaimParams) ([]jobs.Job, e
 				(state = ? AND run_at <= ?) OR
 				(state = ? AND lease_expires <= ? AND attempt < max_attempts)
 			 )
-			 ORDER BY run_at, created_at, id
-			 LIMIT ?`,
-			queue, string(jobs.StatePending), now, string(jobs.StateRunning), now, limit)
+			 ORDER BY run_at, created_at, id`,
+			queue, string(jobs.StatePending), now, string(jobs.StateRunning), now)
 		if err != nil {
 			return err
 		}
-		ready, err := collectJobs(rows)
+		ready, err := takeJobs(rows, p, limit)
 		if err != nil {
 			return err
 		}
@@ -194,18 +194,45 @@ func (q *jobQueue) Recover(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// ReleasePayload implements [jobs.Releaser].
+func (q *jobQueue) ReleasePayload(ctx context.Context, queue string, payload []byte) (int, error) {
+	now := q.p.clk.Now().UnixNano()
+	var n int64
+	err := q.p.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE jobs SET lease_expires = 0, updated_at = ? WHERE queue = ? AND state = ? AND payload = ?`,
+			now, queue, string(jobs.StateRunning), payload)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: release jobs: %w", err)
+	}
+	if n > 0 {
+		jobs.Notify(q.p.jobsReady)
+	}
+	return int(n), nil
+}
+
 // Close is a no-op; the Store owns the database.
 func (q *jobQueue) Close() error { return nil }
 
-func collectJobs(rows *sql.Rows) ([]jobs.Job, error) {
+// takeJobs reads rows until limit of them pass p's filter. The filter cannot be a LIMIT in
+// SQL, which would count the rows it rejects.
+func takeJobs(rows *sql.Rows, p jobs.ClaimParams, limit int) ([]jobs.Job, error) {
 	defer func() { _ = rows.Close() }()
 	out := make([]jobs.Job, 0)
-	for rows.Next() {
+	for len(out) < limit && rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, j)
+		if jobs.Accepted(p, j) {
+			out = append(out, j)
+		}
 	}
 	return out, rows.Err()
 }

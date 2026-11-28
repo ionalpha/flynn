@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"sync"
@@ -75,8 +76,9 @@ func NewMemory(opts ...Option) *MemoryQueue {
 }
 
 var (
-	_ Queue = (*MemoryQueue)(nil)
-	_ Waker = (*MemoryQueue)(nil)
+	_ Queue    = (*MemoryQueue)(nil)
+	_ Waker    = (*MemoryQueue)(nil)
+	_ Releaser = (*MemoryQueue)(nil)
 )
 
 // Ready implements [Waker]. Recover also signals it.
@@ -139,7 +141,7 @@ func (q *MemoryQueue) Claim(_ context.Context, p ClaimParams) ([]Job, error) {
 			q.evict(j) // deleting while ranging a map is safe in Go
 			continue
 		}
-		if Claimable(*j, now) {
+		if Claimable(*j, now) && Accepted(p, *j) {
 			ready = append(ready, j)
 		}
 	}
@@ -237,6 +239,24 @@ func (q *MemoryQueue) Recover(context.Context) (int, error) {
 				MarkRecovered(j, now)
 				n++
 			}
+		}
+	}
+	q.mu.Unlock()
+	if n > 0 {
+		Notify(q.ready)
+	}
+	return n, nil
+}
+
+// ReleasePayload implements [Releaser].
+func (q *MemoryQueue) ReleasePayload(_ context.Context, queue string, payload []byte) (int, error) {
+	now := q.clk.Now().UnixNano()
+	q.mu.Lock()
+	n := 0
+	for _, j := range q.active[queue] {
+		if j.State == StateRunning && bytes.Equal(j.Payload, payload) {
+			MarkRecovered(j, now)
+			n++
 		}
 	}
 	q.mu.Unlock()

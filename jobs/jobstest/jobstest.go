@@ -41,6 +41,61 @@ func RunSuite(t *testing.T, newQueue func() Harness) {
 	t.Run("RecoverReclaimsRunningAtOnce", func(t *testing.T) { testRecoverReclaims(t, newQueue()) })
 	t.Run("RecoverReapsExhausted", func(t *testing.T) { testRecoverReapsExhausted(t, newQueue()) })
 	t.Run("RecoverIgnoresPending", func(t *testing.T) { testRecoverIgnoresPending(t, newQueue()) })
+	t.Run("ClaimHonoursFilter", func(t *testing.T) { testClaimFilter(t, newQueue()) })
+	t.Run("ReleasePayloadTouchesOnlyThatPayload", func(t *testing.T) { testReleasePayload(t, newQueue()) })
+}
+
+type payloadIs string
+
+func (p payloadIs) Accepts(j jobs.Job) bool { return string(j.Payload) == string(p) }
+
+// A rejected job is left as it was, and does not use up the limit.
+func testClaimFilter(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	other := mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", Payload: []byte("other")})
+	h.Clock.Advance(time.Second)
+	mine := mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", Payload: []byte("mine")})
+
+	got, err := h.Queue.Claim(ctx(), jobs.ClaimParams{Limit: 1, LeaseFor: lease, Filter: payloadIs("mine")})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != mine.ID {
+		t.Fatalf("claimed %+v, want only %s", got, mine.ID)
+	}
+	left, err := h.Queue.Get(ctx(), other.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if left.State != jobs.StatePending || left.Attempt != 0 {
+		t.Fatalf("rejected job is %s after %d attempts, want untouched", left.State, left.Attempt)
+	}
+}
+
+// A backend without [jobs.Releaser] has nothing to check.
+func testReleasePayload(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	r, ok := h.Queue.(jobs.Releaser)
+	if !ok {
+		return
+	}
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", Payload: []byte("mine")})
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", Payload: []byte("other")})
+	held, err := h.Queue.Claim(ctx(), jobs.ClaimParams{Limit: 2, LeaseFor: lease})
+	if err != nil || len(held) != 2 {
+		t.Fatalf("Claim = %v, %v", held, err)
+	}
+	n, err := r.ReleasePayload(ctx(), jobs.DefaultQueue, []byte("mine"))
+	if err != nil || n != 1 {
+		t.Fatalf("ReleasePayload = %d, %v, want 1", n, err)
+	}
+	j, ok := claimOne(t, h, "")
+	if !ok || string(j.Payload) != "mine" || j.Attempt != 2 {
+		t.Fatalf("reclaimed %q attempt %d (%v), want the released job", j.Payload, j.Attempt, ok)
+	}
+	if j, ok := claimOne(t, h, ""); ok {
+		t.Fatalf("claimed %q, whose lease was not released", j.Payload)
+	}
 }
 
 const lease = int64(time.Minute)

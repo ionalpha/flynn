@@ -226,6 +226,8 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		// Allowances are copied and apply only within the narrowed grant. A run
 		// cannot mint one for its child, or it would be declaring its own authority.
 		Allowances: parentSpec.Allowances,
+		// A child runs where its parent does, under the same ceiling.
+		Confinement: parentSpec.Confinement,
 	}
 	raw, err := json.Marshal(childSpec)
 	if err != nil {

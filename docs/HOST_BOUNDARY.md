@@ -394,12 +394,15 @@ injected. Not implementing one is supported; the table gives the fallback.
 | `sandbox.Contained` | `sandbox.Local` with confinement, the container and microVM backends | the sandbox is treated as the weakest tier, so an unknown tier is never assumed to contain more than it proves |
 | `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
 | `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |
+| `jobs.Releaser` | `jobs.MemoryQueue`, `storage/sqlite` job queue | resuming a run whose process crashed waits for the crashed process's lease to expire |
 
 ## Interfaces that are not ports
 
 - `bus.Subscription`, `clock.Timer`, `observe.Span`, `observe.Counter`,
   `observe.Histogram`: handles a port returns. Whoever implements `bus.Bus`,
   `clock.Timing` or `observe.Meter` implements these with it.
+- `jobs.Filter`: Flynn implements it (the runtime's set of goals it drives) and a queue
+  consumes it while claiming. There is nothing for a host to supply.
 - `reconcile.Reconciler`: Flynn implements it and the reconcile loop consumes it.
   There is nothing for a host to supply.
 - `budget.Recorder`, `budget.Reopener`: the two halves of a budget extension that

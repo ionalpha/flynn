@@ -64,6 +64,9 @@ type Worker struct {
 	retryCeil time.Duration
 	// checkDir empty disables the [ShadowedCommands] search.
 	checkDir string
+	// claims limits which jobs are leased; nil takes every job on the queue.
+	claims      jobs.Filter
+	confinement *Confinement
 }
 
 // WorkerOption configures a Worker.
@@ -88,6 +91,15 @@ func WithItemVerification(v ItemVerifier, e Evidence) WorkerOption {
 // (test.bat for `test`) is refused unrun, because a check the agent can write measures
 // nothing.
 func WithCheckDir(dir string) WorkerOption { return func(w *Worker) { w.checkDir = dir } }
+
+// WithClaimFilter limits the worker to the jobs f accepts, for a process sharing its queue
+// with others whose steps it must not run.
+func WithClaimFilter(f jobs.Filter) WorkerOption { return func(w *Worker) { w.claims = f } }
+
+// WithConfinement declares where the worker's executor runs and what it may do. A step runs
+// only if c covers what its goal recorded, so a worker without it runs only goals that
+// recorded nothing.
+func WithConfinement(c *Confinement) WorkerOption { return func(w *Worker) { w.confinement = c } }
 
 // WithLease overrides the step lease duration.
 func WithLease(d time.Duration) WorkerOption {
@@ -129,11 +141,16 @@ func NewWorker(store resource.Store, q jobs.Queue, clk clock.Timing, exec StepEx
 
 // ProcessOnce runs at most one step and reports whether it did.
 func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
-	claimed, err := w.jobs.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(w.lease)})
+	claimed, err := w.jobs.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(w.lease), Filter: w.claims})
 	if err != nil {
 		return false, err
 	}
 	if len(claimed) == 0 {
+		return false, nil
+	}
+	if w.claims != nil && !w.claims.Accepts(claimed[0]) {
+		// A queue that ignores the filter handed over another process's step. It is not
+		// run or settled, so its lease lapses and its owner can claim it.
 		return false, nil
 	}
 	return true, w.runStep(ctx, claimed[0])
@@ -188,6 +205,9 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	}
 	if r.DeletionTimestamp != nil {
 		return w.jobs.Complete(ctx, job.ID)
+	}
+	if err := CheckConfinement(w.confinement, r); err != nil {
+		return w.fail(ctx, job, err)
 	}
 	switch job.Kind {
 	case PlanJobKind:

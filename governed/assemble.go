@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/evidence"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/spinesink"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -338,6 +340,23 @@ func (c *config) observer(p *parts) mission.Reporter {
 	return tee{p.sess.Reporter(), c.reporter}
 }
 
+// confinement is what the run's goals record: the named workspace, or the process
+// directory when the run builds its own host sandbox, and the run's grant.
+func (c *config) confinement(p *parts) (*goal.Confinement, error) {
+	dir := c.workdir
+	if dir == "" && c.sandbox == nil {
+		dir = "."
+	}
+	if dir != "" {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, fmt.Errorf("governed: resolve working directory: %w", err)
+		}
+		dir = abs
+	}
+	return &goal.Confinement{Workdir: dir, Grant: p.grant.Actions(), Unrestricted: p.grant.Unrestricted()}, nil
+}
+
 func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, error) {
 	g, err := c.gates(b, p)
 	if err != nil {
@@ -376,7 +395,12 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	}
 	_, auditWaived := c.waivers[GuardAudit]
 
+	confinement, err := c.confinement(p)
+	if err != nil {
+		return nil, err
+	}
 	cfg := runtime.Config{
+		Confinement:        confinement,
 		Store:              b.Resources,
 		Jobs:               b.Jobs,
 		PollInterval:       200 * time.Millisecond,

@@ -339,7 +339,8 @@ func TestPostureIsOnTheRecordBeforeAnythingStartsTheRun(t *testing.T) {
 // wired, so a continuation cannot quietly carry fewer guards than the run it continues.
 func TestResumeStatesThePostureAgain(t *testing.T) {
 	b, _ := memBackends(t)
-	first, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()))
+	dir := t.TempDir()
+	first, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(dir))
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestResumeStatesThePostureAgain(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	second, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithRunID(first.ID()),
+	second, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(dir), WithRunID(first.ID()),
 		Waive(GuardBudget, "the host meters spend"))
 	if err != nil {
 		t.Fatalf("assemble the resumed run: %v", err)
