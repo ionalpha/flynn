@@ -326,7 +326,7 @@ func TestRunLineModeWithoutTerminal(t *testing.T) {
 		t.Fatalf("runLineMode: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"flynn interactive session in", "openai:gpt-5.5", "input error", "goodbye"} {
+	for _, want := range []string{"/help for commands", "openai:gpt-5.5", "input error", "goodbye"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("line mode output missing %q:\n%s", want, out)
 		}
@@ -351,7 +351,7 @@ func TestRunInteractiveWithoutTerminal(t *testing.T) {
 		t.Fatalf("runInteractive: %v", err)
 	}
 	out := stdout()
-	for _, want := range []string{"flynn interactive session in", "openai:gpt-5.5", "goodbye"} {
+	for _, want := range []string{"/help for commands", "openai:gpt-5.5", "goodbye"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("interactive output missing %q:\n%s", want, out)
 		}

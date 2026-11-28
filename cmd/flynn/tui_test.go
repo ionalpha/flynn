@@ -96,7 +96,9 @@ func (f *fakeUI) liveLines(width int) []string {
 	return c.Render(width)
 }
 
-func (f *fakeUI) SetStatus(line string) {
+// SetStatusFunc records the status line built at the fake's fixed width.
+func (f *fakeUI) SetStatusFunc(fn func(width int) string) {
+	line := fn(f.Width())
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.status = line

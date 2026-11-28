@@ -1,0 +1,11 @@
+
+> find out why the build fails and fix it, then run the tests again to make sure nothing else broke
+
+  I will read the module file first, then run the build to see the failure for myself.
+→ read go.mod
+  ← read: module example.com/app (+2 lines)
+→ bash go build ./...
+  ✗ bash failed: main.go:12:2: undefined: handler; did you mean Handler, which is declared in server.go of this package
+· selection: bare; skills offered: none; tools granted: read, bash
+
+recording · 1 turns · 1.2k in / 300 out   enter sends · alt+enter newline · @ file · ! shell · /help · ctrl+d quits

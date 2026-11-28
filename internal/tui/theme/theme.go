@@ -51,6 +51,12 @@ const (
 	Warning         Role = "warning"
 	Error           Role = "error"
 	Muted           Role = "muted"
+	// Notice is a session message that is neither the conversation nor a failure:
+	// a project-files decision, a command's confirmation, a selection readout.
+	Notice Role = "notice"
+	// Cancelled marks work the user stopped, kept apart from Error so a cancel
+	// does not read as a fault.
+	Cancelled Role = "cancelled"
 )
 
 // The syntax roles: token classes in highlighted code. A highlighter buckets its

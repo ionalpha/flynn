@@ -36,7 +36,7 @@ func TestRunExtensionsDispatch(t *testing.T) {
 		t.Fatal("expected bare `extensions` to print its usage as an error")
 	}
 	err := runExtensions([]string{"nosuchverb"}, dataDir)
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error = %v, want an unknown-subcommand refusal", err)
 	}
 }

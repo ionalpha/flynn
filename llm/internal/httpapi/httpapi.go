@@ -21,6 +21,7 @@ import (
 	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/netguard"
+	"github.com/ionalpha/flynn/secret"
 )
 
 const (
@@ -91,7 +92,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
 			fmt.Sprintf("%s: response exceeds the %d-byte cap; rejected", c.name, int64(MaxResponseBytes)))
 	}
 	if resp.StatusCode/100 != 2 {
-		return statusError(c.name, resp.StatusCode, raw)
+		return statusError(c.name, resp.StatusCode, raw, credentials(req.Header)...)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fault.Wrap(fault.Terminal, c.name+"_decode", err)
@@ -105,7 +106,11 @@ func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
 // It is the one quota classifier for every provider, the union of their signals: OpenAI's
 // "insufficient_quota" type or code, with a quota or billing message as fallback, and
 // Anthropic's message ("credit balance is too low", billing).
-func statusError(name string, code int, body []byte) error {
+//
+// Each of secrets is replaced by [secret.Redacted] in the message before it goes into
+// the fault, because a provider or proxy can echo the key it refused and the fault
+// text reaches the terminal and any log a dev run is saved to.
+func statusError(name string, code int, body []byte, secrets ...string) error {
 	var e struct {
 		Error struct {
 			Type    string `json:"type"`
@@ -118,6 +123,11 @@ func statusError(name string, code int, body []byte) error {
 	if msg == "" {
 		msg = string(body)
 	}
+	for _, s := range secrets {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, secret.Redacted)
+		}
+	}
 	quota := e.Error.Type == "insufficient_quota" || e.Error.Code == "insufficient_quota" ||
 		text.ContainsAny(strings.ToLower(msg), "credit", "billing", "quota")
 	full := fmt.Sprintf("%s: HTTP %d: %s", name, code, msg)
@@ -125,6 +135,24 @@ func statusError(name string, code int, body []byte) error {
 		return fault.Wrap(fault.Terminal, name+"_status", overflowError(full))
 	}
 	return fault.New(llm.RetryClass(code, quota), name+"_status", full)
+}
+
+// credentialHeaders are the request headers a provider adapter puts its key in.
+var credentialHeaders = []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key", "Api-Key"}
+
+// credentials returns the key values h carries, with a bearer scheme stripped, so
+// [statusError] can redact them whichever form a provider echoes back.
+func credentials(h http.Header) []string {
+	var out []string
+	for _, name := range credentialHeaders {
+		for _, v := range h.Values(name) {
+			out = append(out, v)
+			if scheme, tok, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "bearer") {
+				out = append(out, strings.TrimSpace(tok))
+			}
+		}
+	}
+	return out
 }
 
 // overflowError is a refused-for-length response carrying the provider's own message,

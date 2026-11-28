@@ -8,7 +8,7 @@ if os.path.exists("scratch"):
     fails.append("scratch/ is still there")
 texts = {}
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "scratch")]
+    dirs[:] = [d for d in dirs if d not in (".git", ".flynn-ab", "__pycache__", "scratch")]
     for name in files:
         p = os.path.join(root, name)
         try:

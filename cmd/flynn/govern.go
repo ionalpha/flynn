@@ -70,6 +70,8 @@ type assembly struct {
 	fanout   *fanoutConfig
 	ext      *externAgent
 	toolset  *boundToolset
+	// grant narrows the run's capabilities to these names when non-nil.
+	grant []string
 }
 
 // toolsetWaiver is the recorded reason a review-style run has no sandbox.
@@ -94,6 +96,9 @@ func (a assembly) options() []governed.Option {
 	}
 	if a.runID != "" {
 		opts = append(opts, governed.WithRunID(a.runID))
+	}
+	if a.grant != nil {
+		opts = append(opts, governed.WithCapabilities(a.grant...))
 	}
 	if a.planning {
 		opts = append(opts, governed.WithPlanning())

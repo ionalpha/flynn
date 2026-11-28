@@ -8,37 +8,39 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/state"
 )
 
-// errSkillUsage is the usage line for `flynn skill`.
-var errSkillUsage = errors.New("usage: flynn skill ls | flynn skill show <skill> | flynn skill ab <skill> [--repeats n] [--exercises dir]")
+// errSkillUsage refuses a `flynn skill` command line with the group's synopsis.
+var errSkillUsage = usageErr("skill")
 
 // skillListDescriptionWidth caps the description column of `flynn skill ls`, so one
 // long description does not push every row past the width of a terminal. The whole
 // text is one `flynn skill show` away.
 const skillListDescriptionWidth = 72
 
-// dispatchSkill routes `flynn skill <sub>`.
-func dispatchSkill(args []string, modelSpec, dataDir string, out io.Writer) error {
+// dispatchSkill routes `flynn skill <sub>`. shell is the policy the global flags built,
+// which `skill ab` gives every attempt it runs.
+func dispatchSkill(args []string, modelSpec, dataDir string, shell governed.ShellPolicy, out io.Writer) error {
 	if len(args) == 0 {
 		return errSkillUsage
 	}
 	switch args[0] {
 	case "ls", "list":
 		if len(args) != 1 {
-			return errSkillUsage
+			return usageErr("skill ls")
 		}
 		return listSkills(dataDir, out)
 	case "show":
 		if len(args) != 2 {
-			return errSkillUsage
+			return usageErr("skill show")
 		}
 		return showSkill(dataDir, args[1], out)
 	case "ab":
-		return runSkillAB(args[1:], modelSpec, dataDir, out)
+		return runSkillAB(args[1:], modelSpec, dataDir, shell, out)
 	default:
-		return errSkillUsage
+		return unknownCommand("skill", args[0])
 	}
 }
 

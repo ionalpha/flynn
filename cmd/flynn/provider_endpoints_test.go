@@ -227,7 +227,8 @@ func TestConfiguredServerNames(t *testing.T) {
 // model a bare "anthropic" resolves to, so changing one cannot leave the other behind.
 func TestModelFlagDefaultIsTheProviderDefault(t *testing.T) {
 	got := runCLI(t, "-h")
-	if want := `(default "` + provider.CanonicalSpec("anthropic") + `")`; !strings.Contains(got.stderr, want) {
-		t.Fatalf("--model default is not %s:\n%s", want, got.stderr)
+	page := strings.Join(strings.Fields(got.stdout), " ")
+	if want := `(default "` + provider.CanonicalSpec("anthropic") + `")`; !strings.Contains(page, want) {
+		t.Fatalf("--model default is not %s:\n%s", want, got.stdout)
 	}
 }

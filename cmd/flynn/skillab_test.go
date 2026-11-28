@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/sandbox/sandboxtest"
@@ -38,11 +39,11 @@ func writeExerciseSet(t *testing.T, slug, exercises string) string {
 // opening a store first would charge for a run that was never going to happen.
 func TestSkillABRefusesBeforeItSpends(t *testing.T) {
 	var out bytes.Buffer
-	if err := runSkillAB(nil, "", t.TempDir(), &out); err == nil {
+	if err := runSkillAB(nil, "", t.TempDir(), governed.ShellPolicy{}, &out); err == nil {
 		t.Fatal("a call naming no skill was accepted")
 	}
 	root := writeExerciseSet(t, "present", "do the thing | exit 0\n")
-	err := runSkillAB([]string{"--exercises", root, "absent"}, "", t.TempDir(), &out)
+	err := runSkillAB([]string{"--exercises", root, "absent"}, "", t.TempDir(), governed.ShellPolicy{}, &out)
 	if err == nil {
 		t.Fatal("a skill with no exercise set was accepted")
 	}
@@ -70,17 +71,45 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "any-skill"}, exercise, 1, true)
+			got, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, true, abArms{}, governed.ShellPolicy{}, "")
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
-			if got != tc.want {
-				t.Errorf("trial reported %v, want %v: the verifier is what decides a run", got, tc.want)
+			if got.Passed != tc.want {
+				t.Errorf("trial reported %v, want %v: the verifier is what decides a run", got.Passed, tc.want)
+			}
+			if got.Cost.Turns != 1 {
+				t.Errorf("cost recorded %d turns, want the 1 the model took", got.Cost.Turns)
 			}
 			if !strings.Contains(out.String(), "[with, repeat 1]") {
 				t.Errorf("the trial did not say which arm it ran:\n%s", out.String())
 			}
 		})
+	}
+}
+
+// The arm with the skill starts with its full text and the arm without it does not.
+// With the skill only installed, both arms saw the same prompt whenever search did not
+// rank it among the skills offered, and the comparison measured nothing.
+func TestTrialLoadsTheSkillOnlyOnTheArmThatHasIt(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const marker = "The skill deletion is loaded for this run."
+	for _, candidate := range []bool{true, false} {
+		var out bytes.Buffer
+		model := llmtest.NewScripted(llmtest.SayText("done"))
+		exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
+		if _, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "deletion"}, exercise, 1, candidate, abArms{}, governed.ShellPolicy{}, ""); err != nil {
+			t.Fatalf("trial (with skill %v): %v", candidate, err)
+		}
+		reqs := model.Requests()
+		if len(reqs) == 0 {
+			t.Fatalf("trial (with skill %v) made no model call", candidate)
+		}
+		if got := strings.Contains(reqs[0].System, marker); got != candidate {
+			t.Errorf("with skill %v: first request carries the skill: %v", candidate, got)
+		}
 	}
 }
 
@@ -95,7 +124,7 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false)
+	_, err := runTrial(ctx, &out, model, nil, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false, abArms{}, governed.ShellPolicy{}, "")
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}
@@ -116,11 +145,11 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 	set.Exercises = append(set.Exercises, skillab.Exercise{Objective: "held out", Verify: "exit 0", Holdout: true})
 
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 1, func(_ context.Context, tk skillab.Exercise, _ int, withSkill bool) (bool, error) {
+	err := measureSkill(context.Background(), &out, set, 1, skillab.Arms{}, skillab.Limit{}, func(_ context.Context, tk skillab.Exercise, _ int, withSkill bool) (skillab.Outcome, error) {
 		if tk.Holdout {
-			return true, nil // the skill changes nothing on the held-out exercise
+			return skillab.Outcome{Passed: true}, nil // the skill changes nothing on the held-out exercise
 		}
-		return withSkill, nil
+		return skillab.Outcome{Passed: withSkill}, nil
 	})
 	if err != nil {
 		t.Fatalf("measure: %v", err)
@@ -143,8 +172,8 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 func TestSkillABReportsNothingWhenTheMeasurementFails(t *testing.T) {
 	set := skillab.Set{Skill: "x", Exercises: []skillab.Exercise{{Objective: "do the thing", Verify: "exit 0"}}}
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 0, func(context.Context, skillab.Exercise, int, bool) (bool, error) {
-		return false, errors.New("the sandbox would not start")
+	err := measureSkill(context.Background(), &out, set, 0, skillab.Arms{}, skillab.Limit{}, func(context.Context, skillab.Exercise, int, bool) (skillab.Outcome, error) {
+		return skillab.Outcome{}, errors.New("the sandbox would not start")
 	})
 	if err == nil {
 		t.Fatal("a failed measurement returned no error")
@@ -158,7 +187,7 @@ func TestSkillABReportsNothingWhenTheMeasurementFails(t *testing.T) {
 // is resolved and before a store is opened.
 func TestSkillABRefusesAnUnknownFlag(t *testing.T) {
 	var out bytes.Buffer
-	if _, _, err := skillABArgs([]string{"--nope", "systematic-debugging"}, &out); err == nil {
+	if _, _, _, err := skillABArgs([]string{"--nope", "systematic-debugging"}, &out); err == nil {
 		t.Fatal("an unknown flag was accepted")
 	}
 }
@@ -169,7 +198,7 @@ func TestSkillABRefusesAnUnknownFlag(t *testing.T) {
 func TestSkillABSaysWhenNothingIsHeldBack(t *testing.T) {
 	root := writeExerciseSet(t, "open-only", "do the thing | exit 0\n")
 	var out bytes.Buffer
-	set, repeats, err := skillABArgs([]string{"--exercises", root, "--repeats", "2", "open-only"}, &out)
+	set, repeats, _, err := skillABArgs([]string{"--exercises", root, "--repeats", "2", "open-only"}, &out)
 	if err != nil {
 		t.Fatalf("args: %v", err)
 	}
@@ -185,7 +214,7 @@ func TestSkillABSaysWhenNothingIsHeldBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	var quiet bytes.Buffer
-	set, _, err = skillABArgs([]string{"--exercises", root, "open-only"}, &quiet)
+	set, _, _, err = skillABArgs([]string{"--exercises", root, "open-only"}, &quiet)
 	if err != nil {
 		t.Fatalf("args: %v", err)
 	}
@@ -245,7 +274,7 @@ func TestSkillABAcceptsFlagsOnEitherSideOfTheSkillName(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer
-			got, repeats, err := skillABArgs(args, &out)
+			got, repeats, _, err := skillABArgs(args, &out)
 			if err != nil {
 				t.Fatalf("skillABArgs: %v", err)
 			}
@@ -264,7 +293,7 @@ func TestSkillABAcceptsFlagsOnEitherSideOfTheSkillName(t *testing.T) {
 // nobody asked about.
 func TestSkillABRefusesTwoSkillNames(t *testing.T) {
 	var out bytes.Buffer
-	if _, _, err := skillABArgs([]string{"one", "two"}, &out); err == nil {
+	if _, _, _, err := skillABArgs([]string{"one", "two"}, &out); err == nil {
 		t.Fatal("two skill names were accepted")
 	}
 }

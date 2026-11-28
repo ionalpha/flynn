@@ -65,6 +65,10 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), extAgent != nil, false, false)
+	if err != nil {
+		return err
+	}
 	reg, err := governed.Registry()
 	if err != nil {
 		return err
@@ -107,6 +111,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		verbose:      verbose,
 		cwd:          cwd,
 		store:        store,
+		selection:    &selPlan,
 		reg:          reg,
 		signer:       signer,
 		dataDir:      dataDir,
@@ -143,7 +148,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// because the question is asked on it. An external agent CLI reads its own project
 	// files, so only a native session decides.
 	if extAgent == nil {
-		s.project = projectDecision(cwd, dataDir)
+		s.project = projectDecisionFor(cwd, dataDir)
 	}
 	if s.started {
 		// A resumed run carries no opening turn to build its instructions on, so it gets
@@ -173,10 +178,20 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
-	s.notice = func(text string) { _, _ = fmt.Fprintf(s.out, "  %s\n", text) }
-	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, s.modelSpec)
-	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
+	s.notice = func(text string) { s.plainBlock(blockNotice, text) }
+	for _, l := range sessionBanner(nil, s.modelSpec, cwd, s.project) {
+		_, _ = fmt.Fprintln(s.out, l)
+	}
+	_, _ = fmt.Fprintln(s.out, `Ctrl-C cancels a turn; Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
+}
+
+// plainBlock writes one unstyled block to the session's output, the line
+// interface's form of the shell's notices, errors and cancellations.
+func (s *replSession) plainBlock(k blockKind, text string) {
+	for _, l := range layBlock(nil, k, text, 0) {
+		_, _ = fmt.Fprintln(s.out, l)
+	}
 }
 
 // stdinIsTerminal reports whether standard input is an interactive terminal, so the

@@ -55,7 +55,7 @@ func knownRole(r Role) bool {
 		ToolName, ToolDetail, ToolOutput, Admitted, Rejected,
 		Trust, DiffAdded, DiffRemoved, DiffContext, DiffLocation, Status,
 		StatusBusy, RecordRecording, RecordSealed, RecordVerified, RecordFailed,
-		Success, Warning, Error, Muted, Border, Overlay, Selection, Placeholder,
+		Success, Warning, Error, Muted, Notice, Cancelled, Border, Overlay, Selection, Placeholder,
 		PasteChip, QueuedChip:
 		return true
 	}

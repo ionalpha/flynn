@@ -20,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
+	"github.com/ionalpha/flynn/state"
 )
 
 // runTurn drives one user turn to a terminal event, rendering it live. The first
@@ -76,8 +77,15 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		if s.verbose {
 			digestErrs = s.out
 		}
-		s.system = governed.WithWake(turnCtx, s.memory(), s.system, digestErrs)
-		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.memory().Store(), userText); block != "" {
+		// A bare session gets no digest and recalls no memory; skills come from the
+		// selection's view of the store.
+		var recallMemory state.MemoryStore = s.memory().Store()
+		if s.selection != nil && s.selection.cfg.Bare {
+			recallMemory = nil
+		} else {
+			s.system = governed.WithWake(turnCtx, s.memory(), s.system, digestErrs)
+		}
+		if block, recalled, items := recallContext(turnCtx, s.skillView(), recallMemory, userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
 			// Surface what past learning was pulled into context (naming each item), so
@@ -99,12 +107,15 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// The turn is reassembled each message; the skill toolset is not, so what the
 	// session has read accumulates across the whole conversation.
 	if s.skillset == nil {
-		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().SkillNotes()))
+		s.skillset = skilltool.New(s.skillView(), skilltool.WithNotes(s.memory().SkillNotes()))
 	}
 	asm := assembly{
 		model: s.model, plan: s.plan, workdir: s.cwd, system: s.system,
 		rstore: s.store.Resources(s.reg), jq: s.store.Jobs(), log: s.store.Log(),
 		skills: s.skillset, runID: s.runID, gates: s.gates, shell: s.shell,
+	}
+	if s.selection != nil {
+		asm.grant = s.selection.grant
 	}
 	if s.ext != nil {
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
@@ -162,6 +173,7 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 	// at which every kind of turn has a stream to write the decision to.
 	if !s.projectRecorded {
 		recordProjectDecision(turnCtx, s.out, s.store.Log(), s.project, s.runID)
+		recordSelection(turnCtx, s.out, s.store.Log(), s.selection, s.runID)
 		s.projectRecorded = true
 	}
 

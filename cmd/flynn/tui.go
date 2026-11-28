@@ -100,7 +100,7 @@ func runInteractiveTUI(ctx context.Context, s *replSession) error {
 func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int, altScreen bool) (*app.App, *sessionHost) {
 	th := s.theme
 	if th == nil {
-		th = theme.Default()
+		th = defaultTheme(os.Getenv)
 	}
 	host := &sessionHost{
 		ctx:      ctx,
@@ -142,7 +142,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	host.ui = a
 	// Recall (and any future out-of-band note) lands in the scrollback as a muted
 	// line, so what the agent pulled in from earlier runs is visible.
-	s.notice = func(text string) { a.Append(th.Render(theme.Muted, "  "+text)) }
+	s.notice = func(text string) { a.Append(layBlock(th, blockNotice, text, a.Width())...) }
 	// This is the shell that can actually ask a person, so this is where the prompter is
 	// installed. A paused action raises the modal overlay and the operator's allow or
 	// deny resolves it; without this the session would have a gate and nobody to ask, and
@@ -186,6 +186,17 @@ func loadKeymap(dataDir string) (editor.Keymap, error) {
 		return nil, fmt.Errorf("%s: %w", f.Name(), err)
 	}
 	return km, nil
+}
+
+// defaultTheme is the theme used when the user has no theme file: the attribute-only
+// theme when NO_COLOR is set to anything (https://no-color.org), the default
+// otherwise. A theme file the user wrote wins over NO_COLOR, since it is the more
+// specific instruction.
+func defaultTheme(getenv func(string) string) *theme.Theme {
+	if getenv("NO_COLOR") != "" {
+		return theme.Mono()
+	}
+	return theme.Default()
 }
 
 // loadTheme reads the user's theme from theme.json in the data directory,

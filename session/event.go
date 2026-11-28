@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/ionalpha/flynn/approval"
@@ -93,6 +94,11 @@ const (
 	// basis (flag, remembered, prompt, unattended), and Text one file per line with
 	// its content hash.
 	KindProjectContext Kind = "project.context"
+
+	// KindSelection is the operator's choice of skills and tools for the run: Reason is
+	// the mode (bare or custom) and Text one line each for the skills offered, the skills
+	// denied and the tools granted. Written once per run, by the operator's flags.
+	KindSelection Kind = "run.selection"
 )
 
 // Event types the dispatch waist and the sealer write onto a run's stream,
@@ -112,6 +118,7 @@ const (
 	typeApprovalDecision  = "approval.decision"
 
 	typeProjectContext = "project.context"
+	typeSelection      = "run.selection"
 )
 
 // Event is one record on a session's stream. Seq is monotonic within a session
@@ -307,6 +314,8 @@ func decodeBody(se spine.Event) Event {
 		return approvalDecisionEvent(se)
 	case typeProjectContext:
 		return projectContextEvent(se)
+	case typeSelection:
+		return selectionEvent(se)
 	default:
 		var e Event
 		if s, ok := se.Payload[payloadKey].(string); ok {
@@ -352,6 +361,19 @@ func projectContextEvent(se spine.Event) Event {
 	if v, _ := se.Payload["verdict"].(string); v == "loaded" {
 		e.Allowed = true
 	}
+	return e
+}
+
+// selectionEvent reads a selection record into a mode and three lines of text. The
+// offered count is kept in the line, so a viewer needs no second field to say "0 skills".
+func selectionEvent(se spine.Event) Event {
+	e := Event{Kind: KindSelection}
+	e.Reason, _ = se.Payload["mode"].(string)
+	allowed, _ := se.Payload["allowed"].(string)
+	denied, _ := se.Payload["denied"].(string)
+	tools, _ := se.Payload["tools"].(string)
+	e.Text = fmt.Sprintf("skills offered: %d (allowed: %s)\nskills denied: %s\ntools: %s",
+		asInt64(se.Payload["offered"]), allowed, denied, tools)
 	return e
 }
 
