@@ -1,5 +1,5 @@
 import os
-import tempfile
+import shutil
 import unittest
 
 import api
@@ -10,7 +10,10 @@ import worker
 
 class ReportTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.abspath("test-tmp")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.makedirs(self.tmp)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         queue_store.PATH = os.path.join(self.tmp, "jobs.jsonl")
         worker.OUT_DIR = os.path.join(self.tmp, "reports")
 
