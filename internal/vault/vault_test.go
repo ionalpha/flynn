@@ -261,7 +261,7 @@ func TestStoreSealedFileIsEncryptedAtRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The on-disk file must not contain the plaintext value anywhere.
-	if !s.fileExists() {
+	if exists, _ := s.fileExists(); !exists {
 		t.Fatal("expected a sealed file to exist")
 	}
 	blob, err := os.ReadFile(s.file)
@@ -270,6 +270,38 @@ func TestStoreSealedFileIsEncryptedAtRest(t *testing.T) {
 	}
 	if strings.Contains(string(blob), "sk-plaintext-must-not-appear") {
 		t.Fatalf("sealed file leaked the plaintext:\n%s", blob)
+	}
+}
+
+// TestDeleteReportsAnUncheckableSealedFile checks a stat that fails for a reason other
+// than absence fails Delete. Read as "no sealed file", it reported the credential gone
+// while a sealed copy could still be on disk. A NUL byte in the path makes the stat
+// fail on every platform without the file being absent.
+func TestDeleteReportsAnUncheckableSealedFile(t *testing.T) {
+	s := New(t.TempDir(), WithKeyring(fakeKeyring{}), WithPassphrase(fixedPass("pw")))
+	s.file = t.TempDir() + string(filepath.Separator) + "bad\x00name"
+
+	exists, err := s.fileExists()
+	if err == nil || exists {
+		t.Fatalf("fileExists = %v, %v, want an error", exists, err)
+	}
+	if err := s.Delete(context.Background(), "K"); err == nil {
+		t.Fatal("Delete reported success on a sealed file it could not check")
+	}
+	if err := s.saveFile(map[string]string{"K": "v"}); err == nil {
+		t.Fatal("saveFile chose a passphrase for a sealed file it could not check")
+	}
+}
+
+// TestFileExistsReadsAbsenceAsAbsent checks a missing sealed file is "absent", not an
+// error, so a store that never sealed anything deletes cleanly.
+func TestFileExistsReadsAbsenceAsAbsent(t *testing.T) {
+	s := New(t.TempDir(), WithKeyring(fakeKeyring{}))
+	if exists, err := s.fileExists(); err != nil || exists {
+		t.Fatalf("fileExists = %v, %v, want absent", exists, err)
+	}
+	if err := s.Delete(context.Background(), "K"); err != nil {
+		t.Fatalf("Delete with no sealed file: %v", err)
 	}
 }
 

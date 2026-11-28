@@ -158,7 +158,11 @@ func (s *Store) Set(_ context.Context, ref string, value secret.Text) error {
 // error.
 func (s *Store) Delete(_ context.Context, ref string) error {
 	_ = s.kr.Delete(s.service, ref)
-	if !s.fileExists() {
+	exists, err := s.fileExists()
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return nil
 	}
 	m, err := s.loadFile()
@@ -172,9 +176,18 @@ func (s *Store) Delete(_ context.Context, ref string) error {
 	return s.saveFile(m)
 }
 
-func (s *Store) fileExists() bool {
+// fileExists reports whether the sealed file is there. A stat that fails for any
+// reason but absence is an error: read as "no file", it made Delete report success
+// while the sealed copy of the credential stayed on disk.
+func (s *Store) fileExists() (bool, error) {
 	_, err := os.Stat(s.file)
-	return err == nil
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	}
+	return false, fmt.Errorf("vault: checking for the sealed file: %w", err)
 }
 
 // loadFile decrypts the sealed credential map, or returns an empty map when no file
@@ -209,7 +222,11 @@ func (s *Store) saveFile(m map[string]string) error {
 	if err != nil {
 		return err
 	}
-	pass, err := s.passphrase(!s.fileExists())
+	exists, err := s.fileExists()
+	if err != nil {
+		return err
+	}
+	pass, err := s.passphrase(!exists)
 	if err != nil {
 		return err
 	}
