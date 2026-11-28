@@ -69,6 +69,7 @@ func VerifyGovernance(events []spine.Event) error {
 
 	// A completion and a refusal for one call contradict in either order, so check
 	// the full sets after the pass.
+	//ordered:ok every contradicting call gives the same error
 	for call := range completed {
 		if refused[call] {
 			return fault.New(fault.Terminal, CodeDeniedButExecuted,

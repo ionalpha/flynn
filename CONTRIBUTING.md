@@ -42,6 +42,11 @@ remote without a per-clone setup step, set it from a conditional include in
 - Bug fixes with a regression test.
 - Docs improvements.
 
+## Asking for an automated review
+
+Add the `review` label to a pull request to have `flynn review` read it and comment. Nothing runs on open or push.
+It needs write access; the label is removed when the run ends, so add it again for another review.
+
 ## Adding an interface the engine depends on
 
 Two rules, both in the same change as the interface.

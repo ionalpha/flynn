@@ -19,9 +19,7 @@ import (
 // closeErrExemptions names the non-test files that discard the Close error of a file they
 // wrote, each with the reason. The test fails on an entry whose file no longer does, so
 // the list only shrinks.
-var closeErrExemptions = map[string]string{
-	"sandbox/microvm_command.go": "writeManifest discards the Close only on the path where Write already failed, so the first error is kept; the success path checks Close. Move it onto closeerr.Keep and drop this entry",
-}
+var closeErrExemptions = map[string]string{}
 
 // writeFlagMask is the set of os.OpenFile flags that make a handle writable or writing.
 const writeFlagMask = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREATE | os.O_TRUNC

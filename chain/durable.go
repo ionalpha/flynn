@@ -2,7 +2,9 @@ package chain
 
 import (
 	"context"
+	"maps"
 	"math"
+	"slices"
 	"sync"
 
 	"github.com/ionalpha/flynn/spine"
@@ -186,8 +188,8 @@ func (r *DurableRecorder) CheckpointAll(ctx context.Context) error {
 		s      *durableStream
 	}
 	entries := make([]entry, 0, len(r.streams))
-	for stream, s := range r.streams {
-		entries = append(entries, entry{stream, s})
+	for _, stream := range slices.Sorted(maps.Keys(r.streams)) {
+		entries = append(entries, entry{stream, r.streams[stream]})
 	}
 	r.mu.Unlock()
 
@@ -266,6 +268,7 @@ func (r *DurableRecorder) evictExcessLocked(keep string) {
 		var victim string
 		var oldest uint64
 		found := false
+		//ordered:ok touch values are unique, so one stream is the oldest
 		for k, s := range r.streams {
 			if k == keep {
 				continue

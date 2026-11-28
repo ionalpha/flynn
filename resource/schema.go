@@ -3,9 +3,11 @@ package resource
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -84,8 +86,8 @@ func compileNode(doc any) (*schema, error) {
 	s.required = toStringSlice(m["required"])
 	if props, ok := m["properties"].(map[string]any); ok {
 		s.properties = make(map[string]*schema, len(props))
-		for name, sub := range props {
-			cs, err := compileNode(sub)
+		for _, name := range slices.Sorted(maps.Keys(props)) {
+			cs, err := compileNode(props[name])
 			if err != nil {
 				return nil, fmt.Errorf("properties.%s: %w", name, err)
 			}
@@ -179,7 +181,8 @@ func (s *schema) validateObject(path string, tv map[string]any) error {
 			return errAt(path, fmt.Sprintf("missing required property %q", req))
 		}
 	}
-	for name, val := range tv {
+	for _, name := range slices.Sorted(maps.Keys(tv)) {
+		val := tv[name]
 		sub, declared := s.properties[name]
 		switch {
 		case declared:
