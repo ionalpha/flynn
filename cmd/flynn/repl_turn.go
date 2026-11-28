@@ -18,7 +18,6 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/state"
 )
@@ -39,9 +38,6 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	// A nil grantStatus reports nothing.
-	turnCtx = sandbox.WithGrantProgress(turnCtx, s.grantStatus)
-
 	if sigCh != nil {
 		watchStop := make(chan struct{})
 		defer close(watchStop)
@@ -130,7 +126,9 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// accumulates a container profile for every message the user sends.
 	defer func() { _ = run.Close() }()
 	done := make(chan struct{})
-	go func() { _ = run.Runtime().Start(turnCtx); close(done) }()
+	// Commands run under the runtime's context, so this is where their waits are seen.
+	runCtx := recordGrants(turnCtx, run.Session(), s.grantStatus)
+	go func() { _ = run.Runtime().Start(runCtx); close(done) }()
 
 	result, runErr := s.driveTurn(turnCtx, run, userText, images)
 

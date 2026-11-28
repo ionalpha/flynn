@@ -151,8 +151,9 @@ type grantWait struct {
 	reported bool
 }
 
-func (w *grantWait) report(ctx context.Context, done bool) {
-	reportGrant(ctx, GrantProgress{Dir: w.dir, Elapsed: grantClock.Now().Sub(w.start), Done: done})
+func (w *grantWait) report(ctx context.Context, p GrantProgress) {
+	p.Dir, p.Elapsed = w.dir, grantClock.Now().Sub(w.start)
+	reportGrant(ctx, p)
 }
 
 // awaitGrant receives from ch, reporting the elapsed time while it waits, and
@@ -168,8 +169,9 @@ func awaitGrant[T any](ctx context.Context, w *grantWait, ch <-chan T) (T, error
 			var zero T
 			return zero, ctx.Err()
 		case <-tick.C():
+			first := !w.reported
 			w.reported = true
-			w.report(ctx, false)
+			w.report(ctx, GrantProgress{First: first})
 			tick.Reset(grantReportEvery)
 		}
 	}
@@ -187,14 +189,14 @@ func awaitGrant[T any](ctx context.Context, w *grantWait, ch <-chan T) (T, error
 //
 // durable is false for a directory that exists for one Local, such as its scratch
 // directory, so no marker outlives it.
-func (l *Local) ensureGrant(ctx context.Context, dir string, sid *windows.SID, rights uint32, durable bool) error {
+func (l *Local) ensureGrant(ctx context.Context, dir string, sid *windows.SID, rights uint32, durable bool) (err error) {
 	if l.grants.has(grantKey(dir, sid, rights)) {
 		return nil
 	}
 	w := &grantWait{dir: dir, start: grantClock.Now()}
 	defer func() {
 		if w.reported {
-			w.report(ctx, true)
+			w.report(ctx, GrantProgress{Done: true, Err: err})
 		}
 	}()
 	slot := grantSlot(dir)

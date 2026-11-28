@@ -404,11 +404,134 @@ func TestLongGrantIsReported(t *testing.T) {
 	if len(reports) < 4 {
 		t.Fatalf("got %d reports, want several while waiting and an end: %+v", len(reports), reports)
 	}
-	if first := reports[0]; first.Dir != l.root || first.Elapsed <= 0 || first.Done {
+	if first := reports[0]; first.Dir != l.root || first.Elapsed <= 0 || first.Done || !first.First {
 		t.Fatalf("first report = %+v", first)
 	}
-	if last := reports[len(reports)-1]; !last.Done {
-		t.Fatalf("last report = %+v, want Done", last)
+	for _, p := range reports[1:] {
+		if p.First {
+			t.Fatalf("a later report claims to be the first: %+v", p)
+		}
+	}
+	if last := reports[len(reports)-1]; !last.Done || last.Err != nil || last.Elapsed <= 0 || last.Dir != l.root {
+		t.Fatalf("last report = %+v, want a finished grant", last)
+	}
+}
+
+// TestAbandonedGrantReportsHowItEnded gives a host what it records when the wait
+// ends without the grant: the context's error.
+func TestAbandonedGrantReportsHowItEnded(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	reportEvery(t, time.Millisecond)
+	l := newGrantLocal(t, t.TempDir())
+	_, release := holdGrants(t, l.root)
+	defer func() {
+		release()
+		waitForGrants(l.root)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var last GrantProgress
+	reporting := WithGrantProgress(ctx, func(p GrantProgress) {
+		last = p
+		cancel()
+	})
+	if err := l.grantDir(reporting, l.root, sidFor(t, l)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("grant returned %v, want context.Canceled", err)
+	}
+	if !last.Done || !errors.Is(last.Err, context.Canceled) {
+		t.Fatalf("last report = %+v, want Done with the cancellation", last)
+	}
+}
+
+// TestGrantRootLeavesNothingForTheFirstCommand is what starting the grant when a
+// session opens buys: the command that follows writes nothing.
+func TestGrantRootLeavesNothingForTheFirstCommand(t *testing.T) {
+	for name, opts := range map[string][]LocalOption{
+		"appcontainer":     {WithKernelConfinement()},
+		"write-restricted": {WithReadOnlyFS(), WithSeccomp(), WithHostReadable()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var rec grantRecorder
+			rec.install(t)
+			ctx := context.Background()
+			root := t.TempDir()
+
+			ahead := newGrantLocal(t, root, opts...)
+			if got := ahead.Containment(); got != ContainmentKernel {
+				t.Skipf("containment = %s on this machine, so no command is granted", got)
+			}
+			if err := ahead.GrantRoot(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := rec.count(ahead.root); got != 1 {
+				t.Fatalf("GrantRoot wrote the root %d times, want 1", got)
+			}
+			if err := ahead.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			l := newGrantLocal(t, root, opts...)
+			if _, err := l.Exec(ctx, Command{Line: "echo hi"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := rec.count(l.root); got != 1 {
+				t.Fatalf("the command after GrantRoot wrote the root again: %d writes", got)
+			}
+		})
+	}
+}
+
+// TestGrantRootWritesNothingWhenNoCommandWould covers the two Locals whose
+// commands never need the grant.
+func TestGrantRootWritesNothingWhenNoCommandWould(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	ctx := context.Background()
+
+	plain := newGrantLocal(t, t.TempDir())
+	if err := plain.GrantRoot(ctx); err != nil {
+		t.Fatalf("an unconfined Local: %v", err)
+	}
+	// Windows cannot hide a path, so every command of this Local is refused.
+	refused := newGrantLocal(t, t.TempDir(), WithDefaultConfinement(), WithUnreadablePaths(t.TempDir()))
+	if err := refused.GrantRoot(ctx); !errors.Is(err, ErrReadDeny) {
+		t.Fatalf("a Local that refuses commands: GrantRoot returned %v, want ErrReadDeny", err)
+	}
+	if got := rec.count(refused.root); got != 0 {
+		t.Fatalf("a refused Local wrote the root %d times", got)
+	}
+	if got := rec.count(plain.root); got != 0 {
+		t.Fatalf("an unconfined Local wrote the root %d times", got)
+	}
+}
+
+// TestExtraDirectoriesAreNotRewrittenPerCommand keeps the grant each launch makes
+// on its extra directories to a read once they are in place.
+func TestExtraDirectoriesAreNotRewrittenPerCommand(t *testing.T) {
+	var rec grantRecorder
+	rec.install(t)
+	writable, readable := t.TempDir(), t.TempDir()
+	l := newGrantLocal(t, t.TempDir(), WithWritableDir(writable), WithReadableDir(readable))
+	ctx := context.Background()
+	sid := sidFor(t, l)
+	for range 3 {
+		if err := l.grantRestrictedWritableDirs(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.grantReadableDirs(ctx, sid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	targets, err := l.writableTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range append(targets, l.readableDirs...) {
+		if got := rec.count(dir); got != 1 {
+			t.Errorf("%s was written %d times over three launches, want 1", dir, got)
+		}
 	}
 }
 

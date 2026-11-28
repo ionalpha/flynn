@@ -123,6 +123,12 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		return layBlock(v.th, blockNotice, projectContextLine(ev), width)
 	case session.KindSelection:
 		return layBlock(v.th, blockNotice, selectionLine(ev), width)
+	case session.KindSandboxGrant:
+		// The live line shows a wait while it lasts; the transcript keeps how it ended.
+		if ev.SandboxGrant != nil && ev.SandboxGrant.State == session.GrantStarted {
+			return nil
+		}
+		return layBlock(v.th, blockNotice, grantLine(ev), width)
 	default:
 		// session.started (the shell echoes the prompt itself), turn.started,
 		// turn.completed, and action.admitted carry no transcript line; their

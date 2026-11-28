@@ -15,9 +15,14 @@ type GrantProgress struct {
 	Dir string
 	// Elapsed is how long this launch has waited for the grant.
 	Elapsed time.Duration
+	// First is set on the first report of one launch's wait.
+	First bool
 	// Done is set on the last report, whether the grant finished, failed or was
 	// cancelled.
 	Done bool
+	// Err is set on the last report: nil when the grant is in place, the context's
+	// error when the launch stopped waiting, and otherwise why the grant failed.
+	Err error
 }
 
 type grantProgressKey struct{}

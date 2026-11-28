@@ -163,6 +163,7 @@ func TestEveryEventKindStaysVisible(t *testing.T) {
 		session.KindBudgetExtended:    {},
 		session.KindProjectContext:    {ev: session.Event{Reason: "flag", Text: "AGENTS.md abc", Allowed: true}, chat: true, flat: true},
 		session.KindSelection:         {ev: session.Event{Reason: "bare", Text: "mark"}, chat: true, flat: true},
+		session.KindSandboxGrant:      {ev: session.Event{SandboxGrant: &session.SandboxGrant{Dir: "mark", State: session.GrantFinished}}, chat: true, flat: true},
 	}
 
 	kinds := declaredKinds(t)
@@ -230,6 +231,7 @@ func TestHostileTextRendersInert(t *testing.T) {
 		{Kind: session.KindStalled, Err: evil},
 		{Kind: session.KindProjectContext, Reason: "flag", Text: evil},
 		{Kind: session.KindSelection, Reason: evil, Text: evil},
+		{Kind: session.KindSandboxGrant, Err: evil, SandboxGrant: &session.SandboxGrant{Dir: evil, State: session.GrantFailed}},
 	}
 	th := theme.Default()
 	check := func(where, s string) {

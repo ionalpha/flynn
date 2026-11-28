@@ -83,6 +83,8 @@ func (r driveRequest) execute(ctx context.Context) (result, source string, trans
 	}
 	runCtx, cancel := context.WithCancel(prepared)
 	defer cancel()
+	// A run with no status line prints its waits on a sandbox grant, and records them.
+	runCtx = recordGrants(runCtx, run.Session(), printGrantProgress(w))
 	done := make(chan struct{})
 	go func() { _ = run.Runtime().Start(runCtx); close(done) }()
 

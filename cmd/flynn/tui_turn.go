@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/tui/editor"
+	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -146,20 +147,49 @@ func (h *sessionHost) onGrant(after string) func(sandbox.GrantProgress) {
 		if p.Done {
 			h.live.set(after)
 		} else {
-			h.live.set(grantStatusText(p, "Esc cancels"))
+			h.live.set(grantStatusText(p, "Esc cancels", h.ui.Width()))
 		}
 		h.pokeLive()
 	}
 }
 
-// grantStatusText names the grant under way. The directory comes last because
-// the live line is cut at the terminal's width, and a long path must not push the
-// elapsed time or the way to cancel off the screen.
-func grantStatusText(p sandbox.GrantProgress, cancel string) string {
+// grantStatusText names the grant under way, fitted to width cells (0 leaves it
+// whole). The directory comes last so a long path cannot push the elapsed time or
+// the way to cancel off the screen, and it is shortened from the left because the
+// last element is what tells one folder from another.
+func grantStatusText(p sandbox.GrantProgress, cancel string, width int) string {
 	if waited := p.Elapsed.Round(time.Second); waited > 0 {
 		cancel = waited.String() + ", " + cancel
 	}
-	return "granting sandbox access (" + cancel + "): " + shortPath(p.Dir)
+	head := "granting sandbox access (" + cancel + "): "
+	dir := shortPath(p.Dir)
+	if width > 0 {
+		dir = fitPathLeft(dir, width-screen.Width(head)-liveMargin)
+	}
+	return head + dir
+}
+
+// liveMargin is the cells left spare beside a fitted live line.
+const liveMargin = 2
+
+// fitPathLeft drops leading elements of p, marking the cut with three dots, until
+// it fits width cells. The last element is always kept whole.
+func fitPathLeft(p string, width int) string {
+	if screen.Width(p) <= width {
+		return p
+	}
+	for i := 1; i < len(p)-1; i++ {
+		if p[i] != '\\' && p[i] != '/' {
+			continue
+		}
+		if short := "..." + p[i:]; screen.Width(short) <= width {
+			return short
+		}
+	}
+	if i := strings.LastIndexAny(strings.TrimRight(p, `\/`), `\/`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 // startShell runs one composer shell command as the current turn: echoed
@@ -200,6 +230,7 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 		h.note(blockError, "shell mode unavailable: "+msg)
 		return
 	}
+	// A shell command belongs to no run, so its wait is shown and not recorded.
 	res, err := h.run.Exec(sandbox.WithGrantProgress(ctx, h.onGrant("")), sandbox.Command{Line: cmdLine})
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
