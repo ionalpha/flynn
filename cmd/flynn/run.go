@@ -181,6 +181,9 @@ func (r driveRequest) assembly() assembly {
 func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	c := r.cfg
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.ID())
+	if line := modelLine(c.model); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
 	if gated := governed.GatedActions(governed.ApprovalPolicy(c.gates.approve)); len(gated) > 0 {
 		how := "refused, nothing here can prompt"
 		if c.gates.prompter != nil {
@@ -196,11 +199,21 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	}
 }
 
+// modelLine is the header line naming the model a run resolved to and where that came
+// from. A run that resolved none (an external agent drives its own) says nothing.
+func modelLine(m modelChoice) string {
+	if m.Spec == "" {
+		return ""
+	}
+	return "  model: " + m.String()
+}
+
 // begin starts the run's goal. A resumed run re-drives its existing goal, preserving its
 // recorded progress, rather than opening a new one; the subscription taken before this
 // replays the prior conversation first, then tails the rest live.
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
+		recordModelChoice(ctx, r.out, r.log, r.cfg.model, r.resumeID)
 		if err := run.Resume(ctx, r.resumeID); err != nil {
 			return err
 		}
@@ -213,6 +226,7 @@ func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	recordSelection(ctx, r.out, r.log, r.cfg.selection, run.ID())
 	// The run's stream exists once the goal is submitted, which is the earliest the
 	// decision can be written to it.
+	recordModelChoice(ctx, r.out, r.log, r.cfg.model, run.ID())
 	recordProjectDecision(ctx, r.out, r.log, r.cfg.project, run.ID())
 	return nil
 }

@@ -30,6 +30,7 @@ var resumeLevers = map[string]string{
 	"gates":         restored,
 	"shell":         "this invocation's flags",
 	"selection":     "this invocation's flags",
+	"model":         "resolved again by this invocation: --model, the saved default, or asked",
 	"allowances":    "persisted on the run's goal",
 	"terms":         "persisted on the run's goal",
 	"stopCondition": "persisted on the run's goal",
