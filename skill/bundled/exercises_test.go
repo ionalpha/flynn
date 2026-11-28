@@ -281,3 +281,36 @@ func passes(t *testing.T, dir, line string) (bool, string) {
 	}
 	return res.ExitCode == 0, res.Output
 }
+
+// ownerOnlyTempDir matches the tempfile calls that create a directory. Since Python
+// 3.12.4 they give it a Windows ACL naming only its owner, SYSTEM and Administrators,
+// and a process inside Flynn's Windows sandbox cannot open a directory that does not
+// grant its sandbox identity, so a test written this way fails on Windows CI and
+// passes on a machine with an older Python.
+var ownerOnlyTempDir = regexp.MustCompile(`\b(mkdtemp|TemporaryDirectory)\s*\(`)
+
+// Every Python file an exercise ships or runs (fixture, verifier, solution, wrong
+// answer) makes its scratch directories with os.makedirs in the working tree instead.
+func TestExercisePythonMakesNoOwnerOnlyTempDir(t *testing.T) {
+	for _, root := range []string{evalRoot, "testdata"} {
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(p) != ".py" {
+				return err
+			}
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			for i, line := range strings.Split(string(src), "\n") {
+				if ownerOnlyTempDir.MatchString(line) {
+					t.Errorf("%s:%d: %s makes a directory the Windows sandbox cannot open; use os.makedirs in the working tree",
+						filepath.ToSlash(p), i+1, strings.TrimSpace(line))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}

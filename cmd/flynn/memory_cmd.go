@@ -23,8 +23,8 @@ import (
 // provider as a burst costs the run nothing anybody notices.
 const consolidateMinInterval = 2 * time.Second
 
-// errMemoryUsage is the usage line for `flynn memory`.
-var errMemoryUsage = errors.New("usage: flynn memory ls [--pending] | promote <id> [--reason note] | revoke <id> [--reason note] | forget <id> | consolidate [--max-calls n] | usage")
+// errMemoryUsage refuses a `flynn memory` command line with the group's synopsis.
+var errMemoryUsage = usageErr("memory")
 
 // dispatchMemory routes `flynn memory <sub>`.
 func dispatchMemory(args []string, modelSpec, dataDir string, out io.Writer) error {
@@ -42,7 +42,7 @@ func dispatchMemory(args []string, modelSpec, dataDir string, out io.Writer) err
 	case "ls", "promote", "revoke", "forget":
 		return memoryReview(args[0], args[1:], dataDir, out)
 	default:
-		return errMemoryUsage
+		return unknownCommand("memory", args[0])
 	}
 }
 

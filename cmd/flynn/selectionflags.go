@@ -33,11 +33,11 @@ type selectionFlags struct {
 
 func registerSelectionFlags(fs *flag.FlagSet) selectionFlags {
 	f := selectionFlags{noSkill: &stringList{}}
-	f.bare = fs.Bool("bare", false, "run a plain core loop: no skill is offered, no AGENTS.md or CLAUDE.md is loaded (unless --project-files is given) and no memory is recalled into the prompt. Tools stay the core set and governance is unchanged; narrow them with --tools. Nothing is deleted: the next run without --bare offers everything again. Also settable as \"bare\" in selection.json in the data directory.")
-	f.skills = fs.String("skills", "", "offer only these skills, by slug (comma-separated, or \"none\"). The offer and skill_read both honour it, so a skill not named cannot be loaded by guessing its name. An unknown slug is an error naming the ones that exist. Skills are not deleted; --no-bundled-skills is the flag that removes the bundled set from the store. Also \"skills\" in selection.json.")
-	fs.Var(f.noSkill, "no-skill", "never offer or load these skills, by slug (comma-separated; repeatable). Beats --skills and --bare, so a skill named in both is not offered. Also \"no_skills\" in selection.json, where it adds to the command line's.")
-	f.tools = fs.String("tools", "", "grant only these core tools (comma-separated from bash, read, write, edit, glob, grep; or \"none\"). The model call and the skill tools the skill selection offers stay granted. A call to any other tool is refused at the dispatch waist and recorded. An unknown name is an error naming the valid ones. Not available with an external agent backend, which brings its own tools. Also \"tools\" in selection.json.")
-	f.noTools = fs.Bool("no-tools", false, "grant no core tools: the same as --tools none")
+	f.bare = fs.Bool("bare", false, "run a plain core loop: no skills, project files or recalled memory")
+	f.skills = fs.String("skills", "", "offer only these skills (`slugs`, comma-separated, or \"none\")")
+	fs.Var(f.noSkill, "no-skill", "never offer or load these skills (`slugs`; repeatable)")
+	f.tools = fs.String("tools", "", "grant only these core tools (`names`, comma-separated, or \"none\")")
+	f.noTools = fs.Bool("no-tools", false, "grant no core tools, the same as --tools none")
 	return f
 }
 

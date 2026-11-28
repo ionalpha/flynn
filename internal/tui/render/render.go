@@ -46,8 +46,9 @@ func lineOf(spans []span) string {
 	return b.String()
 }
 
-// controlFree drops C0 control bytes and DEL. They are already zero-width, so
-// layout is unchanged; only their terminal side effects go.
+// controlFree drops C0 control bytes, DEL and the C1 controls, among them the
+// one-byte form of the escape sequence introducer. They are zero-width, so layout
+// is unchanged; only their terminal side effects go.
 func controlFree(s string) string {
 	if !strings.ContainsFunc(s, isControl) {
 		return s
@@ -60,7 +61,7 @@ func controlFree(s string) string {
 	}, s)
 }
 
-func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
+func isControl(r rune) bool { return r < 0x20 || (r >= 0x7f && r <= 0x9f) }
 
 // clampRows truncates any row still wider than width (a cluster wider than a
 // pathological width, a table whose column floors do not fit), appending a reset

@@ -203,7 +203,7 @@ func TestOpenDepsRuntimeUnusableDataDir(t *testing.T) {
 
 func TestRunDepsDispatch(t *testing.T) {
 	err := runDeps([]string{"nope"}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error = %v, want an unknown-subcommand error", err)
 	}
 	// No subcommand defaults to the listing, which runs the whole durable path.
