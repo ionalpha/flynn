@@ -22,16 +22,18 @@ func TestCommandSurface(t *testing.T) {
 		{"runs-empty", []string{"runs"}, 0, "no runs yet"},
 		{"models", []string{"models"}, 0, "catalog"},
 		{"ps", []string{"ps"}, 0, "STATE"},
-		{"auth-usage", []string{"auth"}, 1, "usage: flynn auth"},
-		{"spine-usage", []string{"spine"}, 1, "usage: flynn spine"},
+		{"auth-usage", []string{"auth"}, 2, "usage: flynn auth"},
+		{"spine-usage", []string{"spine"}, 2, "usage: flynn spine"},
 		{"spine-verify-missing", []string{"spine", "verify", "does-not-exist"}, 1, ""},
 		{"serve-nothing", []string{"serve"}, 1, "nothing to do"},
-		{"mcp-usage", []string{"mcp"}, 1, "usage: flynn mcp"},
-		{"deploy-usage", []string{"deploy"}, 1, "usage: flynn deploy"},
+		{"mcp-usage", []string{"mcp"}, 2, "usage: flynn mcp"},
+		{"deploy-usage", []string{"deploy"}, 2, "usage: flynn deploy"},
 		{"unknown-run", []string{"inspect", "no-such-run"}, 1, ""},
 		{"skill-ls", []string{"skill", "ls"}, 0, "systematic-debugging"},
 		{"skill-show-unknown", []string{"skill", "show", "no-such-skill"}, 1, "flynn skill ls"},
 		{"skill-usage", []string{"skill"}, 2, "usage: flynn skill"},
+		{"help", []string{"help"}, 0, "Start and drive work:"},
+		{"unknown-command", []string{"modls"}, 2, "Did you mean 'flynn models'?"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -22,7 +22,7 @@ import (
 type shellUI interface {
 	Append(lines ...string)
 	SetLive(c screen.Component)
-	SetStatus(line string)
+	SetStatusFunc(fn func(width int) string)
 	SetCapture(fn func(input.Event) bool)
 	Quit()
 	Suspend(run func())
@@ -140,7 +140,7 @@ func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
 func (h *sessionHost) greet() {
 	h.liveComp = liveStack{h.approval, h.panel, h.live}
 	h.ui.SetLive(h.liveComp)
-	h.ui.Append(h.th.Render(theme.Status, "flynn interactive session in "+h.s.cwd))
+	h.ui.Append(sessionBanner(h.th, h.s.modelSpec, h.s.cwd, h.s.project)...)
 	// A resumed run replays through the same renderer a live turn uses and folds into
 	// the same projection, so it opens looking as it did live: the conversation and its
 	// tool calls, with the turn and token totals in the badge, not a verbose event log.
@@ -181,7 +181,20 @@ func (h *sessionHost) seedHistory() {
 // separates the reply or command output that follows from the line that triggered
 // it, so each exchange reads as its own group rather than one dense wall.
 func (h *sessionHost) echoPrompt(text string) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, text), "")
+	h.echo(blockUser, text)
+}
+
+// echo writes a prompt or command line as the head of a block of kind k, wrapped
+// to the terminal so a long prompt keeps its gutter on every row.
+func (h *sessionHost) echo(k blockKind, text string) {
+	lines := append([]string{""}, layBlock(h.th, k, text, h.ui.Width())...)
+	h.ui.Append(append(lines, "")...)
+}
+
+// note appends one block of kind k at the terminal width: the shell's notices,
+// errors and cancellations, styled by the same vocabulary as the transcript.
+func (h *sessionHost) note(k blockKind, text string) {
+	h.ui.Append(layBlock(h.th, k, text, h.ui.Width())...)
 }
 
 // onEvent renders one session event as the turn produces it: it folds the event
@@ -227,21 +240,58 @@ func (h *sessionHost) refreshStatus() {
 	h.mu.Lock()
 	p, busy, queued := h.proj, h.busy, len(h.queue)
 	h.mu.Unlock()
-	h.ui.SetStatus(statusBadge(h.th, p, busy, queued))
+	th := h.th
+	h.ui.SetStatusFunc(func(width int) string { return statusBadge(th, p, busy, queued, width) })
 }
 
-// statusHint is the one-row action hint that trails the status badge: the
-// composer's keys at idle, the cancel affordance and queue depth while a turn
-// runs.
-func statusHint(busy bool, queued int) string {
+// hint is one key hint in the status row. rank orders which survive on a narrow
+// terminal: lower ranks are kept longest.
+type hint struct {
+	text string
+	rank int
+}
+
+// statusHints are the composer's keys at idle, and the cancel affordance and queue
+// depth while a turn runs, in display order.
+func statusHints(busy bool, queued int) []hint {
 	if !busy {
-		return "enter sends · alt+enter newline · @ file · ! shell · ? or /help for commands · ctrl+d quits"
+		return []hint{
+			{"enter sends", 1},
+			{"alt+enter newline", 5},
+			{"@ file", 4},
+			{"! shell", 3},
+			{"/help", 0},
+			{"ctrl+d quits", 2},
+		}
 	}
-	line := "working... esc or ctrl+c cancels"
+	hs := []hint{{"working...", 2}, {"esc or ctrl+c cancels", 0}}
 	if queued > 0 {
-		line += fmt.Sprintf(" · %d queued", queued)
+		hs = append(hs, hint{fmt.Sprintf("%d queued", queued), 1})
 	}
-	return line
+	return hs
+}
+
+// fitHints joins the hints that fit in room cells, dropping the highest rank first
+// so the row loses its least useful key rather than overflowing. room 0 keeps all.
+func fitHints(hs []hint, room int) string {
+	keep := append([]hint(nil), hs...)
+	for {
+		parts := make([]string, len(keep))
+		for i, h := range keep {
+			parts[i] = h.text
+		}
+		line := strings.Join(parts, " · ")
+		if room <= 0 || screen.Width(line) <= room || len(keep) == 0 {
+			return line
+		}
+		drop := 0
+		for i, h := range keep {
+			if h.rank > keep[drop].rank {
+				drop = i
+			}
+		}
+		keep = append(keep[:drop], keep[drop+1:]...)
+	}
 }
 
 // shutdown cancels any in-flight turn, drops the queue, and waits for the
