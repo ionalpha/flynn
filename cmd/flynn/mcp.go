@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,7 +32,7 @@ func runMCP(args []string, dataDir string) error {
 	// keeps the flags after the verb, since flag parsing stops at the first
 	// non-flag argument.
 	if len(args) < 1 || args[0] != "serve" {
-		return errors.New("usage: flynn mcp serve [--read-only] [--workdir DIR]")
+		return usageErr("mcp serve")
 	}
 	fs := flag.NewFlagSet("mcp serve", flag.ContinueOnError)
 	readOnly := fs.Bool("read-only", false, "expose only the read tools (read, glob, grep); deny write, edit, and shell")

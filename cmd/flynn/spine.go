@@ -286,8 +286,6 @@ func verifyStoredRun(ctx context.Context, out io.Writer, store *sqlite.Store, ru
 var errChecksFailed = errors.New("record did not pass all checks")
 
 func dispatchSpine(args []string, dataDir string) error {
-	const usage = "usage: flynn spine verify [--file <path> [--key <hex>]] <run-id>\n" +
-		"       flynn spine export [--out <path>] <run-id>"
 	switch {
 	case len(args) >= 1 && args[0] == "verify":
 		fs := flag.NewFlagSet("spine verify", flag.ContinueOnError)
@@ -303,7 +301,7 @@ func dispatchSpine(args []string, dataDir string) error {
 			return errors.New("--key applies only with --file; a stored run names a self-certifying signer")
 		}
 		if fs.NArg() < 1 {
-			return errors.New(usage)
+			return usageErr("spine verify")
 		}
 		return verifyRun(dataDir, fs.Arg(0))
 	case len(args) >= 1 && args[0] == "export":
@@ -313,11 +311,11 @@ func dispatchSpine(args []string, dataDir string) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New(usage)
+			return usageErr("spine export")
 		}
 		return exportRun(dataDir, fs.Arg(0), *out)
 	}
-	return errors.New(usage)
+	return subUsage("spine", args)
 }
 
 // exportRun writes a sealed run's portable record (default <run-id>.flynnrecord in the

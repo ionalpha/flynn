@@ -50,9 +50,8 @@ func shellRunEnv(t *testing.T) (dataDir string, provide func()) {
 		t.Setenv("OPENAI_BASE_URL", model.URL+"/v1")
 	}
 	provide()
-	prior := modelSpecExplicit
+	keepRunGlobals(t)
 	modelSpecExplicit = true
-	t.Cleanup(func() { modelSpecExplicit = prior })
 	return dataDir, provide
 }
 

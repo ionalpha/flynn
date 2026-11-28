@@ -33,9 +33,8 @@ func runSandbox(args []string, _ string) error {
 // sandboxCommand is runSandbox with its output and the check injected, so a test can drive
 // a refusal without a host that refuses.
 func sandboxCommand(args []string, out, errOut io.Writer, check func(context.Context) sandbox.Readiness) error {
-	const usage = "usage: flynn sandbox check [--json] [--ready-file PATH]"
 	if len(args) == 0 || args[0] != "check" {
-		return errors.New(usage)
+		return subUsage("sandbox", args)
 	}
 	fs := flag.NewFlagSet("sandbox check", flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -45,7 +44,7 @@ func sandboxCommand(args []string, out, errOut io.Writer, check func(context.Con
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New(usage)
+		return usageErr("sandbox check")
 	}
 
 	r := check(context.Background())

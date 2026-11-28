@@ -1,0 +1,87 @@
+Drive an objective to completion in the current directory.
+
+Usage:
+  flynn goal [flags] "<objective>"
+  flynn goal --goal-spec <file> [flags] ["<objective>"]
+
+Works the objective in the current directory until it reports done, stops at a
+limit, or is stopped. The run is recorded: 'flynn inspect <run-id>' replays it
+and 'flynn spine verify <run-id>' checks the record.
+
+Run flags go before goal or between goal and the objective. Put -- before an
+objective that starts with a dash.
+
+Approval and irreversible actions:
+
+--require-approval <action> pauses that action until a person authorizes it. The
+interactive session asks; a run with nobody to ask refuses the action. Every
+decision is recorded on the run's stream, and a name the run does not offer is
+refused.
+
+--irreversible <action> marks an action as reaching outside the workspace and
+not undoable. It adds a check on top of the run's normal grant and sandbox and
+takes none away: an action the grant refuses stays refused, and one it permits
+is also held until --allow declares it. A run that reaches an undeclared one
+stops and asks.
+
+--allow <action> declares in advance that the run may take an action marked
+--irreversible. It only lifts that hold, so it needs a matching --irreversible,
+and it grants nothing the run's normal grant and sandbox do not already permit.
+It is how a person who is not present authorizes an irreversible action in
+writing; one is never inferred from the objective.
+
+Goal spec files:
+
+A goal spec file states the terms of a run: what must stay true while it works.
+Each term is audited after every step, before the goal is asked whether it is
+done, and a breach stops the run naming the term. Pass it with --goal-spec ("-"
+reads stdin):
+
+  {
+    "objective": "upgrade the http client and keep the suite green",
+    "stopCondition": "the client is upgraded and the suite passes",
+    "invariants": [
+      {"id": "public-api",
+       "statement": "the exported API of ./client does not change",
+       "check": "./dev/apidiff ./client"}
+    ],
+    "allowances": [{"action": "shell", "target": "prod"}]
+  }
+
+Every field is optional as long as the file states an objective or one term; a
+file of nothing but terms takes its objective from the command line. A term
+whose "check" is omitted is ruled on by the auditor model reading the run's
+record, which is weaker than running a command, so write the check where you
+can. A term claiming something is not there needs one, since the record cannot
+show an absence.
+
+A check runs as semi-trusted work and needs a host that can contain it, as
+--require-proof does; where it cannot be run, the run stops saying so instead of
+carrying on unaudited.
+
+Flags:
+  --verify <command>           a command run after the agent stops that checks
+                               the goal succeeded
+  --require-proof              refuse success over a plan item the record shows
+                               no passing check for
+  --goal-spec <file>           read the run's terms from a JSON file ("-" is
+                               stdin)
+  --require-approval <action>  pause this action until a person authorizes it
+                               (repeatable)
+  --irreversible <action>      mark this action as not undoable, held until
+                               --allow (repeatable)
+  --allow <action>             permit this --irreversible action in advance
+                               (repeatable)
+  --fanout                     let the goal delegate sub-tasks to concurrent
+                               child agents
+  --max-cost <amount>          cap the run's model and tool spend at this
+                               amount; 0 is unlimited
+  --max-tokens <n>             cap the run's metered tokens at n; 0 is unlimited
+
+Examples:
+  flynn goal "audit the repo for TODOs and write a summary to NOTES.md"
+  flynn goal --verify "go test ./..." "fix the failing parser test"
+  flynn goal --goal-spec terms.json --max-cost 5
+  flynn goal --require-approval bash -- "-v is ignored; find out why"
+
+Run 'flynn help flags' for the flags every command accepts.

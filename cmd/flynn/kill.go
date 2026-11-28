@@ -37,7 +37,7 @@ func dispatchKill(args []string, dataDir string) error {
 // killRun is dispatchKill with the destination named, so a test reads what it prints.
 func killRun(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 1 {
-		return errors.New(`usage: flynn kill <run-id> ["<reason>"]`)
+		return usageErr("kill")
 	}
 	// The reason is optional: the order is complete without one. A redirect needs its
 	// instruction.

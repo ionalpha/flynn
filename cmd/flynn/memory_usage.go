@@ -24,7 +24,7 @@ import (
 // short list.
 func memoryUsageReport(args []string, dataDir string, out io.Writer) error {
 	if len(args) > 0 {
-		return errMemoryUsage
+		return usageErr("memory usage")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

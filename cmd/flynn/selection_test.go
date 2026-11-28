@@ -492,8 +492,10 @@ func TestSelectionFlagsAreDocumented(t *testing.T) {
 			t.Errorf("flag -%s has no help text: %+v", name, f)
 		}
 	}
-	if u := fs.Lookup("bare").Usage; !strings.Contains(u, "selection.json") {
-		t.Errorf("-bare help does not name the file setting: %q", u)
+	for _, g := range rootFlagGroups {
+		if g.title == "Selection" && !strings.Contains(g.note, "selection.json") {
+			t.Errorf("the Selection flags note does not name the file setting: %q", g.note)
+		}
 	}
 }
 
@@ -627,7 +629,7 @@ func TestSelectionFlagIsRefusedByACommandThatIgnoresIt(t *testing.T) {
 		})
 	}
 	for cmd := range selectionCommands {
-		if _, ok := invocationCommands[cmd]; !ok && cmd != "" {
+		if c := findCLI(cmd); cmd != "" && (c == nil || c.name != cmd) {
 			t.Errorf("selectionCommands names %q, which is not a command", cmd)
 		}
 	}
