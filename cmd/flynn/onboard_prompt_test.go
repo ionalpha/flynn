@@ -163,14 +163,14 @@ func TestEnsureProviderKeyRefusesWithoutTerminal(t *testing.T) {
 	}
 }
 
-// TestResolveModelOrOnboardNonInteractive covers the two non-interactive recoveries the
-// resolver makes when the default spec names a provider with no credential: several
-// configured providers pick the first deterministically, and nothing configured at all
-// surfaces the original credential error for the caller to report.
+// TestResolveModelOrOnboardNonInteractive covers the two non-interactive outcomes when
+// nothing was chosen and the built-in spec names a provider with no credential: several
+// keyed providers are refused rather than picked from, and nothing keyed at all surfaces
+// the credential error for the caller to report.
 func TestResolveModelOrOnboardNonInteractive(t *testing.T) {
-	t.Run("several configured pick the first", func(t *testing.T) {
+	t.Run("several configured are refused", func(t *testing.T) {
 		noProviderKeys(t)
-		// anthropic and openai are configured; the requested provider is not.
+		askWith(t, false, "")
 		t.Setenv("ANTHROPIC_API_KEY", "test-key")
 		t.Setenv("OPENAI_API_KEY", "test-key")
 
@@ -179,18 +179,16 @@ func TestResolveModelOrOnboardNonInteractive(t *testing.T) {
 		if !slices.Equal(want, []string{"anthropic", "openai"}) {
 			t.Fatalf("configured = %v, want both keys detected in canonical order", want)
 		}
-		_, _, spec, err := resolveModelOrOnboard(context.Background(), "deepseek", false, dir)
-		if err != nil {
-			t.Fatalf("resolveModelOrOnboard: %v", err)
-		}
-		if !strings.HasPrefix(spec, want[0]+":") {
-			t.Fatalf("resolved spec = %q, want the first configured provider %q", spec, want[0])
+		_, _, _, err := resolveModelOrOnboard(context.Background(), "deepseek", modelUnchosen, dir)
+		if !errors.Is(err, errModelNotChosen) {
+			t.Fatalf("err = %v, want errModelNotChosen", err)
 		}
 	})
 
 	t.Run("nothing configured surfaces the credential error", func(t *testing.T) {
 		noProviderKeys(t)
-		_, _, _, err := resolveModelOrOnboard(context.Background(), "openai:gpt-5.5", false, t.TempDir())
+		askWith(t, false, "")
+		_, _, _, err := resolveModelOrOnboard(context.Background(), "openai:gpt-5.5", modelUnchosen, t.TempDir())
 		if !errors.Is(err, provider.ErrCredentialNotSet) {
 			t.Fatalf("err = %v, want ErrCredentialNotSet with no terminal to onboard on", err)
 		}

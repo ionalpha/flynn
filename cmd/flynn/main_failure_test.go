@@ -15,7 +15,6 @@ import (
 
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/notices"
-	"github.com/ionalpha/flynn/provider"
 )
 
 // unopenableDataDir returns a data directory path no store can be opened under, because a
@@ -37,14 +36,14 @@ func unopenableDataDir(t *testing.T) string {
 // fails when run starts assigning a variable this does not list.
 func keepRunGlobals(t *testing.T) {
 	t.Helper()
-	model, project, sel, bundled := modelSpecExplicit, projectFilesFlag, selectionConfig, bundledSkillsDisabled
+	model, saved, project, sel, bundled := modelSpecExplicit, modelSpecSaved, projectFilesFlag, selectionConfig, bundledSkillsDisabled
 	t.Cleanup(func() {
-		modelSpecExplicit, projectFilesFlag, selectionConfig, bundledSkillsDisabled = model, project, sel, bundled
+		modelSpecExplicit, modelSpecSaved, projectFilesFlag, selectionConfig, bundledSkillsDisabled = model, saved, project, sel, bundled
 	})
 }
 
 // restoredRunGlobals is the set [keepRunGlobals] puts back.
-var restoredRunGlobals = []string{"bundledSkillsDisabled", "modelSpecExplicit", "projectFilesFlag", "selectionConfig"}
+var restoredRunGlobals = []string{"bundledSkillsDisabled", "modelSpecExplicit", "modelSpecSaved", "projectFilesFlag", "selectionConfig"}
 
 // TestRunWritesOnlyTheGlobalsItRestores reads run's source and fails on an assignment to
 // a package variable that [keepRunGlobals] does not restore, so a new global flag cannot
@@ -120,9 +119,7 @@ func TestRunWritesOnlyTheGlobalsItRestores(t *testing.T) {
 func runCLIIn(t *testing.T, dataDir string, args ...string) runResult {
 	t.Helper()
 	t.Setenv(notices.OffEnv, "1")
-	for _, k := range provider.CredentialEnvVars() {
-		t.Setenv(k, "")
-	}
+	noProviderKeys(t)
 	t.Setenv(diag.EnvDir, "")
 
 	keepRunGlobals(t)
