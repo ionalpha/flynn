@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ionalpha/flynn/internal/verdict"
 	"github.com/ionalpha/flynn/llm"
 )
 
@@ -180,25 +181,26 @@ func (s *Set) oversize(pr PullRequest) bool {
 }
 
 // diffCoverage checks GitHub's own file count, so a fetch that stopped early
-// does not look complete.
-func (s *Set) diffCoverage(ctx context.Context, pr PullRequest) (bool, string, error) {
+// does not look complete. A diff that could not be fetched is [verdict.Unknown]:
+// it is no evidence that the diff is incomplete, and none that it is whole.
+func (s *Set) diffCoverage(ctx context.Context, pr PullRequest) verdict.Verdict {
 	if pr.ChangedFiles > s.cfg.MaxFiles {
-		return false, fmt.Sprintf("%d changed files exceeds the %d-file fetch cap",
-			pr.ChangedFiles, s.cfg.MaxFiles), nil
+		return verdict.Fail(fmt.Sprintf("%d changed files exceeds the %d-file fetch cap",
+			pr.ChangedFiles, s.cfg.MaxFiles))
 	}
 	files, truncated, err := s.client.changedFiles(ctx, pr.Number)
 	if err != nil {
-		return false, "", err
+		return verdict.Unevaluated(err)
 	}
 	if truncated {
-		return false, "the changed-file list was truncated", nil
+		return verdict.Fail("the changed-file list was truncated")
 	}
 	for _, f := range files {
 		if f.PatchTruncated {
-			return false, fmt.Sprintf("the patch for %s was truncated", f.Filename), nil
+			return verdict.Fail(fmt.Sprintf("the patch for %s was truncated", f.Filename))
 		}
 	}
-	return true, "", nil
+	return verdict.Pass()
 }
 
 func (t prFetchTool) Invoke(ctx context.Context, _ json.RawMessage) (string, error) {
@@ -526,28 +528,25 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 			return "", ErrSelfApproval
 		}
 	}
-	// complete gates APPROVE (see ErrIncompleteDiff) and whether a missing
+	// Coverage gates APPROVE (see ErrIncompleteDiff) and whether a missing
 	// finding counts as fixed in resolveStaleThreads. For other verdicts a
-	// coverage error must not block the verdict; the diff is treated as
-	// incomplete instead.
+	// coverage that could not be read must not block the verdict; nothing is
+	// retracted, and coverageErr says so in the result.
+	coverage := t.s.diffCoverage(ctx, pr)
 	var complete bool
 	var coverageErr error
-	if in.Event == "APPROVE" {
-		ok, why, err := t.s.diffCoverage(ctx, pr)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
-		}
+	switch coverage.Outcome() {
+	case verdict.Passed:
 		complete = true
-	} else {
-		// coverageErr is reported in the result, so skipped thread resolution is
-		// visible.
-		complete, _, coverageErr = t.s.diffCoverage(ctx, pr)
-		if coverageErr != nil {
-			complete = false
+	case verdict.Failed:
+		if in.Event == "APPROVE" {
+			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, coverage.Reason())
 		}
+	case verdict.Unknown:
+		if in.Event == "APPROVE" {
+			return "", coverage.Err()
+		}
+		coverageErr = coverage.Err()
 	}
 	// Checked after the refusals above, so a model denied APPROVE is told that
 	// and does not rewrite prose to get past it. Catching it here avoids GitHub's

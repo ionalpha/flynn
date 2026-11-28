@@ -75,6 +75,9 @@ func extensionsDev(ctx context.Context, dataDir string, args []string) error {
 	if len(args) < 2 {
 		return errUsageDev
 	}
+	if err := refuseFlagWords("extensions dev", args[:2]); err != nil {
+		return err
+	}
 	name, binary := args[0], args[1]
 	if err := fs.Parse(args[2:]); err != nil {
 		return err

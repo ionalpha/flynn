@@ -42,7 +42,9 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		fs.PrintDefaults()
 		_, _ = fmt.Fprint(out, providerEndpointHelp())
 	}
-	if done, err := parseModelFlags(fs, args); done {
+	// A word that is not a subcommand browses the catalog, and a filter after it still
+	// applies.
+	if _, done, err := parseModelArgs(fs, args); done {
 		return err
 	}
 

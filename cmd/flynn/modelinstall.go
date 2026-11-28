@@ -23,21 +23,19 @@ import (
 // version is gated before it is offered, so an install only ever places a known, safe
 // runtime on disk. It does not start anything.
 func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
-	name := localmodel.Runtime
-	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
-		if args[0] != "" {
-			name = args[0]
-		}
-		args = args[1:]
-	}
 	fs := flag.NewFlagSet("models install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	variant := fs.String("variant", "", "build to install, such as cpu, cuda-13.3 or vulkan; the default fits this machine's GPU")
-	if err := fs.Parse(args); err != nil {
+	bare, err := parseAroundArgs(fs, args)
+	if err != nil {
 		return fmt.Errorf("models install: %w", err)
 	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("models install: unexpected argument %q (usage: flynn models install [runtime] [--variant name])", fs.Arg(0))
+	if len(bare) > 1 {
+		return fmt.Errorf("models install: unexpected argument %q (usage: flynn models install [runtime] [--variant name])", bare[1])
+	}
+	name := localmodel.Runtime
+	if len(bare) == 1 && bare[0] != "" {
+		name = bare[0]
 	}
 
 	// Only the runtime the public API serves is installed here; it applies the advisory gate

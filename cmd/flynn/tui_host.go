@@ -140,7 +140,7 @@ func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
 func (h *sessionHost) greet() {
 	h.liveComp = liveStack{h.approval, h.panel, h.live}
 	h.ui.SetLive(h.liveComp)
-	h.ui.Append(sessionBanner(h.th, h.s.modelSpec, h.s.cwd, h.s.project)...)
+	h.ui.Append(bannerBlock(h.th, modelChoice{Spec: h.s.modelSpec, Source: h.s.modelSource}.String(), h.s.cwd, h.s.project))
 	// A resumed run replays through the same renderer a live turn uses and folds into
 	// the same projection, so it opens looking as it did live: the conversation and its
 	// tool calls, with the turn and token totals in the badge, not a verbose event log.

@@ -55,7 +55,8 @@ Maintenance:
   help          Show help for flynn, a command or the flags
 
 Global flags:
-  --model <provider:model>  model as provider:model (default
+  --model <provider:model>  model as provider:model; if unset, the saved one,
+                            else you are asked (default
                             "anthropic:claude-opus-5-5")
   --data-dir <dir>          directory for the durable state database
   -v, --verbose             show tool arguments, outputs and per-turn detail

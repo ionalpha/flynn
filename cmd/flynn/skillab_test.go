@@ -297,3 +297,17 @@ func TestSkillABRefusesTwoSkillNames(t *testing.T) {
 		t.Fatal("two skill names were accepted")
 	}
 }
+
+// TestSkillABStatesTheModelItMeasuresOn: a comparison names its model and where the
+// choice came from ahead of the measurement.
+func TestSkillABStatesTheModelItMeasuresOn(t *testing.T) {
+	dataDir, _ := shellRunEnv(t)
+	root := writeExerciseSet(t, "deletion", "do the thing | exit 0\n")
+	var out bytes.Buffer
+	if err := runSkillAB([]string{"--exercises", root, "--repeats", "1", "deletion"}, "openai:gpt-test", dataDir, governed.ShellPolicy{}, &out); err != nil {
+		t.Fatalf("skill ab: %v\n%s", err, out.String())
+	}
+	if got := out.String(); !strings.Contains(got, "model: openai:gpt-test (--model)\nmeasuring deletion") {
+		t.Errorf("the model line does not head the measurement:\n%s", got)
+	}
+}

@@ -176,6 +176,9 @@ func integrationsCall(ctx context.Context, rt *integrationRuntime, out io.Writer
 	if len(args) < 2 {
 		return usageErr("integrations call")
 	}
+	if len(args) > 3 {
+		return usageErrf("integrations call", "unexpected argument %q; quote the JSON input as one argument", args[3])
+	}
 	extName, opName := args[0], args[1]
 	input := json.RawMessage(`{}`)
 	if len(args) >= 3 && args[2] != "" {

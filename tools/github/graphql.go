@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/ionalpha/flynn/internal/paging"
 )
 
 // graphqlURL derives the GraphQL endpoint, used only because REST cannot
@@ -108,84 +110,99 @@ const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!,$aft
 // maxThreadPages bounds pagination so a bad response cannot loop forever.
 const maxThreadPages = 20
 
+// reviewThreads fails at the page cap, because a partial list would pass as
+// complete and leave later threads open.
 func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread, error) {
-	var out []ReviewThread
-	var after *string
-
-	for range maxThreadPages {
-		var resp struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						PageInfo struct {
-							HasNextPage bool   `json:"hasNextPage"`
-							EndCursor   string `json:"endCursor"`
-						} `json:"pageInfo"`
-						Nodes []struct {
-							ID               string `json:"id"`
-							IsResolved       bool   `json:"isResolved"`
-							IsOutdated       bool   `json:"isOutdated"`
-							ViewerCanResolve bool   `json:"viewerCanResolve"`
-							Comments         struct {
-								PageInfo struct {
-									HasNextPage bool `json:"hasNextPage"`
-								} `json:"pageInfo"`
-								Nodes []struct {
-									ID     string `json:"id"`
-									Body   string `json:"body"`
-									Author struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		}
-		vars := map[string]any{"owner": c.cfg.Owner, "repo": c.cfg.Repo, "number": number}
-		if after != nil {
-			vars["after"] = *after
-		}
-		if err := c.graphql(ctx, reviewThreadsQuery, vars, &resp); err != nil {
-			return nil, err
-		}
-
-		threads := resp.Repository.PullRequest.ReviewThreads
-		for _, n := range threads.Nodes {
-			t := ReviewThread{
-				ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated,
-				CanResolve: n.ViewerCanResolve, Truncated: n.Comments.PageInfo.HasNextPage,
-			}
-			for _, cm := range n.Comments.Nodes {
-				t.CommentNodeIDs = append(t.CommentNodeIDs, cm.ID)
-			}
-			if len(n.Comments.Nodes) == 0 {
-				// A thread with no comments cannot be attributed, so it is nobody's to close.
-				out = append(out, t)
-				continue
-			}
-			first := n.Comments.Nodes[0]
-			t.Marker = markerIn(first.Body)
-			t.Author = first.Author.Login
-
-			seen := make(map[string]struct{}, len(n.Comments.Nodes))
-			for _, cm := range n.Comments.Nodes {
-				seen[cm.Author.Login] = struct{}{}
-			}
-			t.Participants = len(seen)
-			out = append(out, t)
-		}
-
-		if !threads.PageInfo.HasNextPage || threads.PageInfo.EndCursor == "" {
-			return out, nil
-		}
-		cursor := threads.PageInfo.EndCursor
-		after = &cursor
+	out, err := paging.All(ctx, maxThreadPages, func(ctx context.Context, after string) ([]ReviewThread, string, error) {
+		return c.reviewThreadsPage(ctx, number, after)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("github: reading the pages of review threads: %w", err)
 	}
-	// Fail at the cap, because a partial list would pass as complete and leave
-	// later threads open.
-	return nil, fmt.Errorf("github: more than %d pages of review threads", maxThreadPages)
+	return out, nil
+}
+
+// errThreadCursorMissing is a page that says more threads follow and gives no cursor
+// to fetch them with. Reading it as the last page would leave every later thread
+// open while the conversations were reported as examined.
+var errThreadCursorMissing = errors.New("github: a page of review threads says more follow but names no cursor")
+
+// reviewThreadsPage reads the page of threads after the cursor ("" for the first)
+// and returns the cursor of the next page, or "" when it was the last.
+func (c *client) reviewThreadsPage(ctx context.Context, number int, after string) ([]ReviewThread, string, error) {
+	var out []ReviewThread
+	var resp struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						ID               string `json:"id"`
+						IsResolved       bool   `json:"isResolved"`
+						IsOutdated       bool   `json:"isOutdated"`
+						ViewerCanResolve bool   `json:"viewerCanResolve"`
+						Comments         struct {
+							PageInfo struct {
+								HasNextPage bool `json:"hasNextPage"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								ID     string `json:"id"`
+								Body   string `json:"body"`
+								Author struct {
+									Login string `json:"login"`
+								} `json:"author"`
+							} `json:"nodes"`
+						} `json:"comments"`
+					} `json:"nodes"`
+				} `json:"reviewThreads"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	vars := map[string]any{"owner": c.cfg.Owner, "repo": c.cfg.Repo, "number": number}
+	if after != "" {
+		vars["after"] = after
+	}
+	if err := c.graphql(ctx, reviewThreadsQuery, vars, &resp); err != nil {
+		return nil, "", err
+	}
+
+	threads := resp.Repository.PullRequest.ReviewThreads
+	for _, n := range threads.Nodes {
+		t := ReviewThread{
+			ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated,
+			CanResolve: n.ViewerCanResolve, Truncated: n.Comments.PageInfo.HasNextPage,
+		}
+		for _, cm := range n.Comments.Nodes {
+			t.CommentNodeIDs = append(t.CommentNodeIDs, cm.ID)
+		}
+		if len(n.Comments.Nodes) == 0 {
+			// A thread with no comments cannot be attributed, so it is nobody's to close.
+			out = append(out, t)
+			continue
+		}
+		first := n.Comments.Nodes[0]
+		t.Marker = markerIn(first.Body)
+		t.Author = first.Author.Login
+
+		seen := make(map[string]struct{}, len(n.Comments.Nodes))
+		for _, cm := range n.Comments.Nodes {
+			seen[cm.Author.Login] = struct{}{}
+		}
+		t.Participants = len(seen)
+		out = append(out, t)
+	}
+
+	page := threads.PageInfo
+	switch {
+	case !page.HasNextPage:
+		return out, "", nil
+	case page.EndCursor == "":
+		return nil, "", errThreadCursorMissing
+	}
+	return out, page.EndCursor, nil
 }
 
 // viewerQuery works for both credential kinds; REST's /user returns 403 to an

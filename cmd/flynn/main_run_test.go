@@ -12,7 +12,6 @@ import (
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/notices"
-	"github.com/ionalpha/flynn/provider"
 )
 
 // runResult is what one in-process dispatch produced: the exit code and the two streams.
@@ -31,9 +30,7 @@ func runCLI(t *testing.T, args ...string) runResult {
 	t.Setenv(notices.OffEnv, "1")
 	// No provider credential may leak in from the developer's environment: a command that
 	// resolved a real model would go on to do real work.
-	for _, k := range provider.CredentialEnvVars() {
-		t.Setenv(k, "")
-	}
+	noProviderKeys(t)
 	t.Setenv(diag.EnvDir, "")
 
 	keepRunGlobals(t)

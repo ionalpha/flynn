@@ -29,10 +29,17 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "usage: flynn models fetch <model-id> [--quant <name>]")
 		fs.PrintDefaults()
 	}
-	if done, err := parseModelFlags(fs, args); done {
+	bare, done, err := parseModelArgs(fs, args)
+	if done {
 		return err
 	}
-	id := fs.Arg(0)
+	if len(bare) > 1 {
+		return usageErrf("models fetch", "unexpected argument %q", bare[1])
+	}
+	id := ""
+	if len(bare) == 1 {
+		id = bare[0]
+	}
 	if id == "" {
 		fs.Usage()
 		return errors.New("models fetch: a model id is required")

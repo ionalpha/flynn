@@ -31,10 +31,10 @@ func runModelPool(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "Keep a set of local models resident, evicting the lowest-priority idle ones under the memory budget.")
 		fs.PrintDefaults()
 	}
-	if done, err := parseModelFlags(fs, args); done {
+	ids, done, err := parseModelArgs(fs, args)
+	if done {
 		return err
 	}
-	ids := fs.Args()
 	if len(ids) == 0 {
 		return errors.New("models pool: at least one model id is required (see `flynn models`)")
 	}
