@@ -27,6 +27,23 @@ func TestGrantStatusText(t *testing.T) {
 	}
 }
 
+// TestOnGrantTakesOverTheLiveLineUntilDone shows the wait on the live line and
+// puts the line the turn had back when the grant ends.
+func TestOnGrantTakesOverTheLiveLineUntilDone(t *testing.T) {
+	host, _ := newSlashHost(t, nil)
+	status := host.onGrant("thinking...")
+	live := func() string { return strings.Join(host.live.Render(80), "\n") }
+
+	status(sandbox.GrantProgress{Dir: "repo"})
+	if got := live(); !strings.Contains(got, "granting sandbox access (Esc cancels): repo") {
+		t.Fatalf("live line during a grant = %q", got)
+	}
+	status(sandbox.GrantProgress{Dir: "repo", Done: true})
+	if got := live(); !strings.Contains(got, "thinking...") || strings.Contains(got, "granting") {
+		t.Fatalf("live line after the grant = %q", got)
+	}
+}
+
 // TestLineGrantStatusAnnouncesOncePerGrant keeps a minutes-long grant from
 // printing a line a second, while the next grant is still announced.
 func TestLineGrantStatusAnnouncesOncePerGrant(t *testing.T) {
