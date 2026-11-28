@@ -253,6 +253,7 @@ func (q *MemoryQueue) ReleasePayload(_ context.Context, queue string, payload []
 	now := q.clk.Now().UnixNano()
 	q.mu.Lock()
 	n := 0
+	//ordered:ok every match gets the same mark and only their count leaves
 	for _, j := range q.active[queue] {
 		if j.State == StateRunning && bytes.Equal(j.Payload, payload) {
 			MarkRecovered(j, now)
