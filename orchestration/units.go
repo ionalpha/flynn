@@ -127,6 +127,9 @@ func (f *UnitFanout) Outcomes(ctx context.Context, childIDs []string) ([]goal.Un
 			out = append(out, goal.UnitOutcome{ChildID: id, Done: true, Evidence: evidence, Failure: failure})
 			f.sp.finish(ctx, id)
 		default:
+			if err := f.sp.takeUp(ctx, r); err != nil {
+				return nil, err
+			}
 			out = append(out, goal.UnitOutcome{ChildID: id})
 		}
 	}

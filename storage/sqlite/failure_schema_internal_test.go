@@ -183,4 +183,9 @@ func TestJobsFailWhenTheTableIsMissing(t *testing.T) {
 	if _, err := q.Recover(ctx); err == nil {
 		t.Error("recover succeeded with the jobs table missing")
 	}
+	if r, ok := q.(jobs.Releaser); !ok {
+		t.Error("the sqlite queue cannot release a payload's leases")
+	} else if _, err := r.ReleasePayload(ctx, "q", []byte("p")); err == nil {
+		t.Error("release succeeded with the jobs table missing")
+	}
 }

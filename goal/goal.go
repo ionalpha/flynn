@@ -50,6 +50,15 @@ var specSchema = json.RawMessage(`{
   "type": "object",
   "required": ["objective", "stopCondition"],
   "properties": {
+    "confinement": {
+      "type": "object",
+      "properties": {
+        "workdir": {"type": "string"},
+        "grant": {"type": "array", "items": {"type": "string"}},
+        "unrestricted": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
     "objective": {"type": "string", "minLength": 1},
     "stopCondition": {"type": "string", "minLength": 1},
     "maxSteps": {"type": "integer", "minimum": 0},
@@ -195,6 +204,9 @@ type Spec struct {
 	// pauses the run with the ask, because a refusal sends the model looking for another
 	// route.
 	Allowances []Allowance `json:"allowances,omitempty"`
+	// Confinement is set by the submitting runtime and inherited by children; see
+	// [Confinement].
+	Confinement *Confinement `json:"confinement,omitempty"`
 }
 
 // SpendBudget caps pool spend; WindowFraction, in [0,1], caps plan-window share and needs

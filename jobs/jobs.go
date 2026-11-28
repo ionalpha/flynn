@@ -70,6 +70,27 @@ type ClaimParams struct {
 	Queue    string // empty means DefaultQueue
 	Limit    int    // <= 0 means 1
 	LeaseFor int64  // nanos
+	// Filter, when set, limits the claim to the jobs it accepts; the others stay as they
+	// are for another worker. It is an interface so ClaimParams stays comparable.
+	Filter Filter
+}
+
+// Filter selects the jobs a worker may lease. A backend calls it while claiming, under its
+// own lock or transaction, so it must not call the queue or the store.
+//
+// A [Queue] must apply it. One that ignores it leases other workers' jobs, and each such
+// claim counts an attempt, so a job can reach its limit and die without its owner ever
+// running it. A worker that refuses the job cannot give the attempt back.
+type Filter interface {
+	Accepts(j Job) bool
+}
+
+// Releaser is an optional [Queue] capability that expires the leases on one payload's jobs,
+// for a process taking over work whose holder is gone without touching anyone else's.
+type Releaser interface {
+	// ReleasePayload makes the running jobs in queue carrying payload claimable now and
+	// returns the count. Attempt counts are unchanged.
+	ReleasePayload(ctx context.Context, queue string, payload []byte) (int, error)
 }
 
 // Queue is the durable work-queue port. Implementations must be safe for
@@ -77,8 +98,9 @@ type ClaimParams struct {
 type Queue interface {
 	// Enqueue returns the job with its ID and defaults applied.
 	Enqueue(ctx context.Context, p EnqueueParams) (Job, error)
-	// Claim leases up to Limit jobs that are [Claimable], in RunAt, creation and
-	// ID order, incrementing each Attempt.
+	// Claim leases up to Limit jobs that are [Claimable] and accepted by the
+	// filter, in RunAt, creation and ID order, incrementing each Attempt. A job
+	// the [Filter] rejects must not be leased or counted.
 	Claim(ctx context.Context, p ClaimParams) ([]Job, error)
 	// Complete returns [ErrNotRunning] for a job that is not running.
 	Complete(ctx context.Context, id string) error
@@ -86,10 +108,10 @@ type Queue interface {
 	// remain, else dead. A negative retryAt makes the job dead at once.
 	Fail(ctx context.Context, id, errMsg string, retryAt int64) error
 	Get(ctx context.Context, id string) (Job, error)
-	// Recover makes every running job claimable now and returns the count. Startup
-	// calls it under the single-instance lock, where no live worker holds a lease,
-	// so an interrupted run resumes without waiting out its lease. Attempt counts
-	// are unchanged.
+	// Recover makes every running job claimable now and returns the count, so
+	// interrupted work resumes without waiting out its lease. It also takes leases
+	// from live workers, so only a process that is the queue's sole user may call
+	// it. Attempt counts are unchanged.
 	Recover(ctx context.Context) (int, error)
 	Close() error
 }
@@ -166,6 +188,9 @@ func ClaimDefaults(p ClaimParams) (queue string, limit int) {
 	}
 	return queue, limit
 }
+
+// Accepted reports whether p's filter takes j; no filter takes every job.
+func Accepted(p ClaimParams, j Job) bool { return p.Filter == nil || p.Filter.Accepts(j) }
 
 // Claimable reports whether j is pending with RunAt passed, or running with an
 // expired lease and attempts left. Each claim is an attempt, so an expired job

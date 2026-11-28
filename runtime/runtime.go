@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -110,6 +111,10 @@ type Config struct {
 	// run never resumes a goal an earlier run left open. Resync still covers
 	// the run's own goals. A server leaves it false to resume orphaned work.
 	DriveSubmittedOnly bool
+	// Confinement is where Executor runs and what it may do. It is recorded on each
+	// submitted goal, and a goal whose record it does not cover is refused; see
+	// [goal.Confinement].
+	Confinement *goal.Confinement
 	// WorkerPoll overrides how often the step worker polls when idle.
 	WorkerPoll time.Duration
 	// PollInterval overrides how often the reconciler re-checks an in-flight step
@@ -137,24 +142,39 @@ type Runtime struct {
 	clk        clock.Timing
 	workerPoll time.Duration
 	driven     *drivenSet
+
+	confinement   *goal.Confinement
+	submittedOnly bool
 }
 
 // drivenSet holds the goals this process submitted or resumed; under
-// DriveSubmittedOnly it is the resync scope. The submitter writes it and the
-// resync loop reads it.
+// DriveSubmittedOnly it is the resync scope and the worker's claim filter. The
+// submitter writes it and the resync loop and worker read it.
 type drivenSet struct {
 	mu   sync.Mutex
 	keys map[resource.Key]struct{}
+	ids  map[string]struct{}
 }
 
-func (d *drivenSet) add(k resource.Key) {
+func (d *drivenSet) add(r resource.Resource) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.keys == nil {
-		d.keys = map[resource.Key]struct{}{}
+		d.keys, d.ids = map[resource.Key]struct{}{}, map[string]struct{}{}
 	}
-	d.keys[k] = struct{}{}
+	d.keys[r.Key()] = struct{}{}
+	d.ids[r.ID] = struct{}{}
 }
+
+func (d *drivenSet) has(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.ids[id]
+	return ok
+}
+
+// Accepts implements [jobs.Filter]: a step job's payload is its goal's resource ID.
+func (d *drivenSet) Accepts(j jobs.Job) bool { return d.has(string(j.Payload)) }
 
 func (d *drivenSet) list() []resource.Key {
 	d.mu.Lock()
@@ -189,7 +209,11 @@ func New(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	driven := &drivenSet{}
 	wopts := workerOptions(cfg, b)
+	if cfg.DriveSubmittedOnly {
+		wopts = append(wopts, goal.WithClaimFilter(driven))
+	}
 	ropts, wopts, err = pairedOptions(cfg, ropts, wopts)
 	if err != nil {
 		return nil, err
@@ -198,7 +222,6 @@ func New(cfg Config) (*Runtime, error) {
 	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)
 	worker := goal.NewWorker(store, q, clk, cfg.Executor, wopts...)
 
-	driven := &drivenSet{}
 	mgr := reconcile.NewManager(store, managerOptions(cfg, clk, driven)...)
 	mgr.Register(goal.Kind, rec)
 
@@ -208,6 +231,9 @@ func New(cfg Config) (*Runtime, error) {
 	}
 
 	return &Runtime{
+		confinement:   cfg.Confinement,
+		submittedOnly: cfg.DriveSubmittedOnly,
+
 		store:      store,
 		jobs:       q,
 		bus:        b,
@@ -280,7 +306,7 @@ func reconcilerOptions(cfg Config, b bus.Bus) ([]goal.Option, error) {
 }
 
 func workerOptions(cfg Config, b bus.Bus) []goal.WorkerOption {
-	wopts := []goal.WorkerOption{goal.WithBus(b)}
+	wopts := []goal.WorkerOption{goal.WithBus(b), goal.WithConfinement(cfg.Confinement)}
 	if cfg.WorkerLease > 0 {
 		wopts = append(wopts, goal.WithLease(cfg.WorkerLease))
 	}
@@ -341,8 +367,10 @@ func managerOptions(cfg Config, clk clock.Timing, driven *drivenSet) []reconcile
 func (rt *Runtime) Store() resource.Store { return rt.store }
 
 // SubmitGoal stores a new Goal and enqueues it; an empty name is generated.
+// The goal records the runtime's confinement, replacing any in spec.
 // Reconciliation runs once Start is running.
 func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) (resource.Resource, error) {
+	spec.Confinement = rt.confinement
 	raw, err := json.Marshal(spec)
 	if err != nil {
 		return resource.Resource{}, err
@@ -357,31 +385,94 @@ func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) 
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	rt.driven.add(saved.Key())
+	rt.driven.add(saved)
 	rt.manager.Enqueue(saved.Key())
 	return saved, nil
 }
 
 // Resume enqueues an existing goal without rewriting it, so its recorded
-// progress continues on the same run. A missing goal is resource.ErrNotFound.
+// progress continues on the same run. A missing goal is resource.ErrNotFound,
+// and one whose confinement this runtime does not cover is refused.
+//
+// Under DriveSubmittedOnly, taking up a goal releases its step leases, so a run
+// whose process died continues at once. Resuming a goal another live process is
+// running takes its step.
 func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, error) {
 	r, err := rt.store.Get(ctx, goal.Kind, resource.Scope{}, name)
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	rt.driven.add(r.Key())
+	if err := goal.CheckConfinement(rt.confinement, r); err != nil {
+		return resource.Resource{}, err
+	}
+	if q, ok := rt.jobs.(jobs.Releaser); ok && rt.submittedOnly && !rt.driven.has(r.ID) {
+		if _, err := q.ReleasePayload(ctx, goal.StepQueue, []byte(r.ID)); err != nil {
+			return resource.Resource{}, fmt.Errorf("runtime: release the goal's steps: %w", err)
+		}
+	}
+	rt.driven.add(r)
 	rt.manager.Enqueue(r.Key())
 	return r, nil
+}
+
+// Adopt records this runtime's confinement on a stored goal that has none, and
+// on the goals it owns, and reports whether it wrote one. It is for an operator
+// naming a goal to resume: [Runtime.Resume] and the worker refuse a goal with no
+// record. A record already present is never replaced.
+func (rt *Runtime) Adopt(ctx context.Context, name string) (bool, error) {
+	root, err := rt.store.Get(ctx, goal.Kind, resource.Scope{}, name)
+	if err != nil {
+		return false, err
+	}
+	spec, err := goal.DecodeSpec(root)
+	if err != nil || spec.Confinement != nil || rt.confinement == nil {
+		return false, err
+	}
+	all, err := rt.store.List(ctx, goal.Kind, root.Scope, resource.Everything())
+	if err != nil {
+		return false, fmt.Errorf("runtime: list the goal's children: %w", err)
+	}
+	tree := []resource.Resource{root}
+	for i := 0; i < len(tree); i++ {
+		for _, r := range all {
+			if slices.ContainsFunc(r.OwnerReferences, func(o resource.OwnerReference) bool { return o.ID == tree[i].ID }) {
+				tree = append(tree, r)
+			}
+		}
+	}
+	// Children first: an interrupted adoption leaves the root without a record,
+	// so the next one finishes it.
+	for _, r := range slices.Backward(tree) {
+		if _, err := resource.UpdateByID(ctx, rt.store, r.ID, rt.record); err != nil {
+			return false, fmt.Errorf("runtime: record the confinement of goal %s: %w", r.Name, err)
+		}
+	}
+	return true, nil
+}
+
+func (rt *Runtime) record(r *resource.Resource) error {
+	spec, err := goal.DecodeSpec(*r)
+	if err != nil {
+		return err
+	}
+	if spec.Confinement != nil {
+		return resource.ErrSkipUpdate
+	}
+	spec.Confinement = rt.confinement
+	r.Spec, err = json.Marshal(spec)
+	return err
 }
 
 // Start runs the manager and worker until ctx is cancelled and both stop, and
 // returns ctx.Err().
 func (rt *Runtime) Start(ctx context.Context) error {
-	// A crashed process may have left a step leased. Under the single-instance
-	// lock no other worker is live, so release it now instead of waiting out
-	// the lease.
-	if _, err := rt.jobs.Recover(ctx); err != nil {
-		return fmt.Errorf("runtime: recover orphaned jobs: %w", err)
+	// A runtime that drives every goal releases the steps a crashed process left
+	// leased. One limited to its own goals shares the queue with live processes,
+	// so it releases a goal's steps only when asked to resume it.
+	if !rt.submittedOnly {
+		if _, err := rt.jobs.Recover(ctx); err != nil {
+			return fmt.Errorf("runtime: recover orphaned jobs: %w", err)
+		}
 	}
 
 	sub, err := rt.bus.Subscribe(ctx, goal.StepSubject, func(ctx context.Context, m bus.Message) error {

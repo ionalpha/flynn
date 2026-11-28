@@ -3,17 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // blockingModel blocks in Generate until the context is cancelled, standing in for a
@@ -85,6 +88,54 @@ func TestResumeContinuesInterruptedRun(t *testing.T) {
 	}
 	if !strings.Contains(result, "resumed and finished") {
 		t.Fatalf("resume did not drive the run to completion; result = %q\nout:\n%s", result, out2.String())
+	}
+}
+
+// A run stored without a working directory or grant is adopted when the operator
+// resumes it by id, and the output says so in one line.
+func TestResumeAdoptsARunStoredWithoutARecord(t *testing.T) {
+	ctx := t.Context()
+	store := memStore(t)
+	reg, err := governed.Registry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := store.Resources(reg)
+	req := driveRequest{
+		out: &bytes.Buffer{}, model: blockingModel{}, workdir: t.TempDir(), objective: "do the task",
+		system: defaultSystemPrompt, rstore: resources, jq: store.Jobs(), log: store.Log(),
+	}
+	firstCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, runID, _, _ := req.execute(firstCtx)
+
+	parked, err := resources.Get(ctx, goal.Kind, resource.Scope{}, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := goal.DecodeSpec(parked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Confinement = nil
+	if parked.Spec, err = json.Marshal(spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resources.Put(ctx, parked); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	req.out, req.resumeID = &out, runID
+	req.model = llmtest.NewScripted(llmtest.SayText("resumed and finished the task"))
+	resumeCtx, stop := context.WithTimeout(ctx, 20*time.Second)
+	defer stop()
+	result, _, _, err := req.execute(resumeCtx)
+	if err != nil || !strings.Contains(result, "resumed and finished") {
+		t.Fatalf("resume = %q, %v\nout:\n%s", result, err, out.String())
+	}
+	if n := strings.Count(out.String(), "recorded no working directory or tool grant"); n != 1 {
+		t.Fatalf("the adoption was reported %d times\nout:\n%s", n, out.String())
 	}
 }
 
