@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: tickspec
+Version: 0.9.2
+Summary: Parse cron expressions
+License: MIT
+Requires-Python: >=3.8
+Home-page: https://example.test/tickspec
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Development Status :: 7 - Inactive
+
+Unmaintained since February 2021. Issue 31 (the step parser backtracks badly on long
+lists) is open and will not be fixed.

@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: cronlet
+Version: 1.4.0
+Summary: Next fire time of a cron expression
+License: MIT
+Requires-Python: >=3.8
+Home-page: https://example.test/cronlet
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Development Status :: 5 - Production/Stable

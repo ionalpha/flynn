@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: tabulon
+Version: 2.0.0
+License: MIT
+Requires-Dist: textmeasure>=1.0

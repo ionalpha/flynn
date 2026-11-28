@@ -1,0 +1,2 @@
+# Runtime dependencies, one per line: name and version specifier.
+cronwiz==3.1.0
