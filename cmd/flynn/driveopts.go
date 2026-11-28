@@ -13,7 +13,9 @@ import (
 )
 
 // driveConfig holds a run's optional levers. Its zero value (no budget, the strictest
-// shell policy) opens nothing, so leaving an option out is always safe.
+// shell policy) opens nothing. Leaving out the shell policy is safe and still wrong: on
+// Windows the strictest policy refuses every command, so every entry point passes
+// [withShellPolicy], and a test in this package fails one that does not.
 type driveConfig struct {
 	budget   budgetpkg.Limits
 	shell    governed.ShellPolicy
@@ -23,7 +25,9 @@ type driveConfig struct {
 	planning bool
 	proof    bool
 	skills   *skilltool.Set
-	gates    gateSetup
+	// loaded are skills whose full text goes in the system prompt, named in this order.
+	loaded []string
+	gates  gateSetup
 	// allowances are the irreversible actions outside the workspace this run may take. They
 	// ride the goal spec, so the waist checks them and the reconciler can tell an answered
 	// ask from an open one.
@@ -40,9 +44,9 @@ type driveConfig struct {
 	// project is the trust decision for the repository's instruction files. The zero value
 	// means none found, and adds, taints and records nothing.
 	project projectctx.Decision
-	// model is the model the run resolved to and where that came from. The zero value
-	// says nothing and records nothing.
-	model modelChoice
+	// selection is the skills the run is offered and the tools it is granted. Nil leaves
+	// both at their defaults and adds nothing to the record.
+	selection *selectionPlan
 }
 
 type driveOption func(*driveConfig)
@@ -87,13 +91,6 @@ func withLedgerProof() driveOption {
 	return func(c *driveConfig) { c.proof = true }
 }
 
-// withModelChoice has the run state which model it resolved to and where that came
-// from, in its header and on its stream, so a run on a model nobody typed is visible
-// afterwards.
-func withModelChoice(m modelChoice) driveOption {
-	return func(c *driveConfig) { c.model = m }
-}
-
 // withExternalAgent drives the run through an external agent CLI, whose harness runs
 // the loop and its own model; drive's llm.Model is unused. Every tool call still crosses
 // the dispatch waist, so governance is unchanged.
@@ -125,6 +122,16 @@ func withEventObserver(fn func(session.Event)) driveOption {
 // the outcome is credited to.
 func withSkills(s *skilltool.Set) driveOption {
 	return func(c *driveConfig) { c.skills = s }
+}
+
+// withLoadedSkills puts each named skill's full text in the system prompt, as
+// skill_read would return it, so the model has the procedure whether or not it would
+// have asked for it. A measurement of what a skill's content does needs this: with
+// the skill only offered, whether the model opens it is a second random outcome that
+// dilutes the effect being measured. A name that does not load stops the run before
+// any model call, because a run without the skill it was promised measures nothing.
+func withLoadedSkills(slugs ...string) driveOption {
+	return func(c *driveConfig) { c.loaded = slugs }
 }
 
 // withApproval requires a person to authorize each named action before the run takes

@@ -161,11 +161,15 @@ func ledgerOutcomeLines(spec goal.Spec, status goal.Status) []string {
 // mode of it, and all of them record the same session and apply the same governance.
 func (r driveRequest) assembly() assembly {
 	c := r.cfg
+	var grant []string
+	if c.selection != nil {
+		grant = c.selection.grant
+	}
 	return assembly{
 		model: r.model, plan: r.plan, workdir: r.workdir, system: r.system,
 		rstore: r.rstore, jq: r.jq, log: r.log, skills: c.skills, runID: r.resumeID,
 		shell: c.shell, planning: c.planning, proof: c.proof, gates: c.gates,
-		budget: c.budget, fanout: r.fanout, ext: c.extAgent, toolset: c.toolset,
+		budget: c.budget, fanout: r.fanout, ext: c.extAgent, toolset: c.toolset, grant: grant,
 	}
 }
 
@@ -177,9 +181,6 @@ func (r driveRequest) assembly() assembly {
 func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	c := r.cfg
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.ID())
-	if line := modelLine(c.model); line != "" {
-		_, _ = fmt.Fprintln(w, line)
-	}
 	if gated := governed.GatedActions(governed.ApprovalPolicy(c.gates.approve)); len(gated) > 0 {
 		how := "refused, nothing here can prompt"
 		if c.gates.prompter != nil {
@@ -195,29 +196,23 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 	}
 }
 
-// modelLine is the header line naming the model a run resolved to and where that came
-// from. A run that resolved none (an external agent drives its own) says nothing.
-func modelLine(m modelChoice) string {
-	if m.Spec == "" {
-		return ""
-	}
-	return "  model: " + m.String()
-}
-
 // begin starts the run's goal. A resumed run re-drives its existing goal, preserving its
 // recorded progress, rather than opening a new one; the subscription taken before this
 // replays the prior conversation first, then tails the rest live.
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
-		recordModelChoice(ctx, r.out, r.log, r.cfg.model, r.resumeID)
-		return run.Resume(ctx, r.resumeID)
+		if err := run.Resume(ctx, r.resumeID); err != nil {
+			return err
+		}
+		recordSelection(ctx, r.out, r.log, r.cfg.selection, run.ID())
+		return nil
 	}
 	if _, err := run.Submit(ctx, r.goalSpec()); err != nil {
 		return err
 	}
+	recordSelection(ctx, r.out, r.log, r.cfg.selection, run.ID())
 	// The run's stream exists once the goal is submitted, which is the earliest the
 	// decision can be written to it.
-	recordModelChoice(ctx, r.out, r.log, r.cfg.model, run.ID())
 	recordProjectDecision(ctx, r.out, r.log, r.cfg.project, run.ID())
 	return nil
 }

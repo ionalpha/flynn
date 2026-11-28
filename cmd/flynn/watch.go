@@ -26,14 +26,14 @@ const watchPoll = 500 * time.Millisecond
 // record like any other input. The marker is cleared from its file once picked up, so
 // the same request never fires twice. Ctrl-C stops watching and cancels an in-flight
 // run. Learning is captured per run unless disabled, exactly as a one-shot goal.
-func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
+func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool, shell governed.ShellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	if err := errExternalAgentUnsupported("watch", modelSpec); err != nil {
 		return err
 	}
-	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
+	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
 	}
@@ -52,6 +52,12 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	// Checked once, before watching starts, so a misspelt slug stops the command instead
+	// of failing every marker.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), false, false, false)
+	if err != nil {
+		return err
+	}
 
 	var distiller learn.Distiller
 	if learnEnabled {
@@ -65,8 +71,7 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 		_, _ = fmt.Fprintf(out, "\n  marker %s\n  %s\n", m.Provenance(), m.Text)
 		objective := watchObjective(m)
 		if _, err := runLearningMission(ctx, out, model, plan, distiller, cwd, objective, "", store, signer, verbose, nil,
-			withModelChoice(choice),
-			withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
+			withShellPolicy(shell), withSelection(selPlan), withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
 			// Surface the failure and leave the marker in place (unretried until edited),
 			// so a transient run error does not silently swallow the request.
 			_, _ = fmt.Fprintf(out, "  marker run failed: %v\n", err)

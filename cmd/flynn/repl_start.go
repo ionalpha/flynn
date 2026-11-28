@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 
 	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runInteractive runs the no-subcommand interactive session: a read-eval-print loop
@@ -41,8 +43,6 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		model    llm.Model
 		plan     harness.Plan
 		extAgent *externAgent
-		// modelSource is where the resolved model came from, for the header.
-		modelSource string
 	)
 	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
 		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
@@ -53,21 +53,24 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		// each turn continues. It dies with the session.
 		defer extAgent.close()
 	} else {
-		var resolved modelChoice
-		model, plan, resolved, err = resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
+		var resolvedSpec string
+		model, plan, resolvedSpec, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 		if err != nil {
 			return err
 		}
 		// Report and drive the model that actually resolved, not the default spec that
 		// started resolution: a fallback to an already-configured provider changes it.
-		modelSpec = resolved.Spec
-		modelSource = resolved.Source
+		modelSpec = resolvedSpec
 	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), extAgent != nil, false, false)
+	if err != nil {
+		return err
+	}
 	reg, err := governed.Registry()
 	if err != nil {
 		return err
@@ -110,11 +113,11 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		verbose:      verbose,
 		cwd:          cwd,
 		store:        store,
+		selection:    &selPlan,
 		reg:          reg,
 		signer:       signer,
 		dataDir:      dataDir,
 		modelSpec:    modelSpec,
-		modelSource:  modelSource,
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
 		gates: gateSetup{approve: reqApproval},
@@ -147,7 +150,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// because the question is asked on it. An external agent CLI reads its own project
 	// files, so only a native session decides.
 	if extAgent == nil {
-		s.project = projectDecision(cwd, dataDir)
+		s.project = projectDecisionFor(cwd, dataDir)
 	}
 	if s.started {
 		// A resumed run carries no opening turn to build its instructions on, so it gets
@@ -177,10 +180,36 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
-	s.notice = func(text string) { _, _ = fmt.Fprintf(s.out, "  %s\n", text) }
-	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, modelChoice{Spec: s.modelSpec, Source: s.modelSource})
-	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
+	s.notice = func(text string) { s.plainBlock(blockNotice, text) }
+	s.grantStatus = s.lineGrantStatus()
+	for _, l := range sessionBanner(nil, s.modelSpec, cwd, s.project) {
+		_, _ = fmt.Fprintln(s.out, l)
+	}
+	_, _ = fmt.Fprintln(s.out, `Ctrl-C cancels a turn; Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
+}
+
+// lineGrantStatus announces a long sandbox grant once, since a printed line
+// cannot be updated in place.
+func (s *replSession) lineGrantStatus() func(sandbox.GrantProgress) {
+	var waiting sync.Map
+	return func(p sandbox.GrantProgress) {
+		if p.Done {
+			waiting.Delete(p.Dir)
+			return
+		}
+		if _, said := waiting.LoadOrStore(p.Dir, true); !said {
+			s.plainBlock(blockNotice, grantStatusText(p, "Ctrl-C cancels"))
+		}
+	}
+}
+
+// plainBlock writes one unstyled block to the session's output, the line
+// interface's form of the shell's notices, errors and cancellations.
+func (s *replSession) plainBlock(k blockKind, text string) {
+	for _, l := range layBlock(nil, k, text, 0) {
+		_, _ = fmt.Fprintln(s.out, l)
+	}
 }
 
 // stdinIsTerminal reports whether standard input is an interactive terminal, so the
