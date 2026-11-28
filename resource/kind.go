@@ -97,10 +97,11 @@ func (r *Registry) Kinds() []Kind {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]Kind, 0, len(r.kinds))
+	//ordered:ok sorted below by apiVersion and name, which are unique
 	for _, rk := range r.kinds {
 		out = append(out, rk.kind)
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].APIVersion != out[j].APIVersion {
 			return out[i].APIVersion < out[j].APIVersion
 		}

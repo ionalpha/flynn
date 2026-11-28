@@ -191,7 +191,7 @@ func Tx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 // after the reading one nanosecond later. About one reading in ten lands on the
 // second, more on a coarse clock, so ORDER BY over unpadded columns was wrong for a
 // share of rows. Migration 0029 rewrote the columns written before this layout.
-const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+const TimeLayout = migrate.TimeLayout
 
 // FormatTime renders t as UTC in TimeLayout.
 func FormatTime(t time.Time) string { return t.UTC().Format(TimeLayout) }

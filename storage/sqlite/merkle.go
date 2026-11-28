@@ -101,6 +101,7 @@ func (m *MerkleNodeStore) PutNode(level uint, index uint64, hash []byte) error {
 // Flush persists partial tiles. Call it before sealing a checkpoint or
 // closing, so [chain.LoadTree] finds every frontier node.
 func (m *MerkleNodeStore) Flush() error {
+	//ordered:ok each tile is its own row, so stored state does not depend on order
 	for tk, b := range m.active {
 		if err := m.persist(tk, b); err != nil {
 			return err

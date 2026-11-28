@@ -1,0 +1,101 @@
+name: Review
+
+# Runs `flynn review` on a pull request when someone adds the `review` label, and
+# never on open or push. Remove-and-add runs it again.
+#
+# This is pull_request_target so that a fork's pull request can be reviewed with
+# repository secrets. That is safe only while no step checks out, builds or runs
+# anything from the pull request: the binary is built from the default branch, and
+# `flynn review` reads the pull request through the API. Do not add a checkout of
+# the pull request's head or merge ref.
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+# The label name is part of the group because the group is joined before the job's
+# `if` is read: without it, adding any other label would cancel a running review.
+concurrency:
+  group: review-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: flynn review
+    if: github.event.label.name == 'review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Removes the label, and posts the review when no App is configured.
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # Triage access is enough to add a label, so the label alone does not limit
+      # spending to people with write access.
+      - name: Require write access
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" --jq .permission)"
+          case "$permission" in
+            admin | write) ;;
+            *)
+              echo "::error::$SENDER has '$permission' access; asking for a review needs write access."
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # No cache: this job holds secrets, so it takes nothing another run wrote.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false
+
+      - name: Build flynn from the default branch
+        run: go build -o "$RUNNER_TEMP/flynn" ./cmd/flynn
+
+      # With none of the three App secrets set, flynn uses GITHUB_TOKEN. With only
+      # some of them set it fails, so a broken setup does not post under another name.
+      - name: Review the pull request
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FLYNN_GITHUB_APP_ISSUER: ${{ secrets.VOUCHBOT_APP_ID }}
+          FLYNN_GITHUB_APP_INSTALLATION: ${{ secrets.VOUCHBOT_INSTALLATION_ID }}
+          FLYNN_GITHUB_APP_KEY: ${{ secrets.VOUCHBOT_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "$FLYNN_GITHUB_APP_ISSUER$FLYNN_GITHUB_APP_INSTALLATION$FLYNN_GITHUB_APP_KEY" ]; then
+            echo "The vouchbot App secrets are not set, so this review uses the workflow's GITHUB_TOKEN and posts as github-actions[bot]." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Both caps are checked before each model call, so the last call can
+          # pass them. The token cap is the one that bounds a review: flynn does
+          # not yet price its model calls, so --max-cost has nothing to count.
+          status=0
+          "$RUNNER_TEMP/flynn" --data-dir "$RUNNER_TEMP/flynn-data" review "$GITHUB_REPOSITORY#$PR_NUMBER" \
+            --max-cost 1 --max-tokens 200000 || status=$?
+
+          # Exit 3 is a delivered review that requests changes, not a broken run.
+          if [ "$status" -eq 3 ]; then
+            echo "The review requested changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Remove the label
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/review" ||
+            echo "::warning::could not remove the review label; remove it by hand before asking again."

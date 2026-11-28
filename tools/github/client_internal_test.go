@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/internal/paging"
 	"github.com/ionalpha/flynn/secret"
 )
 
@@ -235,7 +236,9 @@ func TestReviewCommentsRefuseToRunOutOfPages(t *testing.T) {
 }
 
 // TestChangedFilesStopsAtThePageCap checks the diff fetch stops at its page cap
-// rather than following an endless chain of next links.
+// rather than following an endless chain of next links, and reports the list it
+// stopped on as truncated: files past the cap were never read, so the diff may not
+// pass for a whole one.
 func TestChangedFilesStopsAtThePageCap(t *testing.T) {
 	var host string
 	var pages int
@@ -249,11 +252,63 @@ func TestChangedFilesStopsAtThePageCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("changedFiles: %v", err)
 	}
-	if len(files) != 0 || truncated {
-		t.Errorf("changedFiles = %d files, truncated=%v, want none", len(files), truncated)
+	if len(files) != 0 || !truncated {
+		t.Errorf("changedFiles = %d files, truncated=%v, want none and truncated", len(files), truncated)
 	}
 	if pages != maxPages {
 		t.Errorf("fetched %d pages, want the cap of %d", pages, maxPages)
+	}
+}
+
+// TestChangedFilesExactlyFullIsComplete checks a list that ends on the file limit
+// with no next page reads as whole. Only a named next page, or a page cap, leaves the
+// rest of the diff unknown.
+func TestChangedFilesExactlyFullIsComplete(t *testing.T) {
+	c := serveWith(t, func(w http.ResponseWriter, _ *http.Request) {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := range 10 {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"filename":"f%d.go","patch":"+x\n"}`, i)
+		}
+		b.WriteString("]")
+		_, _ = w.Write([]byte(b.String()))
+	})
+	files, truncated, err := c.changedFiles(t.Context(), 7)
+	if err != nil {
+		t.Fatalf("changedFiles: %v", err)
+	}
+	if len(files) != c.cfg.MaxFiles || truncated {
+		t.Errorf("changedFiles = %d files, truncated=%v, want %d and whole", len(files), truncated, c.cfg.MaxFiles)
+	}
+}
+
+// TestReviewThreadsRefuseAMissingCursor checks a page of threads that says more
+// follow and names no cursor is an error. Read as the last page, it would leave every
+// later thread open while the conversations were reported as examined.
+func TestReviewThreadsRefuseAMissingCursor(t *testing.T) {
+	c := serveWith(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{` +
+			`"pageInfo":{"hasNextPage":true,"endCursor":""},"nodes":[]}}}}}`))
+	})
+	_, err := c.reviewThreads(t.Context(), 7)
+	if !errors.Is(err, errThreadCursorMissing) {
+		t.Fatalf("reviewThreads error = %v, want errThreadCursorMissing", err)
+	}
+}
+
+// TestReviewThreadsRefuseToRunOutOfPages checks reaching the thread page cap is an
+// error, so threads past it are never treated as absent.
+func TestReviewThreadsRefuseToRunOutOfPages(t *testing.T) {
+	c := serveWith(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{` +
+			`"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[]}}}}}`))
+	})
+	_, err := c.reviewThreads(t.Context(), 7)
+	if !errors.Is(err, paging.ErrTruncated) {
+		t.Fatalf("reviewThreads error = %v, want paging.ErrTruncated", err)
 	}
 }
 

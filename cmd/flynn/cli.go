@@ -65,7 +65,7 @@ var rootFlagGroups = []struct {
 	{"Model and state", "", []string{"model", "data-dir", "no-learn", "no-bundled-skills", "project-files"}},
 	{
 		"Run controls",
-		"These govern a run started by `flynn goal`, a session or `flynn serve`. 'flynn help goal' says how --require-approval, --irreversible and --allow relate to a run's grant.",
+		"These govern a run started by `flynn goal`, a session or `flynn serve`, and a command that would ignore one refuses it. 'flynn help goal' says how --require-approval, --irreversible and --allow relate to a run's grant.",
 		[]string{"verify", "require-proof", "goal-spec", "require-approval", "irreversible", "allow", "fanout", "max-cost", "max-tokens"},
 	},
 	{

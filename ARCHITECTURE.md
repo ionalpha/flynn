@@ -161,8 +161,10 @@ A single run is the n=1 case of each: no owner, no budget, one principal.
    `clock.Clock`; identity and randomness from the seeded `ids.Generator`. A replay
    re-seeds and re-reads the same clock and reproduces the run. *(Enforcement:
    `forbidigo` forbids `time.Now`; `depguard` forbids `math/rand`, `math/rand/v2` and
-   `crypto/rand` outside `ids`. Indirect nondeterminism, such as map order reaching
-   output, is not caught by the linter and is covered by replay-equivalence tests.)*
+   `crypto/rand` outside `ids`. A test in `internal/rigor` reports a map range that can
+   reach output in the deterministic packages it lists, and a rule in `dev/rules.go`
+   reports `sort.Slice` there. Other indirect nondeterminism is covered by
+   replay-equivalence tests.)*
 
 3. **Observability only through the port.** No `fmt.Print*`, no `log/slog` outside
    `observe`. *(Enforcement: `forbidigo` and `depguard`.)*
