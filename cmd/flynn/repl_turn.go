@@ -18,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/state"
 )
@@ -38,6 +39,8 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// A nil grantStatus reports nothing.
+	turnCtx = sandbox.WithGrantProgress(turnCtx, s.grantStatus)
 
 	if sigCh != nil {
 		watchStop := make(chan struct{})

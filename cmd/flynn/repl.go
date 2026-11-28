@@ -23,6 +23,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/storage/sqlite"
@@ -76,6 +77,11 @@ type replSession struct {
 	// summary) to the user. The full-screen shell appends it to the transcript; the
 	// line interface prints it. Nil discards it, so a non-interactive run is quiet.
 	notice func(string)
+
+	// grantStatus, when set, shows the first Windows sandbox grant of a large working
+	// directory, which can take minutes, instead of leaving the turn looking hung. Nil
+	// shows nothing.
+	grantStatus func(sandbox.GrantProgress)
 
 	// gates carries the session's approval policy and the prompter that resolves a
 	// pause. The full-screen shell installs its own prompter (the modal overlay) when it

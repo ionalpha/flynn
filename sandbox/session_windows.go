@@ -39,13 +39,13 @@ func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) 
 	var p *acProcess
 	if l.hostReadable {
 		// The write-restricted tier needs only the workspace write grant.
-		if err := grantRestrictedDir(l.root, l.root); err != nil {
+		if err := l.grantRestrictedDir(ctx, l.root); err != nil {
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
-		if err := l.grantRestrictedWritableDirs(); err != nil {
+		if err := l.grantRestrictedWritableDirs(ctx); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
-		p, err = spawnWriteRestricted(appPath, cmdline, l.root, env, confinedIO{duplex: true}, l.resLimits)
+		p, err = spawnWriteRestricted(appPath, cmdline, l.root, l.root, env, confinedIO{duplex: true}, l.resLimits)
 		if err != nil {
 			return nil, err
 		}
@@ -56,13 +56,13 @@ func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) 
 		}
 		defer func() { _ = windows.FreeSid(sid) }() // the child holds its own token once created
 
-		if err := grantDir(l.root, sid); err != nil {
+		if err := l.grantDir(ctx, l.root, sid); err != nil {
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
-		if err := l.grantReadableDirs(sid); err != nil {
+		if err := l.grantReadableDirs(ctx, sid); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
-		if err := l.grantWritableDirs(sid); err != nil {
+		if err := l.grantWritableDirs(ctx, sid); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
 

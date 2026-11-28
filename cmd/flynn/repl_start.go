@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 
 	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runInteractive runs the no-subcommand interactive session: a read-eval-print loop
@@ -179,11 +181,27 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	defer signal.Stop(sigCh)
 
 	s.notice = func(text string) { s.plainBlock(blockNotice, text) }
+	s.grantStatus = s.lineGrantStatus()
 	for _, l := range sessionBanner(nil, s.modelSpec, cwd, s.project) {
 		_, _ = fmt.Fprintln(s.out, l)
 	}
 	_, _ = fmt.Fprintln(s.out, `Ctrl-C cancels a turn; Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
+}
+
+// lineGrantStatus announces a long sandbox grant once, since a printed line
+// cannot be updated in place.
+func (s *replSession) lineGrantStatus() func(sandbox.GrantProgress) {
+	var waiting sync.Map
+	return func(p sandbox.GrantProgress) {
+		if p.Done {
+			waiting.Delete(p.Dir)
+			return
+		}
+		if _, said := waiting.LoadOrStore(p.Dir, true); !said {
+			s.plainBlock(blockNotice, grantStatusText(p, "Ctrl-C cancels"))
+		}
+	}
 }
 
 // plainBlock writes one unstyled block to the session's output, the line

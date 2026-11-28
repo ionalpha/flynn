@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -50,6 +51,11 @@ func (l *Local) floorPermitted(err error) bool {
 // semi-trusted code on that guarantee. The retry is safe because the failed
 // attempt never ran the command.
 func (l *Local) fallBack(err error, confined bool) bool {
+	// A cancelled or expired context is the caller stopping the launch, which says
+	// nothing about what the host can enforce.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	if err != nil && confined {
 		// The remembered pass no longer describes the host.
 		l.forgetConfinementPass()

@@ -11,8 +11,11 @@ import (
 // mergeAccessEntry merges entry into path's list so nothing loses access. The
 // merge makes a grant idempotent: windows.ACLFromEntries replaces a trustee's
 // existing entries, so re-granting does not stack, and REVOKE_ACCESS drops only
-// that trustee's.
+// that trustee's. It waits for a grant running on path.
 func mergeAccessEntry(path string, entry windows.EXPLICIT_ACCESS) error {
+	slot := grantSlot(path)
+	<-slot
+	defer func() { slot <- struct{}{} }()
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return fmt.Errorf("read access list: %w", err)
