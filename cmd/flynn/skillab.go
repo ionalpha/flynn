@@ -52,13 +52,14 @@ func runSkillAB(args []string, modelSpec, dataDir string, shell governed.ShellPo
 		return err
 	}
 	defer arms.close()
-	model, plan, spec, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	model, plan, choice, err := resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 	if err != nil {
 		return err
 	}
-	price := newPricer(table, spec)
+	price := newPricer(table, choice.Spec)
+	_, _ = fmt.Fprintf(out, "model: %s\n", choice)
 	return measureSkill(ctx, out, set, repeats, arms.names, limit, func(ctx context.Context, exercise skillab.Exercise, repeat int, candidate bool) (skillab.Outcome, error) {
-		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms, shell, flags.keep)
+		return runTrial(ctx, out, model, price, plan, set, exercise, repeat, candidate, arms, shell, flags.keep, withModelChoice(choice))
 	})
 }
 
@@ -272,7 +273,7 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 // With keep set, [keepAttempt] saves the evidence before the directory is removed. Both
 // arms run commands under shell, the policy `flynn run` would use: the zero policy
 // refuses every command on Windows, and the comparison would grade an agent with no shell.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms, shell governed.ShellPolicy, keep string) (skillab.Outcome, error) {
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, candidate bool, arms abArms, shell governed.ShellPolicy, keep string, extra ...driveOption) (skillab.Outcome, error) {
 	slug := set.Skill
 	arm, version := "without", arms.baseline
 	if candidate {
@@ -312,6 +313,7 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, price *pricer
 		return skillab.Outcome{}, err
 	}
 	opts = append(opts, withShellPolicy(shell))
+	opts = append(opts, extra...)
 
 	// The run's own error is not the measurement. A run that stopped short failed the
 	// exercise, which is an observation; the verifier says so on its own, and it is the
