@@ -9,6 +9,7 @@ package github_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/ionalpha/flynn/tools/github"
@@ -90,6 +91,28 @@ func TestApproveRefusedWhenFileListTruncated(t *testing.T) {
 	}
 	if v := hub.submittedBody.Load(); v != nil {
 		t.Fatalf("an approval on a truncated diff was submitted: %v", v)
+	}
+}
+
+// A file list that runs past the page cap is a diff never read whole, even when
+// GitHub's own count is small enough to pass the file cap, so it cannot be approved.
+func TestApproveRefusedWhenTheFileListRunsPastThePageCap(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.changedFiles = 1
+	for i := range 25 {
+		hub.filePages = append(hub.filePages, []map[string]any{{"filename": fmt.Sprintf("f%d.go", i), "patch": "p"}})
+	}
+	set := newSet(t, hub, func(c *github.Config) {
+		c.AllowApprove = true
+		c.MaxFiles = 1000
+	})
+
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	if !errors.Is(err, github.ErrIncompleteDiff) {
+		t.Fatalf("want ErrIncompleteDiff, got %v", err)
+	}
+	if v := hub.submittedBody.Load(); v != nil {
+		t.Fatalf("an approval on a diff cut at the page cap was submitted: %v", v)
 	}
 }
 

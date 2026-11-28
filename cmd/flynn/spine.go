@@ -291,29 +291,35 @@ func dispatchSpine(args []string, dataDir string) error {
 		fs := flag.NewFlagSet("spine verify", flag.ContinueOnError)
 		file := fs.String("file", "", "verify a record read from this file instead of a stored run")
 		keyHex := fs.String("key", "", "hex-encoded Ed25519 public key to verify a record whose signer is not self-certifying (for example a published conformance vector)")
-		if err := fs.Parse(args[1:]); err != nil {
+		bare, err := parseAroundArgs(fs, args[1:])
+		if err != nil {
 			return err
 		}
 		if *file != "" {
+			// A run id beside --file would go unverified while the output reads as success.
+			if len(bare) > 0 {
+				return usageErrf("spine verify", "--file names the record to check, so %q would not be verified", bare[0])
+			}
 			return verifyRecordFile(*file, *keyHex)
 		}
 		if *keyHex != "" {
 			return errors.New("--key applies only with --file; a stored run names a self-certifying signer")
 		}
-		if fs.NArg() < 1 {
+		if len(bare) != 1 {
 			return usageErr("spine verify")
 		}
-		return verifyRun(dataDir, fs.Arg(0))
+		return verifyRun(dataDir, bare[0])
 	case len(args) >= 1 && args[0] == "export":
 		fs := flag.NewFlagSet("spine export", flag.ContinueOnError)
 		out := fs.String("out", "", "write the record to this file (default <run-id>.flynnrecord in the current directory)")
-		if err := fs.Parse(args[1:]); err != nil {
+		bare, err := parseAroundArgs(fs, args[1:])
+		if err != nil {
 			return err
 		}
-		if fs.NArg() < 1 {
+		if len(bare) != 1 {
 			return usageErr("spine export")
 		}
-		return exportRun(dataDir, fs.Arg(0), *out)
+		return exportRun(dataDir, bare[0], *out)
 	}
 	return subUsage("spine", args)
 }

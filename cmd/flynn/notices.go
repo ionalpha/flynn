@@ -60,7 +60,7 @@ func runNotices(args []string, dataDir string) error {
 		case "--all":
 			all = true
 		default:
-			return usageErr("notices")
+			return usageErrf("notices", "unexpected argument %q", a)
 		}
 	}
 

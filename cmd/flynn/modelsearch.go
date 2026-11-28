@@ -47,6 +47,9 @@ func modelSearch(ctx context.Context, hub *huggingface.Client, args []string, ou
 		filters = append(filters, "safetensors")
 	}
 
+	if err := refuseFlagWords("models search", args); err != nil {
+		return err
+	}
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if query == "" && author == "" && len(filters) == 0 {
 		return errors.New("models search: a search term is required, for example `flynn models search qwen2.5 7b instruct`")

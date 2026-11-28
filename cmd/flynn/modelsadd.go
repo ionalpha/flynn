@@ -50,6 +50,9 @@ func takeAddOptions(args []string) (addOptions, string, error) {
 	args, o.license = takeValue(args, "--license")
 	args, o.quant = takeValue(args, "--quant")
 	args, o.file = takeValue(args, "--file")
+	if err := refuseFlagWords("models add", args); err != nil {
+		return o, "", err
+	}
 	if len(args) != 1 || args[0] == "" {
 		return o, "", errors.New("models add: give exactly one source: hf:owner/repo, ollama:name[:tag], or the path to a .gguf file")
 	}

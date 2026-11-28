@@ -10,82 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
-	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/vault"
-	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
 )
-
-// resolveModelOrOnboard resolves the model and, when the requested provider has no
-// credential, recovers instead of failing with a raw error. It first prefers a
-// provider whose key is already in the vault (so a stored key is used without
-// asking), and only when none is configured and a terminal is attached does it run
-// the first-run setup that stores a key. Without a terminal and with nothing
-// configured, the original error is returned for the caller to surface.
-//
-// The recovery applies only to a spec the user did not choose (the built-in default
-// or a saved one). When explicit is true the caller named the provider on the command
-// line, so a missing credential is refused; the work and its prompts never go to a
-// provider the caller did not ask for.
-func resolveModelOrOnboard(ctx context.Context, modelSpec string, explicit bool, dataDir string) (llm.Model, harness.Plan, string, error) {
-	model, plan, err := resolveModel(ctx, modelSpec, dataDir)
-	if !errors.Is(err, provider.ErrCredentialNotSet) {
-		// Resolved (or failed for another reason) with the requested spec, so that is
-		// the model in use. Canonicalise it so a bare provider name reports its model.
-		return model, plan, provider.CanonicalSpec(modelSpec), err
-	}
-	if explicit {
-		name, _, _ := strings.Cut(modelSpec, ":")
-		return nil, harness.Plan{}, "", fmt.Errorf("%w: %s has no credential; store one with `flynn auth set %s`, or name a configured provider with --model", err, name, name)
-	}
-
-	// The requested provider has no key. If another provider is already configured,
-	// use it rather than prompting; the default model spec just named a provider the
-	// user has not set up.
-	configured := configuredProviders(ctx, credentialSource(dataDir))
-	switch {
-	case len(configured) == 1:
-		fmt.Fprintf(os.Stderr, "Using %s (already configured). Change it with `flynn models use <provider:model>`, or /model in a session.\n", configured[0])
-		return resolveResolvedSpec(ctx, configured[0], dataDir)
-	case len(configured) > 1 && term.IsTerminal(int(os.Stdin.Fd())):
-		in := bufio.NewReader(os.Stdin)
-		fmt.Fprintf(os.Stderr, "Configured providers: %s\n", strings.Join(configured, ", "))
-		name, perr := promptVisible(in, os.Stderr, fmt.Sprintf("Provider [%s]: ", configured[0]))
-		if perr != nil {
-			return nil, harness.Plan{}, "", perr
-		}
-		if name == "" {
-			name = configured[0]
-		}
-		return resolveResolvedSpec(ctx, name, dataDir)
-	case len(configured) > 1:
-		// Non-interactive with several keys: pick deterministically rather than fail.
-		return resolveResolvedSpec(ctx, configured[0], dataDir)
-	}
-
-	// Nothing configured at all.
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil, harness.Plan{}, "", err
-	}
-	spec, oerr := onboardModel(ctx, os.Stdin, os.Stderr, modelSpec, dataDir)
-	if oerr != nil {
-		return nil, harness.Plan{}, "", oerr
-	}
-	return resolveResolvedSpec(ctx, spec, dataDir)
-}
-
-// resolveResolvedSpec resolves spec and reports the canonical model id it resolved
-// to alongside the model, so a caller records the concrete model actually in use
-// (a bare provider name becomes "<provider>:<default model>") rather than whatever
-// default spec started the resolution.
-func resolveResolvedSpec(ctx context.Context, spec, dataDir string) (llm.Model, harness.Plan, string, error) {
-	model, plan, err := resolveModel(ctx, spec, dataDir)
-	return model, plan, provider.CanonicalSpec(spec), err
-}
 
 // configuredProviders returns the known providers that already have a credential in
 // src, in the canonical provider order, so a caller can prefer a set-up provider

@@ -169,6 +169,7 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 	// A resumed run reaches here with its id already known, so this is the first point
 	// at which every kind of turn has a stream to write the decision to.
 	if !s.projectRecorded {
+		recordModelChoice(turnCtx, s.out, s.store.Log(), modelChoice{Spec: s.modelSpec, Source: s.modelSource}, s.runID)
 		recordProjectDecision(turnCtx, s.out, s.store.Log(), s.project, s.runID)
 		recordSelection(turnCtx, s.out, s.store.Log(), s.selection, s.runID)
 		s.projectRecorded = true

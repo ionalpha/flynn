@@ -43,6 +43,8 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		model    llm.Model
 		plan     harness.Plan
 		extAgent *externAgent
+		// source is where the resolved model came from, for the header.
+		source string
 	)
 	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
 		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
@@ -53,14 +55,15 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		// each turn continues. It dies with the session.
 		defer extAgent.close()
 	} else {
-		var resolvedSpec string
-		model, plan, resolvedSpec, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+		var resolved modelChoice
+		model, plan, resolved, err = resolveModelOrOnboard(ctx, modelSpec, currentModelOrigin(), dataDir)
 		if err != nil {
 			return err
 		}
 		// Report and drive the model that actually resolved, not the default spec that
 		// started resolution: a fallback to an already-configured provider changes it.
-		modelSpec = resolvedSpec
+		modelSpec = resolved.Spec
+		source = resolved.Source
 	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -118,6 +121,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		signer:       signer,
 		dataDir:      dataDir,
 		modelSpec:    modelSpec,
+		modelSource:  source,
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
 		gates: gateSetup{approve: reqApproval},
@@ -186,7 +190,7 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 
 	s.notice = func(text string) { s.plainBlock(blockNotice, text) }
 	s.grantStatus = s.lineGrantStatus()
-	for _, l := range sessionBanner(nil, s.modelSpec, cwd, s.project) {
+	for _, l := range sessionBanner(nil, modelChoice{Spec: s.modelSpec, Source: s.modelSource}.String(), cwd, s.project) {
 		_, _ = fmt.Fprintln(s.out, l)
 	}
 	_, _ = fmt.Fprintln(s.out, `Ctrl-C cancels a turn; Ctrl-D or "exit" leaves.`)

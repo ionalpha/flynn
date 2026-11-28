@@ -47,6 +47,9 @@ type driveConfig struct {
 	// selection is the skills the run is offered and the tools it is granted. Nil leaves
 	// both at their defaults and adds nothing to the record.
 	selection *selectionPlan
+	// model is the model the run resolved to and where that came from. The zero value
+	// says nothing and records nothing.
+	model modelChoice
 }
 
 type driveOption func(*driveConfig)
@@ -89,6 +92,13 @@ func withPlanning() driveOption {
 // item stays unproven and the run moves on (see goal.LedgerState).
 func withLedgerProof() driveOption {
 	return func(c *driveConfig) { c.proof = true }
+}
+
+// withModelChoice has the run state which model it resolved to and where that came
+// from, in its header and on its stream, so a run on a model nobody typed is visible
+// afterwards.
+func withModelChoice(m modelChoice) driveOption {
+	return func(c *driveConfig) { c.model = m }
 }
 
 // withExternalAgent drives the run through an external agent CLI, whose harness runs

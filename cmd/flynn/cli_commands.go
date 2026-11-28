@@ -35,10 +35,11 @@ func workCommands() []cliCommand {
 		},
 		{
 			name: "resume", group: groupWork,
-			summary: "Continue a parked or interrupted run",
-			usage:   []string{"resume <run-id>"},
-			long:    "The run picks up from its record with the model and shell policy this invocation gives it.",
-			invoke:  routeResume,
+			summary:  "Continue a parked or interrupted run",
+			usage:    []string{"resume <run-id>"},
+			long:     "The run picks up from its record with the model and shell policy this invocation gives it.",
+			runFlags: []string{"v"},
+			invoke:   routeResume,
 		},
 		{
 			name: "steer", group: groupWork,
@@ -136,7 +137,7 @@ func inspectCommands() []cliCommand {
 		{
 			name: "spine", group: groupInspect,
 			summary: "Verify or export a run's signed record",
-			usage:   []string{"spine verify [--file <path> [--key <hex>]] <run-id>", "spine export [--out <path>] <run-id>"},
+			usage:   []string{"spine verify <run-id>", "spine verify --file <path> [--key <hex>]", "spine export [--out <path>] <run-id>"},
 			subs: []cliCommand{
 				{
 					name: "verify", summary: "Check a record's integrity, governance and ground truth",
@@ -180,10 +181,39 @@ func modelCommands() []cliCommand {
 				{name: "kv", value: "type", usage: "KV cache precision: f16 or q8_0"},
 			},
 			subs: []cliCommand{
-				{name: "search", summary: "Search Hugging Face for models to add", usage: []string{"models search <query>"}},
-				{name: "add", summary: "Add a model to your own catalog, unverified until blessed", usage: []string{"models add <hf:owner/repo | ollama:name | path>"}},
+				{
+					name: "search", summary: "Search Hugging Face for models to add", usage: []string{"models search <query>"},
+					flags: []cliFlag{
+						{name: "all", usage: "include weights in a code-executing format"},
+						{name: "author", value: "name", usage: "only this author's repositories"},
+						{name: "sort", value: "field", usage: "the Hub field to sort by (default: downloads)"},
+						{name: "limit", value: "n", usage: "how many results (default: 20)"},
+						{name: "tag", value: "tag", usage: "only repositories with this tag; repeatable"},
+						{name: "gguf", usage: "only GGUF weights"},
+						{name: "safetensors", usage: "only safetensors weights"},
+					},
+				},
+				{
+					name: "add", summary: "Add a model to your own catalog, unverified until blessed", usage: []string{"models add <hf:owner/repo | ollama:name | path>"},
+					flags: []cliFlag{
+						{name: "yes", short: "y", usage: "do not ask for confirmation"},
+						{name: "id", value: "id", usage: "the id to add it under"},
+						{name: "chat-template", value: "name", usage: "a trusted chat template to launch it with"},
+						{name: "license", value: "spdx", usage: "the license to record"},
+						{name: "quant", value: "name", usage: "which quantization to add"},
+						{name: "file", value: "name", usage: "which weight file in the repository"},
+					},
+				},
 				{name: "remove", summary: "Remove a model you added", usage: []string{"models remove <id>"}},
-				{name: "bless", summary: "Resolve a Hugging Face model into a verified catalog entry", usage: []string{"models bless <hf:owner/repo>"}},
+				{
+					name: "bless", summary: "Resolve a Hugging Face model into a verified catalog entry", usage: []string{"models bless <hf:owner/repo>"},
+					flags: []cliFlag{
+						{name: "id", value: "id", usage: "the id of the catalog entry"},
+						{name: "chat-template", value: "name", usage: "a trusted chat template to launch it with"},
+						{name: "license", value: "spdx", usage: "the license to record"},
+						{name: "quant", value: "name", usage: "which quantization to resolve"},
+					},
+				},
 				{
 					name: "fetch", summary: "Download and verify a model's weights without running it",
 					usage: []string{"models fetch <model-id> [--quant <name>]"},
@@ -196,8 +226,14 @@ func modelCommands() []cliCommand {
 					flags: []cliFlag{{name: "variant", value: "name", usage: "the build, such as cpu, cuda-13.3 or vulkan (default: fits this GPU)"}},
 				},
 				{name: "inspect", summary: "Show a model source's trust, isolation and integrity", usage: []string{"models inspect <id-or-source>"}},
-				{name: "run", summary: "Provision, serve and optionally query a local model", usage: []string{"models run <id> [<prompt>...]"}},
-				{name: "probe", summary: "Measure a local model's agentic reliability", usage: []string{"models probe <id>"}},
+				{
+					name: "run", summary: "Provision, serve and optionally query a local model", usage: []string{"models run <id> [<prompt>...]"},
+					flags: []cliFlag{{name: "yes", short: "y", usage: "consent to running an unvetted model without being asked"}},
+				},
+				{
+					name: "probe", summary: "Measure a local model's agentic reliability", usage: []string{"models probe <id>"},
+					flags: []cliFlag{{name: "yes", short: "y", usage: "consent to running an unvetted model without being asked"}},
+				},
 				{name: "use", summary: "Make a model the default, provisioning a local one", usage: []string{"models use <id>"}},
 				{name: "status", summary: "List the local model servers that are running", usage: []string{"models status"}},
 				{name: "stop", summary: "Stop a running local model server", usage: []string{"models stop <id>"}},
@@ -316,7 +352,7 @@ func integrationCommands() []cliCommand {
 			usage:   []string{"deps <command> [args]"},
 			subs: []cliCommand{
 				{name: "ls", aliases: []string{"list"}, summary: "List the external tools the integrations declare", usage: []string{"deps ls"}},
-				{name: "check", summary: "Report which declared tools are installed", usage: []string{"deps check"}},
+				{name: "check", summary: "Report which declared tools are installed", usage: []string{"deps check [<name>...]"}},
 				{name: "install", aliases: []string{"ensure"}, summary: "Fetch and verify a pinned tool", usage: []string{"deps install <name>"}},
 			},
 			local: runDeps,

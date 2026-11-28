@@ -59,16 +59,15 @@ func TestConfiguredProviders(t *testing.T) {
 }
 
 // TestExplicitModelWithoutCredentialIsRefused proves a provider the user named on the
-// command line is never answered by silently resolving a different one. The fallback
-// that prefers an already-configured provider exists for a spec the user did not
-// choose; applying it to an explicit --model would send the run, and the prompts in
-// it, to a provider the user did not ask for. The same setup resolves to the
-// configured provider when the spec was not explicit, so the two paths are told apart
-// by intent alone.
+// command line is never answered by silently resolving a different one: applying a
+// fallback to an explicit --model would send the run, and the prompts in it, to a
+// provider the user did not ask for. When nothing was chosen the one provider with a key
+// is the only place the work can go, so the two paths are told apart by intent alone.
 func TestExplicitModelWithoutCredentialIsRefused(t *testing.T) {
 	// One provider is configured (its key is in the environment) and the one the
 	// caller names is not.
 	const configured, requested = "openai", "anthropic"
+	noProviderKeys(t)
 	ref, ok := provider.KeyRef(configured)
 	if !ok {
 		t.Fatalf("no key ref for provider %q", configured)
@@ -79,7 +78,7 @@ func TestExplicitModelWithoutCredentialIsRefused(t *testing.T) {
 	}
 	dataDir := t.TempDir()
 
-	_, _, _, err := resolveModelOrOnboard(context.Background(), requested, true, dataDir)
+	_, _, _, err := resolveModelOrOnboard(context.Background(), requested, modelFromFlag, dataDir)
 	if !errors.Is(err, provider.ErrCredentialNotSet) {
 		t.Fatalf("explicit --model %s with no credential: err = %v, want ErrCredentialNotSet", requested, err)
 	}
@@ -87,13 +86,14 @@ func TestExplicitModelWithoutCredentialIsRefused(t *testing.T) {
 		t.Errorf("error does not name the refused provider: %v", err)
 	}
 
-	// Not explicit: the same missing credential recovers onto the configured provider.
-	_, _, spec, err := resolveModelOrOnboard(context.Background(), requested, false, dataDir)
+	// Nothing chosen: the one provider with a key is the only place the work can go.
+	askWith(t, false, "")
+	_, _, choice, err := resolveModelOrOnboard(context.Background(), requested, modelUnchosen, dataDir)
 	if err != nil {
 		t.Fatalf("default spec with a configured provider available: %v", err)
 	}
-	if !strings.HasPrefix(spec, configured+":") {
-		t.Errorf("resolved spec = %q, want the configured provider %q", spec, configured)
+	if !strings.HasPrefix(choice.Spec, configured+":") {
+		t.Errorf("resolved spec = %q, want the configured provider %q", choice.Spec, configured)
 	}
 }
 
