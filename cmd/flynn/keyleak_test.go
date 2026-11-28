@@ -40,8 +40,7 @@ func TestAResolvedKeyNeverReachesOutput(t *testing.T) {
 				t.Setenv(diag.EnvDir, "")
 				t.Setenv(tc.keyVar, key)
 				t.Setenv(tc.baseVar, srv.URL)
-				prior := modelSpecExplicit
-				t.Cleanup(func() { modelSpecExplicit = prior })
+				keepRunGlobals(t)
 
 				var out, errs bytes.Buffer
 				fs := flag.NewFlagSet("flynn", flag.ContinueOnError)

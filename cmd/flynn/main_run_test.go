@@ -36,10 +36,7 @@ func runCLI(t *testing.T, args ...string) runResult {
 	}
 	t.Setenv(diag.EnvDir, "")
 
-	// modelSpecExplicit is process-wide state that run writes; put it back so the order
-	// tests run in cannot change what a later one sees.
-	prior := modelSpecExplicit
-	t.Cleanup(func() { modelSpecExplicit = prior })
+	keepRunGlobals(t)
 
 	var out, errs bytes.Buffer
 	fs := flag.NewFlagSet("flynn", flag.ContinueOnError)

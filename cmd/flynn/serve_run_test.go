@@ -37,9 +37,8 @@ func serveEnv(t *testing.T) (dataDir, modelSpec string) {
 	for _, k := range provider.CredentialEnvVars() {
 		t.Setenv(k, "")
 	}
-	prior := modelSpecExplicit
+	keepRunGlobals(t)
 	modelSpecExplicit = true
-	t.Cleanup(func() { modelSpecExplicit = prior })
 	return t.TempDir(), "anthropic:claude-opus-4-8"
 }
 
