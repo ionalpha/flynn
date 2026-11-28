@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
-	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/spine"
@@ -151,11 +154,79 @@ func TestPrintGrantProgressRepeatsSparingly(t *testing.T) {
 	}
 }
 
-// TestGrantAheadStops returns once the background grant has, so a closing session
-// leaves no goroutine behind.
+// TestGrantAheadStops cancels the background grant and returns once it has, so a
+// closing session leaves no goroutine behind.
 func TestGrantAheadStops(t *testing.T) {
-	stop := grantAhead(context.Background(), governed.ShellPolicy{}, t.TempDir())
+	useHome(t)
+	ended := false
+	stop := grantAhead(context.Background(), func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		ended = true
+		return ctx.Err()
+	}, t.TempDir())
 	stop()
+	if !ended {
+		t.Fatal("stop returned before the grant did")
+	}
+}
+
+// TestGrantAheadSkipsBroadDirectories keeps opening a session from rewriting the
+// access list of a home directory, anything holding it, or a whole volume.
+func TestGrantAheadSkipsBroadDirectories(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "users", "me")
+	project := filepath.Join(home, "projects", "app")
+	outside := filepath.Join(base, "elsewhere")
+	for _, dir := range []string{project, outside} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := filepath.VolumeName(base) + string(filepath.Separator)
+
+	tests := []struct {
+		name  string
+		home  string
+		dir   string
+		ahead bool
+	}{
+		{"home", home, home, false},
+		{"home with a trailing separator", home, home + string(filepath.Separator), false},
+		{"parent of home", home, filepath.Dir(home), false},
+		{"further ancestor of home", home, base, false},
+		{"volume root", home, root, false},
+		{"volume root with no home known", "", root, false},
+		{"no home known", "", project, false},
+		{"missing directory", home, filepath.Join(base, "gone"), false},
+		{"project under home", home, project, true},
+		{"directory beside home", home, outside, true},
+	}
+	if runtime.GOOS == "windows" {
+		tests = append(tests, struct {
+			name  string
+			home  string
+			dir   string
+			ahead bool
+		}{"home in another case", home, strings.ToUpper(home), false})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			t.Setenv("USERPROFILE", tc.home)
+			var granted []string
+			grantAhead(context.Background(), func(_ context.Context, dir string) error {
+				granted = append(granted, dir)
+				return nil
+			}, tc.dir)()
+			var want []string
+			if tc.ahead {
+				want = []string{tc.dir}
+			}
+			if !slices.Equal(granted, want) {
+				t.Fatalf("granted ahead %q, want %q", granted, want)
+			}
+		})
+	}
 }
 
 // TestOnGrantTakesOverTheLiveLineUntilDone shows the wait on the live line and

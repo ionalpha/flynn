@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
@@ -94,15 +95,49 @@ func printGrantProgress(w io.Writer) func(sandbox.GrantProgress) {
 // a stop that ends the wait for it. A failure is left for the first command to
 // report, which makes the same grant. Stopping does not interrupt the rewrite
 // itself, which Windows cannot do.
-func grantAhead(ctx context.Context, shell governed.ShellPolicy, workdir string) (stop func()) {
+//
+// The home directory, its ancestors and volume roots are not granted ahead. The
+// grant rewrites the access list of every file below the directory, and someone
+// may open a session there only to ask a question. The first command still makes
+// the grant.
+func grantAhead(ctx context.Context, grant func(context.Context, string) error, workdir string) (stop func()) {
+	if holdsHome(workdir) {
+		return func() {}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = shell.GrantWorkdir(ctx, workdir)
+		_ = grant(ctx, workdir)
 	}()
 	return func() {
 		cancel()
 		<-done
+	}
+}
+
+// holdsHome reports whether dir is a volume root, the user's home directory or
+// an ancestor of it. Directories are compared as files, so another spelling of
+// the same one counts. It reports true when it cannot tell.
+func holdsHome(dir string) bool {
+	dir = filepath.Clean(dir)
+	if filepath.Dir(dir) == dir {
+		return true
+	}
+	target, err := os.Stat(dir)
+	if err != nil {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return true
+	}
+	for p := filepath.Clean(home); ; p = filepath.Dir(p) {
+		if info, err := os.Stat(p); err == nil && os.SameFile(target, info) {
+			return true
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
 	}
 }

@@ -164,7 +164,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 
 	// Granting a large tree takes minutes, so it overlaps the typing and the first
 	// model call. Tools that read in-process do not wait for it.
-	defer grantAhead(ctx, shell, cwd)()
+	defer grantAhead(ctx, shell.GrantWorkdir, cwd)()
 
 	if plain || !stdoutIsTerminal() {
 		if seed != "" {
