@@ -139,7 +139,10 @@ they get limits, and the limits are the ones operators converged on.
   backoff itself. Measured against plain exponential backoff, it cut both total client
   work and time to completion, because unjittered clients retry in step.
 - Honour a rate limit's stated delay, and cap how long it may hold you. A server, or
-  something impersonating one, can otherwise park your run for a day.
+  something impersonating one, can otherwise park your run for a day. The delay may
+  be a number of seconds or a date (HTTP's `Retry-After` allows both): parse every
+  form the standard and their documentation allow, and treat one you cannot read as
+  an ordinary backoff wait, never as zero.
 - Retries live inside the caller's deadline. A budget that outlives the request it is
   serving is spending someone else's patience.
 

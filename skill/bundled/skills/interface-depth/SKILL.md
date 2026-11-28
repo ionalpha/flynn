@@ -65,6 +65,13 @@ default gets chosen, the retry gets made, the resource gets released by the call
 acquired it. Ask what each call site does immediately before and immediately after
 the call, and take whichever of the two is the same everywhere.
 
+The same holds for a fix. When you are asked to repair that step for one caller and
+the others lack it or each do it their own way, check that the repair is right for
+each of them, then make it inside the shared call, delete the copies and say whose
+behaviour changed. A second entry point beside the old one leaves the unsafe version
+for the next caller to choose. Where you may not change the other callers, report
+them by name.
+
 **Make the case not arise.** Change what the operation means so the caller has
 nothing to handle. A lookup that returns an empty result rather than an absence error
 deletes a branch from every caller. This is a change to what the surface promises, so

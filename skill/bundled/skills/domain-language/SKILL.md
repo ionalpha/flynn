@@ -64,6 +64,9 @@ So the first move on any new noun is a search, not a choice:
   has lost.
 
 If a word already exists, use it. Preferring your own is how the third name arrives.
+The wording of a request is not the project's vocabulary either: when the requester
+calls a thing something other than what the project calls it, use the project's word
+and state the mapping in your report.
 If nothing exists, say so explicitly before naming, because that sentence is the
 evidence that the search happened.
 
@@ -136,9 +139,11 @@ The ones that recur:
 - A flag whose name states the positive while the code branches on the negative.
 - A name that describes what an early caller wanted rather than what the thing does.
 
-The rule is that the rename ships in the change that made the old name wrong. Deferred,
-it never happens: the next person to touch the code reads the name, believes it, and
-writes around it.
+The rule is that the rename ships in the change that made the old name wrong, also
+when the request described the new behaviour using the old name. A name that stays
+true only if the reader reinterprets one of its words is now false. Move the callers
+in the repository to the new name. Deferred, the rename never happens: the next person
+to touch the code reads the name, believes it, and writes around it.
 
 One exception, and it is a hard one. When the name is on a published surface (an
 exported symbol, an endpoint, a payload field, a stored record) the rename is a

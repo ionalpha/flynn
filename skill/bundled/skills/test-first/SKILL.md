@@ -26,12 +26,12 @@ prediction rather than something else that also comes out red.
 
 ## Three ways a red run produces nothing
 
-**It agreed all along.** The command comes back green on unchanged code. The
-prediction is about behaviour that already exists, or the assertion is weak enough
-that anything satisfies it, or the test never reached the code it names. Whatever
-the cause, the outcome is a test that will pass forever and can never report a
-break. This one is worth suspecting first, because green on the unchanged code is
-easy to read as progress. Nothing was in the way, so the work must be going well.
+**It agreed all along.** The command comes back green on unchanged code. Find out
+why before reading it as progress. If the behaviour already exists, the test is a
+guard: name a plausible wrong version it would catch, keep it, report it as green
+before and after, and never count it as evidence for the new behaviour. If the
+assertion is weak enough that anything satisfies it, or the test never reached the
+code it names, it can never report a break, so fix the test.
 
 **It broke instead of disagreeing.** An import that does not resolve, a symbol
 that does not exist yet, a fixture that is missing, a syntax error, a
@@ -54,8 +54,8 @@ same output with less context than you have now. Split the test until each failu
 identifies itself, or give the assertion the message it needs.
 
 The first and third cases both come back with a verdict that looks decisive, and
-neither has told you anything. Reading the actual text of the failure is what
-separates them.
+neither has told you anything about the change. Reading the actual text of the
+output is what separates them.
 
 ## Write the expectation in values
 
@@ -79,6 +79,25 @@ work, computed by a different method, quoted from the person who asked. When you
 cannot produce it that way, you do not yet know what the behaviour is, and that is
 the finding to report rather than a gap to fill with whatever the code emits.
 
+## Take the cases from the specification, not from the bug
+
+List every rule the request and the documents beside the code state, including the
+rules today's code appears to satisfy. You are about to edit that code, and the
+rules it gets right are ones you can break. A rule that is wrong today gets a red
+run; a rule that is right today gets a guard.
+
+Then choose inputs that a plausible wrong implementation would answer differently:
+
+- Items already in the expected order cannot show that anything sorted them.
+- Two stages tested one at a time never show which one feeds the other. Rules that
+  act on each other's output need a case with all of them active, each one changing
+  the answer.
+- A rounding or truncating step can swallow a small error, so pick values where the
+  wrong version ends on a different result.
+
+For each rule, ask what a wrong version would return for your input. If that is the
+right answer too, change the input.
+
 ## One prediction, then the code for it
 
 Take a single behaviour per cycle, all the way through: predict, disagree,
@@ -93,7 +112,8 @@ completed cycle changes what the next prediction should say. Spend that.
 Keep the implementing change small enough that the disagreement it resolves is
 obviously the one you recorded. When you find yourself writing code no current
 prediction requires, stop: it has no red run behind it, so nothing here covers it,
-and it is being added on the strength of a guess about later.
+and it is being added on the strength of a guess about later. That limits the code
+and leaves the list of cases alone: each stated rule still gets one.
 
 ## Where the prediction is observed
 
@@ -175,8 +195,9 @@ For each behaviour changed in this run:
 3. A later verdict exists for the same item identity, executed, verdict true.
 4. Nothing between the two changed the test.
 
-Where an item reaches green with no failing verdict recorded before it, the test
-attached to that item is of unknown value, whatever its coverage number says.
+Where an item reaches green with no failing verdict recorded before it, its test is
+a guard at best and shows nothing about the change, whatever its coverage number
+says. A guard has no failing verdict by design, and the report calls it a guard.
 
 ## Refusals
 
@@ -185,5 +206,6 @@ attached to that item is of unknown value, whatever its coverage number says.
   output.
 - No test edited between its failing run and its passing one.
 - No prediction weakened, skipped or deleted to reach green.
+- No stated rule left without a case because the code already handles it.
 - No claim that a check ran where nothing ran it.
 - No coverage reported as evidence in place of a failure that was observed.
