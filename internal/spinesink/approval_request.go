@@ -73,7 +73,7 @@ func (s *ApprovalSink) Request(ctx context.Context, r Request) error {
 			"host":      inertext.Escape(r.Host),
 			"preview":   approval.Preview(r.Action, scopeString(r.Scope), r.Host),
 			"tainted":   r.Tainted,
-			"expiresAt": r.ExpiresAt.UTC().Format(time.RFC3339Nano),
+			"expiresAt": r.ExpiresAt.UTC().Format(time.RFC3339Nano), //nolint:gocritic // parsed back into a time by readers, never ordered as text
 		},
 	})
 	return err

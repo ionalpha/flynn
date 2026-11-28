@@ -33,6 +33,11 @@ import (
 	"time"
 )
 
+// TimeLayout is the on-disk time format of every durable backend: RFC 3339 with the
+// fractional second zero-padded to nine digits, so a stored value is always 30
+// characters and string order is time order.
+const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 // IncompatibleSchemaError reports a database created by a build with different
 // migrations: an applied migration's bytes changed, or a new one sorts below one
 // applied. Migrations are immutable, so the database must be recreated or another
@@ -138,7 +143,7 @@ func load(fsys fs.FS) ([]migration, error) {
 			checksum: hex.EncodeToString(sum[:]),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].version < out[j].version })
 	for i := 1; i < len(out); i++ {
 		if out[i].version == out[i-1].version {
 			return nil, fmt.Errorf("migrate: duplicate version %d (%s and %s)", out[i].version, out[i-1].name, out[i].name)
@@ -235,7 +240,7 @@ func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
 	if _, err := conn.ExecContext(
 		ctx,
 		`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
-		m.version, m.name, m.checksum, time.Now().UTC().Format(time.RFC3339Nano),
+		m.version, m.name, m.checksum, time.Now().UTC().Format(TimeLayout),
 	); err != nil {
 		return err
 	}

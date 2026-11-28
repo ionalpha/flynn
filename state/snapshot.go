@@ -29,13 +29,13 @@ type Snapshot struct {
 // MarshalSnapshot sorts every collection before encoding, so a projection
 // always yields the same bytes. Turns sort by session then seq.
 func MarshalSnapshot(s Snapshot) ([]byte, error) {
-	sort.Slice(s.Sessions, func(i, j int) bool { return s.Sessions[i].ID < s.Sessions[j].ID })
-	sort.Slice(s.Skills, func(i, j int) bool { return s.Skills[i].ID < s.Skills[j].ID })
-	sort.Slice(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
+	sort.SliceStable(s.Sessions, func(i, j int) bool { return s.Sessions[i].ID < s.Sessions[j].ID })
+	sort.SliceStable(s.Skills, func(i, j int) bool { return s.Skills[i].ID < s.Skills[j].ID })
+	sort.SliceStable(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
 	SortUsage(s.Usage)
 	SortPromotions(s.Promotions)
 	SortUsageRecords(s.ModelUsageRecords)
-	sort.Slice(s.Turns, func(i, j int) bool {
+	sort.SliceStable(s.Turns, func(i, j int) bool {
 		if s.Turns[i].SessionID != s.Turns[j].SessionID {
 			return s.Turns[i].SessionID < s.Turns[j].SessionID
 		}
@@ -54,22 +54,28 @@ func UnmarshalSnapshot(payload []byte) (Snapshot, error) {
 // snapshotLocked captures the projection; the caller holds c.mu.
 func (c *core) snapshotLocked() Snapshot {
 	s := Snapshot{LastSeq: c.lastSeq, SlugToID: make(map[string]string, len(c.slugToID))}
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, ses := range c.sessions {
 		s.Sessions = append(s.Sessions, ses)
 	}
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, ts := range c.turns {
 		s.Turns = append(s.Turns, ts...)
 	}
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, sk := range c.skillsByID {
 		s.Skills = append(s.Skills, sk)
 	}
 	s.Items = append(s.Items, c.memItems...)
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, u := range c.memUsage {
 		s.Usage = append(s.Usage, u)
 	}
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, pr := range c.memPromo {
 		s.Promotions = append(s.Promotions, pr)
 	}
+	//ordered:ok MarshalSnapshot sorts this collection
 	for _, r := range c.modelUsageRecs {
 		s.ModelUsageRecords = append(s.ModelUsageRecords, r)
 	}

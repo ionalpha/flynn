@@ -132,7 +132,7 @@ func jaccard(a, b map[string]bool) float64 {
 // SortUsage orders rows by item then instance, so every backend returns the
 // same order.
 func SortUsage(rows []MemoryUsage) {
-	sort.Slice(rows, func(i, j int) bool {
+	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].MemoryID != rows[j].MemoryID {
 			return rows[i].MemoryID < rows[j].MemoryID
 		}

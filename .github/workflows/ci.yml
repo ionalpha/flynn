@@ -487,6 +487,11 @@ jobs:
           restore-keys: |
             go-lint-${{ runner.os }}-1.27-${{ hashFiles('**/go.sum') }}-
             go-lint-${{ runner.os }}-1.27-
+      # golangci-lint keys cached results on its settings and not on the content of
+      # dev/rules.go, so each version of the rules gets its own directory under the
+      # cached one. dev/lint does the same.
+      - name: Key the lint cache by the rules file
+        run: echo "GOLANGCI_LINT_CACHE=$HOME/.cache/golangci-lint/rules-$(git hash-object dev/rules.go)" >> "$GITHUB_ENV"
       # Run golangci-lint from its prebuilt release binary instead of compiling it
       # from source every run. Keep the version in sync with the GOLANGCI_VERSION pin
       # in dev/lint so local and CI results match; it reads the same .golangci.yml, so
@@ -509,6 +514,12 @@ jobs:
         run: |
           GOOS=windows golangci-lint run
           GOOS=darwin golangci-lint run
+      # A rule that stopped matching would leave every run above green, so check
+      # each rule in dev/rules.go against its examples.
+      - name: Lint rule examples
+        env:
+          FLYNN_LINT_RULES: require
+        run: go test ./internal/rigor -run LintRules -count=1
 
   vuln:
     name: govulncheck

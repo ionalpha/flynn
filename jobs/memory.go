@@ -132,6 +132,7 @@ func (q *MemoryQueue) Claim(_ context.Context, p ClaimParams) ([]Job, error) {
 	defer q.mu.Unlock()
 
 	ready := make([]*Job, 0)
+	//ordered:ok each timeout touches only its job, and ready is sorted below by a total order
 	for _, j := range q.active[queue] {
 		if ExpiredExhausted(*j, now) {
 			MarkTimedOut(j, now)
@@ -146,7 +147,7 @@ func (q *MemoryQueue) Claim(_ context.Context, p ClaimParams) ([]Job, error) {
 		return claimReady(ready, now, p.LeaseFor), nil
 	}
 	// The total order every backend uses, so all hand out the same jobs.
-	sort.Slice(ready, func(a, b int) bool {
+	sort.SliceStable(ready, func(a, b int) bool {
 		ja, jb := ready[a], ready[b]
 		if ja.RunAt != jb.RunAt {
 			return ja.RunAt < jb.RunAt
@@ -228,7 +229,9 @@ func (q *MemoryQueue) Recover(context.Context) (int, error) {
 	now := q.clk.Now().UnixNano()
 	q.mu.Lock()
 	n := 0
+	//ordered:ok each job is recovered on its own
 	for _, byID := range q.active {
+		//ordered:ok each job is recovered on its own
 		for _, j := range byID {
 			if j.State == StateRunning {
 				MarkRecovered(j, now)

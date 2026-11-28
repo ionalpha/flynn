@@ -11,10 +11,11 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
-// ScriptedModel returns the next turn from a fixed script on each Generate call, ignoring
-// the request, and records what it was handed so a test can assert the history the loop
-// fed back. Running past the script is a terminal error, which exposes a loop that took
-// more turns than scripted.
+// ScriptedModel returns the next turn from a fixed script on each Generate call and
+// records what it was handed so a test can assert the history the loop fed back. A
+// request [CheckRequest] rejects fails the call, as it would against a provider. Running
+// past the script is a terminal error, which exposes a loop that took more turns than
+// scripted.
 type ScriptedModel struct {
 	mu       sync.Mutex
 	turns    []llm.Response
@@ -38,6 +39,9 @@ func (m *ScriptedModel) Generate(_ context.Context, req llm.Request) (llm.Respon
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.requests = append(m.requests, req)
+	if err := CheckRequest(req); err != nil {
+		return llm.Response{}, err
+	}
 	if m.calls >= len(m.turns) {
 		return llm.Response{}, ErrScriptExhausted
 	}
