@@ -32,7 +32,7 @@ func WithGrantProgress(ctx context.Context, fn func(GrantProgress)) context.Cont
 }
 
 // reportGrant calls the function [WithGrantProgress] installed, if any.
-func reportGrant(ctx context.Context, p GrantProgress) {
+func reportGrant(ctx context.Context, p GrantProgress) { //nolint:unused // used only by the Windows launch paths
 	if fn, ok := ctx.Value(grantProgressKey{}).(func(GrantProgress)); ok && fn != nil {
 		fn(p)
 	}
@@ -47,25 +47,25 @@ func withProbe(ctx context.Context) context.Context {
 	return context.WithValue(ctx, probeKey{}, true)
 }
 
-func isProbe(ctx context.Context) bool {
+func isProbe(ctx context.Context) bool { //nolint:unused // used only by the Windows launch paths
 	v, _ := ctx.Value(probeKey{}).(bool)
 	return v
 }
 
 // grantMemo remembers which grants this Local has already confirmed, so a command
 // after the first does not read the directory's access list again.
-type grantMemo struct {
+type grantMemo struct { //nolint:unused // used only by the Windows launch paths
 	mu   sync.Mutex
 	done map[string]bool
 }
 
-func (g *grantMemo) has(key string) bool {
+func (g *grantMemo) has(key string) bool { //nolint:unused // used only by the Windows launch paths
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.done[key]
 }
 
-func (g *grantMemo) mark(key string) {
+func (g *grantMemo) mark(key string) { //nolint:unused // used only by the Windows launch paths
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.done == nil {

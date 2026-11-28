@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
 // ACE header flags and types from winnt.h that x/sys/windows does not export.
@@ -111,7 +112,7 @@ func writeMarker(marker, dir string) {
 	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
 		return
 	}
-	_ = os.WriteFile(marker, []byte(dir), 0o600)
+	_ = fsatomic.WriteFile(marker, []byte(dir), 0o600)
 }
 
 // setTreeDACL replaces dir's access list. Windows rewrites the inherited entries
