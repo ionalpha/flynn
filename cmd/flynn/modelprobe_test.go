@@ -17,14 +17,19 @@ import (
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/reliability"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 )
 
 // constModel answers every request with the same text and no tool call. It is enough to drive the
 // reliability battery to a fixed, non-trivial score for testing the probe wiring, without a server.
+// It refuses a request a provider would refuse ([llmtest.CheckRequest]).
 type constModel struct{ text string }
 
-func (m constModel) Generate(context.Context, llm.Request) (llm.Response, error) {
+func (m constModel) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	if err := llmtest.CheckRequest(req); err != nil {
+		return llm.Response{}, err
+	}
 	return llm.Response{Message: llm.Text(llm.RoleAssistant, m.text), StopReason: llm.StopEndTurn}, nil
 }
 

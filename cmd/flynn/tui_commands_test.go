@@ -236,7 +236,7 @@ func TestShellHostCompactAndClear(t *testing.T) {
 
 	host.submit("/compact", nil)
 	waitIdle(t, host)
-	if !strings.Contains(ui.transcript(), "compacted 1 messages") {
+	if !strings.Contains(ui.transcript(), "compacted 2 messages") {
 		t.Fatalf("/compact did not report the summary:\n%s", ui.transcript())
 	}
 	if host.s.started {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/llm/llmtest"
 )
 
 // TestClearResetsRun proves /clear forgets the current run and any carried summary, so
@@ -85,5 +86,76 @@ func TestShellClearAndCompact(t *testing.T) {
 	}
 	if !strings.Contains(ui.transcript(), "context cleared") {
 		t.Fatalf("/clear was not reported:\n%s", ui.transcript())
+	}
+}
+
+// requestModel records the last request it was sent.
+type requestModel struct {
+	text string
+	got  *llm.Request
+}
+
+func (m requestModel) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	*m.got = req
+	if err := llmtest.CheckRequest(req); err != nil {
+		return llm.Response{}, err
+	}
+	return llm.Response{Message: llm.Text(llm.RoleAssistant, m.text), StopReason: llm.StopEndTurn}, nil
+}
+
+// TestCompactSendsNoUnansweredToolUse holds the request a provider will accept: the
+// session transcript records tool calls without their results, and a tool_use block with
+// no tool_result after it is an HTTP 400 from Anthropic. The calls must still reach the
+// summarizer as text, or the summary cannot say what was done.
+func TestCompactSendsNoUnansweredToolUse(t *testing.T) {
+	var req llm.Request
+	s := &replSession{
+		started: true, model: requestModel{text: "summary", got: &req},
+		transcript: []llm.Message{
+			llm.Text(llm.RoleUser, "look around"),
+			{Role: llm.RoleAssistant, Blocks: []llm.Block{
+				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: "t1", Name: "bash", Input: []byte(`{"cmd":"ls"}`)}},
+				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: "t2", Name: "read", Input: []byte(`{"path":"` + strings.Repeat("x", 2*toolInputLimit) + `"}`)}},
+			}},
+			llm.Text(llm.RoleAssistant, "found it"),
+		},
+	}
+	if _, err := s.compact(context.Background()); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	var sent strings.Builder
+	for _, m := range req.Messages {
+		if len(m.ToolUses()) > 0 {
+			t.Fatalf("compact sent a raw tool_use block: %+v", m)
+		}
+		sent.WriteString(m.TextContent())
+	}
+	for _, want := range []string{"look around", "[called bash", `"cmd":"ls"`, "[called read", "found it"} {
+		if !strings.Contains(sent.String(), want) {
+			t.Errorf("summarizer request is missing %q:\n%s", want, sent.String())
+		}
+	}
+	if strings.Contains(sent.String(), strings.Repeat("x", 2*toolInputLimit)) {
+		t.Error("a tool call's arguments were not cut to toolInputLimit")
+	}
+}
+
+// TestCompactKeepsTheEarlierSummary: a second /compact summarizes the carried summary
+// along with the new turns, or everything before the first compaction is lost.
+func TestCompactKeepsTheEarlierSummary(t *testing.T) {
+	var req llm.Request
+	s := &replSession{
+		started: true, model: requestModel{text: "second summary", got: &req},
+		carriedContext: "the first summary",
+		transcript:     []llm.Message{llm.Text(llm.RoleUser, "next ask")},
+	}
+	if _, err := s.compact(context.Background()); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if len(req.Messages) != 1 || !strings.Contains(req.Messages[0].TextContent(), "the first summary") {
+		t.Fatalf("second compaction dropped the earlier summary: %+v", req.Messages)
+	}
+	if !strings.Contains(s.carriedContext, "second summary") {
+		t.Fatalf("carried context = %q", s.carriedContext)
 	}
 }

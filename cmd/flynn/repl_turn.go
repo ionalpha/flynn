@@ -180,6 +180,11 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 	if lastSeq > s.lastSeq {
 		s.lastSeq = lastSeq
 	}
+	// The user's message goes in too, so /compact and the end-of-session distil see what
+	// each turn was asked, not only what the agent did.
+	if userText != "" {
+		s.transcript = append(s.transcript, llm.Text(llm.RoleUser, userText))
+	}
 	s.transcript = append(s.transcript, transcript...)
 	if runErr == nil {
 		s.lastResult = result
