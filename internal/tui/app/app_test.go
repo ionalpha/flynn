@@ -262,7 +262,7 @@ func TestLiveAndFinalizedOutputReachTheTerminal(t *testing.T) {
 	s := start(t, nil)
 	s.app.SetLive(lines{"streaming tokens"})
 	s.app.SetStatus("thinking")
-	s.app.Append("finalized answer")
+	s.app.Append(lines{"finalized answer"})
 	s.awaitOutput(t, "streaming tokens")
 	s.awaitOutput(t, "thinking")
 	s.awaitOutput(t, "finalized answer")

@@ -26,7 +26,8 @@ const resizePoll = 250 * time.Millisecond
 
 // runInteractiveTUI runs the full-screen interactive session on the
 // scrollback-native shell: finalized transcript lines are committed to the
-// terminal's own scrollback (selectable, searchable, wrapped by the terminal),
+// terminal's own scrollback (selectable, searchable, laid out again when the
+// window's width changes),
 // the in-flight turn renders in a live region, and the composer stays at the
 // bottom. It reuses the whole turn driver (recall, reopen, streaming,
 // cancellation, learning) by pointing the session's output at the shell, so
@@ -47,8 +48,9 @@ func runInteractiveTUI(ctx context.Context, s *replSession) error {
 		return err
 	}
 
-	width, height, _ := tuiterm.Size(fd) // zero on error selects the shell's defaults
-	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height, alt)
+	size := func() (int, int, error) { return tuiterm.Size(fd) }
+	width, height, _ := size() // zero on error selects the shell's defaults
+	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height, alt, size)
 	// The editor handoff owns the terminal's mode round trip: cooked mode and
 	// shell modes off while the user's editor runs, raw mode and shell modes
 	// back before the shell repaints. It reassigns restore so the session's
@@ -71,9 +73,7 @@ func runInteractiveTUI(ctx context.Context, s *replSession) error {
 			}, nil
 		})
 	}
-	watcher := tuiterm.WatchResize(clock.System{}, resizePoll, func() (int, int, error) {
-		return tuiterm.Size(fd)
-	}, a.Resize)
+	watcher := tuiterm.WatchResize(clock.System{}, resizePoll, size, a.Resize)
 
 	host.greet()
 	runErr := a.Run()
@@ -96,8 +96,9 @@ func runInteractiveTUI(ctx context.Context, s *replSession) error {
 
 // newSessionShell wires one replSession to a shell over the given terminal
 // streams. It is split from runInteractiveTUI so tests can drive the exact
-// production wiring over pipes, with no terminal required.
-func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int, altScreen bool) (*app.App, *sessionHost) {
+// production wiring over pipes, with no terminal required. A nil size leaves the
+// shell at the given width and height.
+func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int, altScreen bool, size func() (int, int, error)) (*app.App, *sessionHost) {
 	th := s.theme
 	if th == nil {
 		th = defaultTheme(os.Getenv)
@@ -138,11 +139,12 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		Commands:    newCommandCompleter(),
 		Marker:      shellMarker,
 		AltScreen:   altScreen,
+		Size:        size,
 	})
 	host.ui = a
 	// Recall (and any future out-of-band note) lands in the scrollback as a muted
 	// line, so what the agent pulled in from earlier runs is visible.
-	s.notice = func(text string) { a.Append(layBlock(th, blockNotice, text, a.Width())...) }
+	s.notice = func(text string) { a.Append(textBlock(th, blockNotice, text)) }
 	// This is the shell that can actually ask a person, so this is where the prompter is
 	// installed. A paused action raises the modal overlay and the operator's allow or
 	// deny resolves it; without this the session would have a gate and nobody to ask, and

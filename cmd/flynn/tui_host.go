@@ -20,7 +20,7 @@ import (
 // shellUI is the slice of the shell the session host drives. An interface so
 // tests can observe the host through a recording fake.
 type shellUI interface {
-	Append(lines ...string)
+	Append(blocks ...screen.Component)
 	SetLive(c screen.Component)
 	SetStatusFunc(fn func(width int) string)
 	SetCapture(fn func(input.Event) bool)
@@ -140,7 +140,7 @@ func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
 func (h *sessionHost) greet() {
 	h.liveComp = liveStack{h.approval, h.panel, h.live}
 	h.ui.SetLive(h.liveComp)
-	h.ui.Append(sessionBanner(h.th, h.s.modelSpec, h.s.cwd, h.s.project)...)
+	h.ui.Append(bannerBlock(h.th, h.s.modelSpec, h.s.cwd, h.s.project))
 	// A resumed run replays through the same renderer a live turn uses and folds into
 	// the same projection, so it opens looking as it did live: the conversation and its
 	// tool calls, with the turn and token totals in the badge, not a verbose event log.
@@ -161,7 +161,6 @@ func (h *sessionHost) seedHistory() {
 	if err != nil {
 		return
 	}
-	width := h.ui.Width()
 	for _, ev := range events {
 		h.proj = session.Reduce(h.proj, ev)
 		if ev.Kind == session.KindSessionStarted {
@@ -170,8 +169,8 @@ func (h *sessionHost) seedHistory() {
 			}
 			continue
 		}
-		if lines := h.tv.lines(ev, width); len(lines) > 0 {
-			h.ui.Append(lines...)
+		if b := h.tv.block(ev); b != nil {
+			h.ui.Append(b)
 		}
 	}
 }
@@ -187,14 +186,16 @@ func (h *sessionHost) echoPrompt(text string) {
 // echo writes a prompt or command line as the head of a block of kind k, wrapped
 // to the terminal so a long prompt keeps its gutter on every row.
 func (h *sessionHost) echo(k blockKind, text string) {
-	lines := append([]string{""}, layBlock(h.th, k, text, h.ui.Width())...)
-	h.ui.Append(append(lines, "")...)
+	h.ui.Append(screen.Func(func(width int) []string {
+		lines := append([]string{""}, layBlock(h.th, k, text, width)...)
+		return append(lines, "")
+	}))
 }
 
-// note appends one block of kind k at the terminal width: the shell's notices,
+// note appends one block of kind k: the shell's notices,
 // errors and cancellations, styled by the same vocabulary as the transcript.
 func (h *sessionHost) note(k blockKind, text string) {
-	h.ui.Append(layBlock(h.th, k, text, h.ui.Width())...)
+	h.ui.Append(textBlock(h.th, k, text))
 }
 
 // onEvent renders one session event as the turn produces it: it folds the event
@@ -214,8 +215,8 @@ func (h *sessionHost) onEvent(ev session.Event) {
 	if line, ok := activityFor(ev); ok {
 		h.live.set(line)
 	}
-	if lines := h.tv.lines(ev, h.ui.Width()); len(lines) > 0 {
-		h.ui.Append(lines...)
+	if b := h.tv.block(ev); b != nil {
+		h.ui.Append(b)
 		h.rendered = true
 	}
 	h.refreshStatus()

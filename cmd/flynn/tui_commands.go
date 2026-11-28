@@ -19,11 +19,11 @@ import (
 func (h *sessionHost) doSeal(ctx context.Context) {
 	h.echoPrompt("/seal")
 	if err := h.s.seal(ctx); err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 		return
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordSealed})
-	h.ui.Append(h.th.Render(theme.Success, "  run sealed; /verify to check it"))
+	h.ui.Append(lineBlock(h.th, theme.Success, "run sealed; /verify to check it"))
 }
 
 // doVerify verifies the session's sealed record, prints its per-tier report to the
@@ -37,18 +37,18 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 		if line == "" {
 			continue
 		}
-		h.ui.Append(h.th.Render(theme.ToolOutput, "  "+line))
+		h.ui.Append(lineBlock(h.th, theme.ToolOutput, line))
 	}
 	if err != nil {
 		// A failed tier is already named in the report above; only a plain error (an
 		// unsealed run) needs a line of its own.
 		if !errors.Is(err, errChecksFailed) {
-			h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+			h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 		}
 		return
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
-	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+	h.ui.Append(lineBlock(h.th, theme.Success, "record verified"))
 }
 
 // doModels prints the model catalog to the scrollback, the same view as `flynn models`,
@@ -59,7 +59,7 @@ func (h *sessionHost) doModels(_ context.Context) {
 	err := h.s.showCatalog(&buf)
 	h.appendReport(buf.String())
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 	}
 }
 
@@ -76,7 +76,7 @@ func (h *sessionHost) doModel(ctx context.Context, args []string) {
 	err := h.s.switchModel(ctx, args, &buf)
 	h.appendReport(buf.String())
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 	}
 }
 
@@ -95,7 +95,7 @@ func (h *sessionHost) doClear(_ context.Context) {
 	h.echoPrompt("/clear")
 	h.s.clear()
 	h.resetContext()
-	h.ui.Append(h.th.Render(theme.Status, "  context cleared; starting a fresh conversation"))
+	h.ui.Append(lineBlock(h.th, theme.Status, "context cleared; starting a fresh conversation"))
 }
 
 // doCompact summarizes the conversation and continues from the summary, so the session
@@ -108,11 +108,11 @@ func (h *sessionHost) doCompact(ctx context.Context) {
 	h.live.set("")
 	h.pokeLive()
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 		return
 	}
 	h.resetContext()
-	h.ui.Append(h.th.Render(theme.Success, fmt.Sprintf("  compacted %d messages into a summary; continuing with less context", n)))
+	h.ui.Append(lineBlock(h.th, theme.Success, fmt.Sprintf("compacted %d messages into a summary; continuing with less context", n)))
 }
 
 // resetContext resets the run projection and the transcript's converged-dedup state
@@ -175,7 +175,7 @@ func (h *sessionHost) appendReport(s string) {
 		if line == "" {
 			continue
 		}
-		h.ui.Append(h.th.Render(theme.ToolOutput, "  "+line))
+		h.ui.Append(lineBlock(h.th, theme.ToolOutput, line))
 	}
 }
 
@@ -188,11 +188,11 @@ func (h *sessionHost) doExport(ctx context.Context) {
 	h.echoPrompt("/export")
 	path, err := h.s.export(ctx, "")
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 		return
 	}
-	h.ui.Append(h.th.Render(theme.Success, "  record exported to "+path))
-	h.ui.Append(h.th.Render(theme.Muted, "  verify anywhere with: flynn spine verify --file "+path))
+	h.ui.Append(lineBlock(h.th, theme.Success, "record exported to "+path))
+	h.ui.Append(lineBlock(h.th, theme.Muted, "verify anywhere with: flynn spine verify --file "+path))
 }
 
 // doFork branches the run into a new independent run seeded with the conversation so far
@@ -203,7 +203,7 @@ func (h *sessionHost) doFork(ctx context.Context) {
 	h.echoPrompt("/fork")
 	forkID, err := h.s.fork(ctx)
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, err.Error()))
 		return
 	}
 	// The fork's stream is empty, so its badge starts at the fresh recording state; the
@@ -214,7 +214,7 @@ func (h *sessionHost) doFork(ctx context.Context) {
 	h.mu.Unlock()
 	h.panel.set(p)
 	h.refreshStatus()
-	h.ui.Append(h.th.Render(theme.Success, "  forked to run "+forkID+"; the original is untouched"))
+	h.ui.Append(lineBlock(h.th, theme.Success, "forked to run "+forkID+"; the original is untouched"))
 }
 
 // doReplay re-renders the run's recorded events into the scrollback through the themed
@@ -226,20 +226,19 @@ func (h *sessionHost) doReplay(ctx context.Context) {
 	h.echoPrompt("/replay")
 	events, err := session.History(ctx, h.s.store.Log(), h.s.runID)
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  replay failed: "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, "replay failed: "+err.Error()))
 		return
 	}
 	if len(events) == 0 {
-		h.ui.Append(h.th.Render(theme.Status, "  nothing recorded to replay yet"))
+		h.ui.Append(lineBlock(h.th, theme.Status, "nothing recorded to replay yet"))
 		return
 	}
-	h.ui.Append(h.th.Render(theme.Status, fmt.Sprintf("  replay of run %s (%d events)", h.s.runID, len(events))))
+	h.ui.Append(lineBlock(h.th, theme.Status, fmt.Sprintf("replay of run %s (%d events)", h.s.runID, len(events))))
 	tv := newTranscriptView(h.th)
-	width := h.ui.Width()
 	for _, ev := range events {
-		if lines := tv.lines(ev, width); len(lines) > 0 {
-			h.ui.Append(lines...)
+		if b := tv.block(ev); b != nil {
+			h.ui.Append(b)
 		}
 	}
-	h.ui.Append(h.th.Render(theme.Status, "  end of replay"))
+	h.ui.Append(lineBlock(h.th, theme.Status, "end of replay"))
 }

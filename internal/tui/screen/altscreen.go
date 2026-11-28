@@ -79,6 +79,13 @@ func (p *AltPainter) Insert(finalized, frame []string) {
 	p.render()
 }
 
+// Reflow replaces the retained transcript with finalized and redraws in full.
+func (p *AltPainter) Reflow(finalized, frame []string) {
+	p.history = nil
+	p.dirty = true
+	p.Insert(finalized, frame)
+}
+
 // Repaint redraws the whole viewport without diffing, to recover after a resize
 // or output from outside the painter.
 func (p *AltPainter) Repaint(frame []string) {
@@ -113,7 +120,7 @@ func (p *AltPainter) render() {
 		}
 		b.WriteString(ansi.CursorPosition(1, i+1))
 		b.WriteString(row)
-		b.WriteString(ansi.EraseLineRight)
+		eraseRest(&b, row, p.width)
 	}
 	b.WriteString(syncEnd)
 	p.flush(&b)

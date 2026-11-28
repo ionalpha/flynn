@@ -70,8 +70,8 @@ func (p *Painter) Paint(frame []string) {
 }
 
 // Insert commits finalized lines to the terminal's scrollback above the live
-// region, then paints frame. Finalized lines are never repainted, so native
-// scrolling, selection and search work on them. Long ones are left for the
+// region, then paints frame. Finalized lines become ordinary terminal output, so
+// native scrolling, selection and search work on them. Long ones are left for the
 // terminal to wrap; only live rows are truncated, because the row arithmetic
 // needs one line per row.
 func (p *Painter) Insert(finalized, frame []string) {
@@ -90,7 +90,35 @@ func (p *Painter) Insert(finalized, frame []string) {
 		b.WriteString(ln)
 		b.WriteString("\r\n")
 	}
-	writeRows(&b, frame)
+	p.writeRows(&b, frame)
+	b.WriteString(syncEnd)
+	p.flush(&b)
+	p.live = frame
+}
+
+// Reflow clears the screen and the terminal's scrollback, then writes finalized
+// and frame from the top. Rows that have scrolled away cannot be addressed, so
+// erasing them is the only way to replace them; whatever the terminal showed
+// before the session goes with them.
+//
+// The screen is erased before the scrollback (ED 2, then ED 3) because Windows
+// Terminal, VTE and tmux move the screen into scrollback on ED 2, which in the
+// other order would leave a stale copy there.
+func (p *Painter) Reflow(finalized, frame []string) {
+	frame = p.guard(frame)
+	if p.err != nil {
+		return
+	}
+	var b bytes.Buffer
+	b.WriteString(syncBegin)
+	b.WriteString(ansi.CursorHomePosition)
+	b.WriteString(ansi.EraseDisplay(2))
+	b.WriteString(ansi.EraseDisplay(3))
+	for _, ln := range finalized {
+		b.WriteString(ln)
+		b.WriteString("\r\n")
+	}
+	p.writeRows(&b, frame)
 	b.WriteString(syncEnd)
 	p.flush(&b)
 	p.live = frame
@@ -107,7 +135,7 @@ func (p *Painter) Repaint(frame []string) {
 	var b bytes.Buffer
 	b.WriteString(syncBegin)
 	p.clearLive(&b)
-	writeRows(&b, frame)
+	p.writeRows(&b, frame)
 	b.WriteString(syncEnd)
 	p.flush(&b)
 	p.live = frame
@@ -145,7 +173,7 @@ func (p *Painter) guard(frame []string) []string {
 func (p *Painter) diff(b *bytes.Buffer, frame []string) {
 	n, m := len(p.live), len(frame)
 	if n == 0 {
-		writeRows(b, frame)
+		p.writeRows(b, frame)
 		return
 	}
 	cur := n - 1 // the resting row
@@ -155,7 +183,7 @@ func (p *Painter) diff(b *bytes.Buffer, frame []string) {
 			continue
 		}
 		moveTo(b, &cur, i)
-		writeRow(b, frame[i])
+		p.writeRow(b, frame[i])
 	}
 	switch {
 	case m > n:
@@ -163,7 +191,7 @@ func (p *Painter) diff(b *bytes.Buffer, frame []string) {
 		for i := n; i < m; i++ {
 			b.WriteString("\r\n")
 			cur = i
-			writeRow(b, frame[i])
+			p.writeRow(b, frame[i])
 		}
 	case m < n:
 		// Erase the stale rows below the new last row, then rest on it. When
@@ -211,19 +239,28 @@ func moveTo(b *bytes.Buffer, cur *int, target int) {
 }
 
 // writeRow rewrites one row, erasing to its end so no old content survives.
-func writeRow(b *bytes.Buffer, ln string) {
+func (p *Painter) writeRow(b *bytes.Buffer, ln string) {
 	b.WriteString("\r")
 	b.WriteString(ln)
-	b.WriteString(ansi.EraseLineRight)
+	eraseRest(b, ln, p.width)
 }
 
 // writeRows writes frame from the cursor's row, leaving the cursor on the last.
-func writeRows(b *bytes.Buffer, frame []string) {
+func (p *Painter) writeRows(b *bytes.Buffer, frame []string) {
 	for i, ln := range frame {
 		if i > 0 {
 			b.WriteString("\r\n")
 		}
-		writeRow(b, ln)
+		p.writeRow(b, ln)
+	}
+}
+
+// eraseRest clears what follows ln on its row. A row that fills the width leaves
+// the cursor on its last cell with the wrap pending, where an erase would take the
+// final character with it, and has nothing left to clear.
+func eraseRest(b *bytes.Buffer, ln string, width int) {
+	if Width(ln) < width {
+		b.WriteString(ansi.EraseLineRight)
 	}
 }
 

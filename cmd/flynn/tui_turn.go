@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/tui/editor"
+	"github.com/ionalpha/flynn/internal/tui/screen"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -209,17 +210,17 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 		h.note(blockError, "error: "+err.Error())
 		return
 	}
-	var lines []string
 	if out := strings.TrimRight(res.Output, "\n"); out != "" {
-		for _, line := range strings.Split(out, "\n") {
-			lines = append(lines, layBlock(h.th, blockOutput, line, h.ui.Width())...)
-		}
+		h.ui.Append(screen.Func(func(width int) []string {
+			var lines []string
+			for _, line := range strings.Split(out, "\n") {
+				lines = append(lines, layBlock(h.th, blockOutput, line, width)...)
+			}
+			return lines
+		}))
 	}
 	if res.ExitCode != 0 {
-		lines = append(lines, layBlock(h.th, blockToolError, fmt.Sprintf("exit %d", res.ExitCode), 0)...)
-	}
-	if len(lines) > 0 {
-		h.ui.Append(lines...)
+		h.note(blockToolError, fmt.Sprintf("exit %d", res.ExitCode))
 	}
 }
 
