@@ -81,17 +81,19 @@ func TestManagedInstallsAreRecognised(t *testing.T) {
 	var managed map[string]string
 	if runtime.GOOS == "windows" {
 		managed = map[string]string{
-			`C:\Program Files\flynn\flynn.exe`:        "a system installer",
-			`c:\program files (x86)\flynn\flynn.exe`:  "a system installer",
-			`C:\ProgramData\chocolatey\bin\flynn.exe`: "Chocolatey",
+			`C:\Program Files\flynn\flynn.exe`:                  "a system installer",
+			`c:\program files (x86)\flynn\flynn.exe`:            "a system installer",
+			`C:\ProgramData\chocolatey\bin\flynn.exe`:           "Chocolatey",
+			`C:\ProgramData\scoop\apps\flynn\current\flynn.exe`: "Scoop",
 		}
 	} else {
 		managed = map[string]string{
-			"/usr/bin/flynn":                   "the system package manager",
-			"/usr/local/Cellar/flynn/1/flynn":  "Homebrew",
-			"/nix/store/abc-flynn-1.0.0/flynn": "Nix",
-			"/snap/flynn/current/bin/flynn":    "snap",
-			"/var/lib/flatpak/app/flynn/flynn": "Flatpak",
+			"/usr/bin/flynn":                           "the system package manager",
+			"/usr/local/Cellar/flynn/1/flynn":          "Homebrew",
+			"/opt/homebrew/Caskroom/flynn/0.3.0/flynn": "Homebrew",
+			"/nix/store/abc-flynn-1.0.0/flynn":         "Nix",
+			"/snap/flynn/current/bin/flynn":            "snap",
+			"/var/lib/flatpak/app/flynn/flynn":         "Flatpak",
 		}
 	}
 	for path, owner := range managed {
@@ -129,6 +131,59 @@ func TestTheGoBinDirectoryIsFoundWithoutGOPATH(t *testing.T) {
 	// And a path that merely resembles it is not swept up with it.
 	if owner, ok := managedBy(filepath.Join(home, "gopher", "bin", "flynn")); ok {
 		t.Fatalf("a path outside the toolchain's bin directory was claimed by %q", owner)
+	}
+}
+
+// Scoop and WinGet keep the binary under a directory found from the environment, so
+// fixed prefixes cannot cover them. A Scoop or WinGet install that `flynn upgrade`
+// overwrote would report the old version to its manager, which would then put it back.
+func TestEnvironmentManagedInstallsAreRecognised(t *testing.T) {
+	root := t.TempDir()
+	scoop := filepath.Join(root, "scoop")
+	scoopGlobal := filepath.Join(root, "scoop-global")
+	local := filepath.Join(root, "local")
+	t.Setenv("SCOOP", scoop)
+	t.Setenv("SCOOP_GLOBAL", scoopGlobal)
+	t.Setenv("LOCALAPPDATA", local)
+
+	bin := binaryFor(runtime.GOOS)
+	for path, owner := range map[string]string{
+		filepath.Join(scoop, "apps", "flynn", "current", bin):                          "Scoop",
+		filepath.Join(scoopGlobal, "apps", "flynn", "current", bin):                    "Scoop",
+		filepath.Join(local, "Microsoft", "WinGet", "Packages", "IonAlpha.Flynn", bin): "WinGet",
+	} {
+		if got, ok := managedBy(path); !ok || got != owner {
+			t.Errorf("managedBy(%q) = %q, %v; want %q", path, got, ok, owner)
+		}
+	}
+
+	// A sibling of a managed directory is not managed: Scoop's shims and WinGet's Links
+	// hold only pointers, and a self-managed copy beside them is the user's.
+	for _, path := range []string{
+		filepath.Join(scoop, "shims", bin),
+		filepath.Join(local, "Microsoft", "WinGet", "Links", bin),
+		filepath.Join(local, "flynn", bin),
+	} {
+		if owner, ok := managedBy(path); ok {
+			t.Errorf("managedBy(%q) claimed it is owned by %q", path, owner)
+		}
+	}
+}
+
+// An unset variable must drop its directory, not turn it into a relative prefix that
+// matches everything and refuses every upgrade.
+func TestUnsetManagerVariablesClaimNothing(t *testing.T) {
+	t.Setenv("SCOOP", "")
+	t.Setenv("SCOOP_GLOBAL", "")
+	t.Setenv("LOCALAPPDATA", "")
+	for _, m := range userManagedDirs() {
+		if !filepath.IsAbs(m.dir) {
+			t.Errorf("%s directory %q is relative", m.owner, m.dir)
+		}
+	}
+	unowned := filepath.Join(t.TempDir(), binaryFor(runtime.GOOS))
+	if owner, ok := managedBy(unowned); ok {
+		t.Errorf("managedBy(%q) claimed it is owned by %q", unowned, owner)
 	}
 }
 
