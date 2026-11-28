@@ -19,7 +19,7 @@ var allRoles = []theme.Role{
 	theme.DiffContext, theme.DiffLocation, theme.Status, theme.StatusBusy,
 	theme.RecordRecording, theme.RecordSealed, theme.RecordVerified,
 	theme.RecordFailed, theme.Success, theme.Warning, theme.Error,
-	theme.Muted, theme.Border, theme.Overlay, theme.Selection,
+	theme.Muted, theme.Notice, theme.Cancelled, theme.Border, theme.Overlay, theme.Selection,
 	theme.Placeholder, theme.PasteChip, theme.QueuedChip,
 }
 

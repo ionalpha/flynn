@@ -45,7 +45,7 @@ func openCredentialStore(ctx context.Context, dataDir string) (*credential.Store
 // the command is exercisable without a TTY.
 func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string, prompt secretPrompt) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errors.New("usage: flynn auth add <integration> [--name <name>] [--role r] [--type t] [--default]")
+		return usageErr("auth add")
 	}
 	integration := args[0]
 
@@ -135,7 +135,7 @@ func addCredential(ctx context.Context, credStore *credential.Store, vaultStore 
 // credential the integration's default.
 func authCredUse(ctx context.Context, dataDir string, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn auth use <integration>/<name>")
+		return usageErr("auth use")
 	}
 	integration, name, ok := strings.Cut(args[0], "/")
 	if !ok || name == "" || integration == "" {
@@ -177,7 +177,7 @@ func authCredList(ctx context.Context, dataDir, integration string, w io.Writer)
 // credential metadata and its vault secret together.
 func authCredRemove(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn auth rm <integration>/<name>")
+		return usageErr("auth rm")
 	}
 	integration, name, ok := strings.Cut(args[0], "/")
 	if !ok || name == "" || integration == "" {

@@ -83,15 +83,15 @@ func TestGoalArgs(t *testing.T) {
 			if err := fs.Parse(c.args); err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			rest, usage := goalArgs(fs, fs.Args())
+			rest, err := goalArgs(fs, fs.Args())
 			if c.wantUsage != "" {
-				if !strings.Contains(usage, c.wantUsage) {
-					t.Fatalf("usage = %q, want it to contain %q", usage, c.wantUsage)
+				if err == nil || !strings.Contains(err.Error(), c.wantUsage) {
+					t.Fatalf("usage = %v, want it to contain %q", err, c.wantUsage)
 				}
 				return
 			}
-			if usage != "" {
-				t.Fatalf("unexpected usage error: %s", usage)
+			if err != nil {
+				t.Fatalf("unexpected usage error: %v", err)
 			}
 			if !slices.Equal(rest, c.wantRest) {
 				t.Errorf("rest = %q, want %q", rest, c.wantRest)

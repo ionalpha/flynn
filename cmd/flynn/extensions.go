@@ -24,8 +24,8 @@ import (
 
 // Shared usage errors, so a missing and an extra positional get the same message.
 var (
-	errUsageDev  = errors.New("usage: flynn extensions dev <name> <binary> [--cap ...] [--tool ...] [--egress ...] [--arg ...]")
-	errUsageCall = errors.New("usage: flynn extensions call <name> <tool> [json-input] [--egress ...]")
+	errUsageDev  = usageErr("extensions dev")
+	errUsageCall = usageErr("extensions call")
 )
 
 // runExtensions implements `flynn extensions <subcommand>`. A bundled extension is an
@@ -42,7 +42,7 @@ var (
 // run with dev mode on. Every listing marks it DEV so it is never taken for a signed one.
 func runExtensions(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flynn extensions <dev|ls|call|rm>")
+		return usageErr("extensions")
 	}
 	ctx := context.Background()
 	switch args[0] {
@@ -55,7 +55,7 @@ func runExtensions(args []string, dataDir string) error {
 	case "rm", "unlink":
 		return extensionsRemove(ctx, dataDir, args[1:])
 	default:
-		return fmt.Errorf("extensions: unknown subcommand %q (want dev, ls, call, or rm)", args[0])
+		return unknownCommand("extensions", args[0])
 	}
 }
 
@@ -356,7 +356,7 @@ func signerKeyPath(dataDir, name string) string {
 // are catalog state.
 func extensionsRemove(ctx context.Context, dataDir string, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn extensions rm <name>")
+		return usageErr("extensions rm")
 	}
 	name := args[0]
 	rt, err := openExtensionRuntime(ctx, dataDir)

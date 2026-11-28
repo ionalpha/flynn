@@ -163,7 +163,7 @@ func mergeGoalSpec(spec goalSpecFile, objective string) (string, error) {
 	case spec.Objective != "":
 		return spec.Objective, nil
 	}
-	return "", errors.New(`usage: flynn goal "<objective>", or state "objective" in a --goal-spec file`)
+	return "", usageErrf("goal", `give an objective, or state "objective" in a --goal-spec file`)
 }
 
 // mergeAllowances concatenates the --allow declarations and the spec file's, since each

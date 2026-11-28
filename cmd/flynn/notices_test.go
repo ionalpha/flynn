@@ -10,7 +10,7 @@ import (
 // The notice channel must be reachable as a command. A receiver nobody can invoke is a
 // receiver nobody can check.
 func TestNoticesIsRegisteredAsACommand(t *testing.T) {
-	if _, ok := dataDirCommands["notices"]; !ok {
+	if c := findCLI("notices"); c == nil || c.local == nil {
 		t.Fatal("`flynn notices` is not wired into the command table")
 	}
 }

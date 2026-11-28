@@ -131,6 +131,7 @@ type App struct {
 	history   history
 	live      screen.Component
 	status    string
+	statusFn  func(width int) string
 	finalized []string
 	width     int
 	height    int
@@ -256,6 +257,19 @@ func (a *App) SetCapture(fn func(input.Event) bool) {
 func (a *App) SetStatus(line string) {
 	a.mu.Lock()
 	a.status = line
+	a.statusFn = nil
+	a.mu.Unlock()
+	a.sched.Request()
+}
+
+// SetStatusFunc installs a status line built for the frame width at each paint,
+// so a line that drops segments to fit is rebuilt after a resize instead of being
+// cut off mid-word. fn runs with the app's lock held and must not call back into
+// the app. A later [App.SetStatus] replaces it.
+func (a *App) SetStatusFunc(fn func(width int) string) {
+	a.mu.Lock()
+	a.status = ""
+	a.statusFn = fn
 	a.mu.Unlock()
 	a.sched.Request()
 }
@@ -472,8 +486,12 @@ func (a *App) composeLocked() []string {
 	if a.live != nil {
 		frame = append(frame, a.live.Render(a.width)...)
 	}
-	if a.status != "" {
-		frame = append(frame, a.cfg.Theme.Render(theme.Status, screen.Truncate(a.status, a.width)))
+	status := a.status
+	if a.statusFn != nil {
+		status = a.statusFn(a.width)
+	}
+	if status != "" {
+		frame = append(frame, a.cfg.Theme.Render(theme.Status, screen.Truncate(status, a.width)))
 		frame = append(frame, "")
 	}
 	if a.menu.open {
