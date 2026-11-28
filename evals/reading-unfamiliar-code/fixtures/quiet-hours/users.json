@@ -1,0 +1,4 @@
+{
+  "u1": {"name": "ana", "channels": ["mobile", "email"], "utc_offset_min": 330, "quiet": [22, 7]},
+  "u2": {"name": "bo", "channels": ["watch", "inapp"], "utc_offset_min": -480}
+}

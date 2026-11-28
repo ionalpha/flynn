@@ -1,0 +1,1 @@
+0 1 * * *  cd /srv/shop && python3 export.py && python3 finance/reconcile.py
