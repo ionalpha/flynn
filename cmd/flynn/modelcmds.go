@@ -81,6 +81,10 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	if len(args) == 0 || args[0] == "" {
 		return errors.New("models run: a model id or source is required (see `flynn models`)")
 	}
+	// Words after the id are the prompt; a flag before it is not a model.
+	if err := refuseFlagWords("models run", args[:1]); err != nil {
+		return err
+	}
 	id := args[0]
 	prompt := strings.TrimSpace(strings.Join(args[1:], " "))
 
@@ -134,6 +138,12 @@ func runModelProbe(args []string, dataDir string, out io.Writer) error {
 	autoApprove, args := takeFlag(args, "--yes", "-y")
 	if len(args) == 0 || args[0] == "" {
 		return errors.New("models probe: a model id is required (see `flynn models`)")
+	}
+	if err := refuseFlagWords("models probe", args); err != nil {
+		return err
+	}
+	if len(args) > 1 {
+		return usageErrf("models probe", "unexpected argument %q", args[1])
 	}
 	id := args[0]
 

@@ -85,7 +85,7 @@ func (f *initFake) env(in io.Reader, yes bool) (initEnv, *syncBuf) {
 	f.score = firstNonZero(f.score, goodScore)
 	scored := map[string]bool{}
 	return initEnv{
-		in: bufio.NewReader(in), out: out, yes: yes, dataDir: "unused",
+		in: bufio.NewReader(in), out: out, yes: yes,
 		machine: func(float64, float64) fitMachine { return f.machine },
 		catalog: func() (catalog.Catalog, error) { return catalog.Catalog{Models: f.models}, nil },
 		profiles: func(context.Context) harness.ProfileSource {

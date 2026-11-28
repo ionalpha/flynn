@@ -33,8 +33,11 @@ type deployArgs struct {
 // must come first, so a bare flag (or nothing) is a usage error rather than a deploy of
 // an extension named "--name".
 func parseDeployArgs(args []string) (deployArgs, error) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+	if len(args) == 0 {
 		return deployArgs{}, usageErr("deploy")
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return deployArgs{}, usageErrf("deploy", "the extension comes first, before %s", args[0])
 	}
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

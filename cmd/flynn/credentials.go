@@ -44,8 +44,11 @@ func openCredentialStore(ctx context.Context, dataDir string) (*credential.Store
 // The prompt is supplied by the caller (the command passes the no-echo terminal one), so
 // the command is exercisable without a TTY.
 func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string, prompt secretPrompt) error {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+	if len(args) == 0 {
 		return usageErr("auth add")
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return usageErrf("auth add", "the integration comes first, before %s", args[0])
 	}
 	integration := args[0]
 

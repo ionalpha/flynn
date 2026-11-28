@@ -353,6 +353,16 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	if len(inv.selection) > 0 && !selectionCommands[name] {
 		return inv.exit(usageErrf("flags", "%s chooses what a run is offered, so it applies to an interactive session, `flynn goal`, `flynn resume` and `flynn watch`, and not to flynn %s", inv.selection[0], cmd))
 	}
+	if c != nil || cmd == "" {
+		if err := refuseUnreadRunFlags(c, inv.flags); err != nil {
+			return inv.exit(err)
+		}
+	}
+	if c != nil && len(rest) > 0 {
+		if err := refuseUnparsedArgs(c, rest[1:]); err != nil {
+			return inv.exit(err)
+		}
+	}
 	switch {
 	case c != nil && c.invoke != nil:
 		return c.invoke(inv, rest)
@@ -397,18 +407,20 @@ func routeGoal(inv invocation, rest []string) int {
 }
 
 func routeInspect(inv invocation, rest []string) int {
-	if len(rest) < 2 {
-		return inv.exit(usageErr("inspect"))
+	id, verbose, err := runIDArgs("inspect", rest[1:], inv.verbose)
+	if err != nil {
+		return inv.exit(err)
 	}
-	return inv.exit(inspectRun(inv.stdout, inv.dataDir, rest[1], inv.verbose))
+	return inv.exit(inspectRun(inv.stdout, inv.dataDir, id, verbose))
 }
 
 func routeResume(inv invocation, rest []string) int {
-	if len(rest) < 2 {
-		return inv.exit(usageErr("resume"))
+	id, verbose, err := runIDArgs("resume", rest[1:], inv.verbose)
+	if err != nil {
+		return inv.exit(err)
 	}
 	inv.noteShellPosture()
-	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose, inv.shell))
+	return inv.exit(resumeRun(inv.modelSpec, id, inv.dataDir, verbose, inv.shell))
 }
 
 // routeMemory runs `flynn memory`. Consolidation distils through a model, so it needs

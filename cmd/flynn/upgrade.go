@@ -41,13 +41,17 @@ func runVersion(args []string, dataDir string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	pre := fs.Bool("pre", false, "include prereleases")
-	if err := fs.Parse(args); err != nil {
+	bare, err := parseAroundArgs(fs, args)
+	if err != nil {
 		return err
+	}
+	if len(bare) > 1 {
+		return usageErrf("version", "unexpected argument %q", bare[1])
 	}
 
 	sub := ""
-	if fs.NArg() > 0 {
-		sub = fs.Arg(0)
+	if len(bare) > 0 {
+		sub = bare[0]
 	}
 	switch sub {
 	case "":
@@ -172,6 +176,11 @@ func runUpgrade(args []string, dataDir string) error {
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// A stray word stops the flag parse, so a --check after it would be dropped and the
+	// binary replaced.
+	if fs.NArg() > 0 {
+		return usageErrf("upgrade", "unexpected argument %q", fs.Arg(0))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
