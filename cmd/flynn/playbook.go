@@ -171,7 +171,7 @@ func runPlaybook(args []string, dataDir string) error {
 	case "run":
 		return playbookRun(ctx, dataDir, args[1:], os.Stdout)
 	default:
-		return fmt.Errorf("playbook: unknown subcommand %q (want ls or run)", args[0])
+		return unknownCommand("playbook", args[0])
 	}
 }
 
@@ -264,7 +264,7 @@ func playbookList(ctx context.Context, dataDir string, out io.Writer) error {
 
 func playbookRun(ctx context.Context, dataDir string, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: flynn playbook run <name> [json-input]")
+		return usageErr("playbook run")
 	}
 	name := args[0]
 	config := map[string]any{}

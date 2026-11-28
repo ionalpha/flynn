@@ -29,7 +29,7 @@ import (
 //	flynn integrations call <ext> <op> [json]   run one operation and print the result
 func runIntegrations(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flynn integrations <ls|show|call>")
+		return usageErr("integrations")
 	}
 	var run func(context.Context, *integrationRuntime, io.Writer, []string) error
 	switch args[0] {
@@ -40,7 +40,7 @@ func runIntegrations(args []string, dataDir string) error {
 	case "call":
 		run = integrationsCall
 	default:
-		return fmt.Errorf("integrations: unknown subcommand %q (want ls, show, or call)", args[0])
+		return unknownCommand("integrations", args[0])
 	}
 	ctx := context.Background()
 	rt, err := openIntegrationRuntime(ctx, dataDir)
@@ -147,7 +147,7 @@ func integrationStatus(ctx context.Context, creds *credential.Store, name string
 // integrationsShow prints an extension's operations and how to configure it.
 func integrationsShow(ctx context.Context, rt *integrationRuntime, out io.Writer, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn integrations show <extension>")
+		return usageErr("integrations show")
 	}
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, args[0])
 	if errors.Is(err, resource.ErrNotFound) {
@@ -174,7 +174,7 @@ func integrationsShow(ctx context.Context, rt *integrationRuntime, out io.Writer
 // verified end to end from the command line.
 func integrationsCall(ctx context.Context, rt *integrationRuntime, out io.Writer, args []string) error {
 	if len(args) < 2 {
-		return errors.New(`usage: flynn integrations call <extension> <operation> [json-input]`)
+		return usageErr("integrations call")
 	}
 	extName, opName := args[0], args[1]
 	input := json.RawMessage(`{}`)

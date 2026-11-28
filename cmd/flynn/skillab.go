@@ -124,7 +124,7 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, abFlags, error
 		return skillab.Set{}, 0, refs, err
 	}
 	if len(bare) != 1 {
-		return skillab.Set{}, 0, refs, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir] [--candidate version] [--against version] [--max-cost usd] [--prices file] [--keep dir]`)
+		return skillab.Set{}, 0, refs, usageErr("skill ab")
 	}
 	slug := bare[0]
 

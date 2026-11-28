@@ -193,7 +193,7 @@ func TestFillDerivedNamesIsStableForOneIdentity(t *testing.T) {
 
 func TestRunPlaybookRejectsAnUnknownSubcommand(t *testing.T) {
 	err := runPlaybook([]string{"deploy"}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("expected an unknown-subcommand error, got %v", err)
 	}
 }

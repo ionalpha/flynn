@@ -34,7 +34,7 @@ import (
 // named credentials; rm takes a bare provider or <integration>/<name>.
 func runAuth(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flynn auth <set|set-app|list|add|use|ls|rm|rm-app>")
+		return usageErr("auth")
 	}
 	store := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))
 	ctx := context.Background()
@@ -67,7 +67,7 @@ func runAuth(args []string, dataDir string) error {
 		}
 		return authRemove(ctx, store, args[1:])
 	default:
-		return fmt.Errorf("auth: unknown subcommand %q (want set, set-app, list, add, use, ls, rm, or rm-app)", args[0])
+		return unknownCommand("auth", args[0])
 	}
 }
 
@@ -230,7 +230,7 @@ type secretPrompt func(label string) (secret.Text, error)
 
 func authSet(ctx context.Context, store *vault.Store, args []string, prompt secretPrompt) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: flynn auth set <provider> (one of %s), or signer/<name>", strings.Join(provider.Providers(), ", "))
+		return usageErrf("auth set", "the provider is one of %s, or signer/<name>", strings.Join(provider.Providers(), ", "))
 	}
 	// A signer/<name> reference stores the passphrase that unlocks a signer extension's sealed
 	// key, not a model-provider API key, so it does not go through provider.KeyRef. The ref is
@@ -275,7 +275,7 @@ func authSet(ctx context.Context, store *vault.Store, args []string, prompt secr
 
 func authRemove(ctx context.Context, store *vault.Store, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn auth rm <provider>")
+		return usageErr("auth rm")
 	}
 	ref, ok := provider.KeyRef(args[0])
 	if !ok {
