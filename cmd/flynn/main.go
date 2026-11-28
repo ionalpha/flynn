@@ -26,6 +26,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/selection"
 	"github.com/ionalpha/flynn/internal/selfupdate"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
@@ -37,33 +38,6 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
 )
-
-// dataDirCommands are the subcommands whose only state is the data directory.
-var dataDirCommands = map[string]func(args []string, dataDir string) error{
-	"auth":         runAuth,
-	"integrations": runIntegrations,
-	"extensions":   runExtensions,
-	"deps":         runDeps,
-	"playbook":     runPlaybook,
-	"deploy":       runDeploy,
-	"services":     runServices,
-	"models":       dispatchModels,
-	"init":         runInit,
-	"notices":      runNotices,
-	"get":          dispatchGet,
-	"mcp":          runMCP,
-	"describe":     dispatchDescribe,
-	"diff":         dispatchDiff,
-	"ps":           dispatchPs,
-	"status":       dispatchStatus,
-	"spine":        dispatchSpine,
-	"steer":        dispatchSteer,
-	"kill":         dispatchKill,
-	"db":           runDB,
-	"version":      runVersion,
-	"upgrade":      runUpgrade,
-	"sandbox":      runSandbox,
-}
 
 // staleSandboxProfileAge is how old a sandbox profile must be before the startup sweep
 // collects it. A profile belongs to a live sandbox until it closes, and collecting one
@@ -116,7 +90,7 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 	// The watchdog reads and dumps into the bundle, so without one it would watch
 	// nothing for the whole soak.
 	if cfg.Dir == "" {
-		return diag.Config{}, "usage: --leak-watch needs a bundle to watch; add --profile <dir> or set FLYNN_PROFILE"
+		return diag.Config{}, "--leak-watch needs a bundle to watch; add --profile <dir> or set FLYNN_PROFILE"
 	}
 	if leakRepeat {
 		cfg.Leak.Repeat = true
@@ -129,7 +103,9 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 
 // main only turns run's exit code into a process exit. os.Exit runs no defers, so
 // every path returns through run, where a --profile bundle's deferred Stop writes it.
-func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	os.Exit(run(flag.NewFlagSet("flynn", flag.ContinueOnError), os.Args[1:], os.Stdout, os.Stderr))
+}
 
 // run dispatches the command line and returns the exit code: 0 on success, 1 on a
 // command error, 2 on a usage error, and exitChangesRequested for a review that asked
@@ -137,56 +113,54 @@ func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) 
 // testable in-process.
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
-		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model")
-		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
+		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as `provider:model`")
+		dataDir     = fs.String("data-dir", defaultDataDir(), "`dir`ectory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
-		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
-		projFiles   = fs.String("project-files", "", "whether to load the repository's AGENTS.md, AGENTS.override.md and CLAUDE.md into the model's instructions: ask (the default: load files you approved before, otherwise ask, and skip when no one can answer), trust (load them) or skip (never). Loaded files are untrusted input: they are fenced in the prompt, the session is tainted by them, and the decision is recorded on the run. Also set by FLYNN_PROJECT_FILES.")
-		verbose     = fs.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
+		noBundled   = fs.Bool("no-bundled-skills", false, "run without the bundled skills, removing them from the store")
+		projFiles   = fs.String("project-files", "", "load AGENTS.md and CLAUDE.md: `mode` is ask (default), trust or skip")
+		verbose     = fs.Bool("v", false, "show tool arguments, outputs and per-turn detail")
 		verboseLong = fs.Bool("verbose", false, "alias for -v")
-		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
-		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
-		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
-		goalSpec    = fs.String("goal-spec", "", `a JSON file stating the terms of the run: what must stay true while it works, each with the command that checks it, plus optionally the objective, the stop condition, and the irreversible actions it may take ("-" reads stdin). A term is audited on every step before the goal is asked whether it is done, and a breach stops the run naming the term, so it is the one thing a run under completion pressure cannot trade away. A term's check is run as semi-trusted work, so it needs a host that can contain it; where it cannot be run the run stops saying so rather than carrying on unaudited. See `+"`flynn help`"+` for the shape.`)
+		plain       = fs.Bool("plain", false, "use the line-based interactive session, not the full-screen one")
+		verify      = fs.String("verify", "", "a `command` run after the agent stops that checks the goal succeeded")
+		reqProof    = fs.Bool("require-proof", false, "refuse success over a plan item the record shows no passing check for")
+		goalSpec    = fs.String("goal-spec", "", "read the run's terms from a JSON `file` (\"-\" is stdin)")
 		reqApproval = &stringList{}
 		outside     = &stringList{}
 		allowed     = &stringList{}
-		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
-		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
-		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
+		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents")
+		maxCost     = fs.Float64("max-cost", 0, "cap the run's model and tool spend at this `amount`; 0 is unlimited")
+		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's metered tokens at `n`; 0 is unlimited")
 		shellFlags  = registerShellFlags(fs)
-		showVersion = fs.Bool("version", false, "print version and exit")
-		profileDir  = fs.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
-		profileCont = fs.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
-		leakWatch   = fs.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
-		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
+		selFlags    = registerSelectionFlags(fs)
+		showVersion = fs.Bool("version", false, "print the version and exit")
+		profileDir  = fs.String("profile", "", "write a runtime profile bundle into this `dir` for the command's life")
+		profileCont = fs.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle")
+		leakWatch   = fs.Bool("leak-watch", false, "dump profiles into the --profile bundle when a resource keeps growing")
+		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump the same counter more than once")
 	)
-	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval bash; a name the run does not offer is refused). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
-	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). This adds a check on top of the run's normal grant and sandbox and takes none away: an action the grant refuses stays refused, and one it permits is now also held until --allow declares it. A run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
-	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It only lifts the hold that --irreversible puts on that action, so it needs a matching --irreversible and grants nothing the run's normal grant and sandbox do not already permit. It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
+	fs.Var(reqApproval, "require-approval", "pause this `action` until a person authorizes it (repeatable)")
+	fs.Var(outside, "irreversible", "mark this `action` as not undoable, held until --allow (repeatable)")
+	fs.Var(allowed, "allow", "permit this --irreversible `action` in advance (repeatable)")
+	// Parse errors and -h are reported here, in the same form as every other usage error,
+	// rather than by the flag package's own printer.
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
-		// Only a flag set that returns parse errors reaches here; flag.CommandLine exits.
-		// A help request, already answered by the flag package, is not a usage error.
 		if errors.Is(err, flag.ErrHelp) {
+			writeTopHelp(stdout, fs)
 			return 0
 		}
-		return 2
+		return reportError(stderr, usageErrf("flags", "%v", err))
 	}
-	// The flag package stops at the first non-flag word, so a help flag after a
-	// subcommand reaches here unseen. Answer it before it becomes an objective or runs
-	// the command it asked about.
-	if helpRequested(fs.Args()) {
-		printUsage(stdout)
-		return 0
+	if topic, ok := helpTarget(fs.Args()); ok {
+		return showHelp(stdout, stderr, fs, topic)
 	}
-	rest, usageErr := goalArgs(fs, fs.Args())
-	if usageErr == flag.ErrHelp.Error() {
-		printUsage(stdout)
-		return 0
+	rest, err := goalArgs(fs, fs.Args())
+	if errors.Is(err, flag.ErrHelp) {
+		return showHelp(stdout, stderr, fs, []string{"goal"})
 	}
-	if usageErr != "" {
-		_, _ = fmt.Fprintln(stderr, usageErr)
-		return 2
+	if err != nil {
+		return reportError(stderr, err)
 	}
 	vrb := *verbose || *verboseLong
 
@@ -197,8 +171,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	// mode its operator did not choose.
 	projectFilesFlag = *projFiles
 	if _, err := projectFilesMode(); err != nil {
-		_, _ = fmt.Fprintln(stderr, err)
-		return 2
+		return reportError(stderr, usageErrf("flags", "%v", err))
 	}
 
 	if *showVersion {
@@ -206,12 +179,23 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// Checked against the stored skills and the tools that exist once a run opens its store;
+	// a malformed list or selection file is refused here, before anything starts.
+	sel, err := selFlags.resolve(fs, *dataDir)
+	if errors.Is(err, selection.ErrUnreadable) {
+		_, _ = fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if err != nil {
+		return reportError(stderr, usageErrf("flags", "%v", err))
+	}
+	selectionConfig = sel
+
 	// The bundle spans the whole command and closes on the single exit path below. With
 	// no --profile and no FLYNN_PROFILE, Start returns a nil bundle whose Stop is a no-op.
 	profileCfg, usage := profileConfig(*profileDir, *profileCont, *leakWatch, *leakRepeat)
 	if usage != "" {
-		_, _ = fmt.Fprintln(stderr, usage)
-		return 2
+		return reportError(stderr, usageErrf("flags", "%s", usage))
 	}
 
 	bundle, err := diag.Start(profileCfg)
@@ -222,7 +206,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	defer func() {
 		// The command already ran, so a bundle that failed to seal is only a warning.
 		if err := bundle.Stop(); err != nil {
-			_, _ = fmt.Fprintln(stderr, "warning: profile bundle:", err)
+			warn(stderr, "profile bundle: %v", err)
 		}
 	}()
 
@@ -267,6 +251,8 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		shell:        shellFlags.policy(*dataDir),
+		selection:    selFlags.named(fs),
+		flags:        fs,
 	})
 }
 
@@ -279,42 +265,26 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 // dropping --require-approval, --irreversible and every other control the operator
 // typed. A flag after the free-text objective is refused as a usage error that names
 // it. "--" ends the flags, so an objective can start with a dash.
-func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
+func goalArgs(fs *flag.FlagSet, rest []string) ([]string, error) {
 	if len(rest) == 0 || rest[0] != "goal" {
-		return rest, ""
+		return rest, nil
 	}
 	literal := slices.Contains(rest[1:], "--")
 	if err := fs.Parse(rest[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil, flag.ErrHelp.Error()
+			return nil, err
 		}
-		return nil, fmt.Sprintf("usage: %v", err)
+		return nil, usageErrf("goal", "%v", err)
 	}
 	objective := fs.Args()
 	if !literal {
 		for _, arg := range objective {
 			if name, ok := flagName(arg); ok && fs.Lookup(name) != nil {
-				return nil, fmt.Sprintf("usage: %s is a flag, and it came after the objective, where it would have been read as part of it; put it before: flynn goal %s ... \"<objective>\"", arg, arg)
+				return nil, usageErrf("goal", "%s is a flag, and it came after the objective, where it would have been read as part of it; put it before: flynn goal %s ... \"<objective>\"", arg, arg)
 			}
 		}
 	}
-	return append([]string{"goal"}, objective...), ""
-}
-
-// helpRequested reports whether a known subcommand's first argument is a help flag.
-// Later arguments are the subcommand's own text, so an objective mentioning "-h" is
-// still an objective. The help command is an ordinary route and is not matched.
-func helpRequested(rest []string) bool {
-	if len(rest) < 2 || !slices.Contains([]string{"-h", "--help", "-help"}, rest[1]) {
-		return false
-	}
-	name := rest[0]
-	if target, ok := commandAliases[name]; ok {
-		name = target
-	}
-	_, invoked := invocationCommands[name]
-	_, dataDirOnly := dataDirCommands[name]
-	return invoked || dataDirOnly
+	return append([]string{"goal"}, objective...), nil
 }
 
 // flagName returns the flag name an argument spells ("-v", "--goal-spec",
@@ -353,49 +323,15 @@ type invocation struct {
 	// shell is built from the flags once, so every entry point that drives a shell passes
 	// the same policy and none restates the defaults.
 	shell governed.ShellPolicy
+	// selection is the skill and tool selection flags the command line set, so the router
+	// can refuse them on a command that would ignore them.
+	selection []string
+	// flags is the parsed root flag set, which the top-level page is rendered from.
+	flags *flag.FlagSet
 }
 
-// exit maps an ok-or-error outcome to 0, or to 1 with the message on stderr.
-func (inv invocation) exit(err error) int {
-	if err != nil {
-		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-		return 1
-	}
-	return 0
-}
-
-// invocationCommands are the subcommands that need the model spec, the streams or the
-// run flags. Each returns its own exit code, because several have outcomes other than
-// ok-or-error.
-var invocationCommands = map[string]func(inv invocation, rest []string) int{
-	"goal":    routeGoal,
-	"inspect": routeInspect,
-	"runs":    func(inv invocation, _ []string) int { return inv.exit(listRuns(inv.stdout, inv.dataDir)) },
-	"resume":  routeResume,
-	"regrade": func(inv invocation, _ []string) int { return inv.exit(regradeSkills(inv.stdout, inv.dataDir)) },
-	"memory":  routeMemory,
-	"skill":   routeSkill,
-	"serve": func(inv invocation, rest []string) int {
-		inv.noteShellPosture()
-		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, serveGovernance{
-			approve: inv.reqApproval, outside: inv.outside, allowed: inv.allowed,
-			budget: budgetpkg.Limits{Tokens: inv.maxTokens, Cost: inv.maxCost},
-			shell:  inv.shell,
-		}))
-	},
-	"watch": func(inv invocation, _ []string) int {
-		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
-	},
-	"review": routeReview,
-	"help":   func(inv invocation, _ []string) int { printUsage(inv.stdout); return 0 },
-}
-
-// commandAliases maps a second name to the subcommand it runs. Usage lists only the
-// subcommand.
-var commandAliases = map[string]string{
-	"replay":   "inspect",
-	"sessions": "runs",
-}
+// exit maps an outcome to its exit code with [reportError].
+func (inv invocation) exit(err error) int { return reportError(inv.stderr, err) }
 
 // routeCommand routes a parsed command line and returns the exit code under the
 // contract documented on run.
@@ -407,37 +343,35 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		if cmd == "" {
 			what = "an interactive session"
 		}
-		_, _ = fmt.Fprintf(inv.stderr, "usage: --goal-spec states the terms of one run, so it applies to `flynn goal` and not to %s\n", what)
-		return 2
+		return inv.exit(usageErrf("goal", "--goal-spec states the terms of one run, so it applies to `flynn goal` and not to %s", what))
 	}
+	c := findCLI(cmd)
 	name := cmd
-	if target, ok := commandAliases[cmd]; ok {
-		name = target
+	if c != nil {
+		name = c.name
 	}
-	if fn, ok := invocationCommands[name]; ok {
-		return fn(inv, rest)
+	if len(inv.selection) > 0 && !selectionCommands[name] {
+		return inv.exit(usageErrf("flags", "%s chooses what a run is offered, so it applies to an interactive session, `flynn goal`, `flynn resume` and `flynn watch`, and not to flynn %s", inv.selection[0], cmd))
+	}
+	switch {
+	case c != nil && c.invoke != nil:
+		return c.invoke(inv, rest)
+	case c != nil && c.local != nil:
+		return inv.exit(c.local(rest[1:], inv.dataDir))
+	case c != nil:
+		// help has neither: run answered it before routing.
+		return showHelp(inv.stdout, inv.stderr, inv.flags, rest[1:])
+	case cmd != "":
+		return inv.exit(unknownCommand("", cmd))
 	}
 
-	if fn, ok := dataDirCommands[name]; ok {
-		if err := fn(rest[1:], inv.dataDir); err != nil {
-			// An empty error reports an outcome through the exit code alone: `flynn version
-			// check` exits non-zero when an upgrade is waiting.
-			if err.Error() != "" {
-				_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-			}
-			return 1
-		}
-		return 0
-	}
-
-	// With no subcommand a terminal gets an interactive session; redirected stdin has no
-	// one to prompt, so it gets usage.
-	if len(rest) == 0 && stdinIsTerminal() {
+	// With no command a terminal gets an interactive session; redirected stdin has no one
+	// to prompt, so it gets the top-level page and a usage exit.
+	if stdinIsTerminal() {
 		inv.noteShellPosture()
 		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval, inv.shell))
 	}
-
-	printUsage(inv.stderr)
+	writeTopHelp(inv.stderr, inv.flags)
 	return 2
 }
 
@@ -449,17 +383,14 @@ func routeGoal(inv invocation, rest []string) int {
 	if inv.goalSpec != "" {
 		loaded, err := loadGoalSpecFile(inv.goalSpec)
 		if err != nil {
-			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-			return 2
+			return inv.exit(asUsage("goal", err))
 		}
 		spec = loaded
 	}
-	// An objective stated nowhere, or twice differently, is a command-line error and is
-	// printed without the error prefix.
+	// An objective stated nowhere, or twice differently, is a command-line error.
 	objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
 	if err != nil {
-		_, _ = fmt.Fprintln(inv.stderr, err)
-		return 2
+		return inv.exit(asUsage("goal", err))
 	}
 	inv.noteShellPosture()
 	return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.shell))
@@ -467,45 +398,30 @@ func routeGoal(inv invocation, rest []string) int {
 
 func routeInspect(inv invocation, rest []string) int {
 	if len(rest) < 2 {
-		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn inspect <run-id>")
-		return 2
+		return inv.exit(usageErr("inspect"))
 	}
 	return inv.exit(inspectRun(inv.stdout, inv.dataDir, rest[1], inv.verbose))
 }
 
 func routeResume(inv invocation, rest []string) int {
 	if len(rest) < 2 {
-		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
-		return 2
+		return inv.exit(usageErr("resume"))
 	}
 	inv.noteShellPosture()
 	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose, inv.shell))
 }
 
 // routeMemory runs `flynn memory`. Consolidation distils through a model, so it needs
-// the model spec and cannot be a dataDirCommands entry.
+// the model spec and is an invoke route rather than a local one.
 func routeMemory(inv invocation, rest []string) int {
-	if err := dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
-		if errors.Is(err, errMemoryUsage) {
-			_, _ = fmt.Fprintln(inv.stderr, err)
-			return 2
-		}
-		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-		return 1
-	}
-	return 0
+	return inv.exit(dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout))
 }
 
 func routeSkill(inv invocation, rest []string) int {
-	if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
-		if errors.Is(err, errSkillUsage) {
-			_, _ = fmt.Fprintln(inv.stderr, err)
-			return 2
-		}
-		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-		return 1
+	if len(rest) > 1 && rest[1] == "ab" {
+		inv.noteShellPosture()
 	}
-	return 0
+	return inv.exit(dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.shell, inv.stdout))
 }
 
 // routeReview runs `flynn review`. A review that requests changes exits with
@@ -514,11 +430,9 @@ func routeReview(inv invocation, rest []string) int {
 	switch err := runReview(rest[1:], inv.modelSpec, inv.dataDir, inv.verbose); {
 	case errors.Is(err, errChangesRequested):
 		return exitChangesRequested
-	case err != nil:
-		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-		return 1
+	default:
+		return inv.exit(err)
 	}
-	return 0
 }
 
 // effectiveModelSpec resolves the model: an explicit --model, else the default
@@ -553,90 +467,6 @@ func flagPassed(fs *flag.FlagSet, name string) bool {
 		}
 	})
 	return found
-}
-
-func printUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `flynn: an autonomous software agent. Usage:
-  flynn                      start an interactive session (chat turn by turn)
-  flynn goal "<objective>"   drive a goal to completion in the current directory
-  flynn goal --goal-spec f.json  the same, with the terms of the run stated in a file (see below)
-  flynn runs                 list past runs (id, phase, objective)
-  flynn get <kind>           list resources of a kind (instances, agents, runs, ...)
-  flynn describe <kind> <id> show one resource's fields and recent change history
-  flynn diff <kind> <a> <b>  show the fields that differ between two resources of a kind
-  flynn ps                   list instances with their live, heartbeat-aware state
-  flynn status [<run>]       show the live overview, or one run's phase and progress
-  flynn resume <run-id>      continue a parked or interrupted run by id
-  flynn steer <run-id> "..."  redirect a run that is still going; it keeps its objective and cannot report success until it says what it did about the redirect
-  flynn kill <run-id> ["..."] stop a run that is still going; it halts at its next model or tool call, and the stop cannot be taken back
-  flynn watch                watch the working tree for ai!/ai? comment markers and run each as a governed turn
-  flynn review <pr>          review a pull request and submit a formal verdict (APPROVE gated behind --approve --as); exits 3 on changes requested
-  flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
-  flynn spine verify <run>   report a run's record tier by tier: integrity, governance, ground truth (or --file <path> for an exported record)
-  flynn spine export <run>   write a sealed run's portable record to a file (--out <path>) for third-party verification
-  flynn auth set <provider>  store an API key in the encrypted vault
-  flynn integrations         list the integrations, show one, or call an operation (ls, show, call)
-  flynn extensions           link a local extension, list, call one confined, or unlink (dev, ls, call, rm)
-  flynn deps                 list the external tools an integration declares; 'deps install <name>' fetches a pinned one
-  flynn playbook             list the playbooks; 'playbook run <name> [json-input]' runs one
-  flynn deploy <extension>   deploy through a hosting extension and track the result as a managed service
-  flynn services             list the managed services; 'services rm <name>' removes one
-  flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
-  flynn init --local         set up a model on this machine: detect the hardware, recommend what fits, fetch or adopt one, probe it and make it the default
-  flynn models add <hf:owner/repo | ollama:name | path>  add a model to your own catalog (unverified until blessed)
-  flynn models remove <id>   remove a model you added
-  flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry, print it for review and save it to the user overlay
-  flynn models fetch <id>    download and verify a model's weights (does not run it)
-  flynn models check         report installed local runtimes and any known parser advisories
-  flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)
-  flynn models inspect <id>  show a model source's trust, isolation, and integrity (no run)
-  flynn models run <id> [q]  provision, serve, and query a local model (q optional)
-  flynn models probe <id>    measure a local model's agentic reliability and record its profile
-  flynn models use <id>      provision a local model and set it as the default
-  flynn models status        list the local model servers that are running
-  flynn models stop <id>     stop a running local model server
-  flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
-  flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
-  flynn regrade              re-grade learned skills against the working directory
-  flynn memory ls            list what this install remembers, with ids, sources and whether each is pushed at wake (--pending: only items awaiting review)
-  flynn memory promote <id>  review one of the agent's own memories into every later run's wake digest (revoke <id> takes it back out)
-  flynn memory forget <id>   delete a memory, including one pinned with /remember
-  flynn memory consolidate   distil each subject's accumulated episodes into one lesson and retire them (--max-calls n caps the model spend)
-  flynn memory usage         show what memory was pushed at readers, what they used, and how alike the instances' pushed sets are
-  flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
-  flynn skill show <skill>   print one skill: what it is for, how runs have taken it up, and its body
-  flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
-  flynn serve [--telegram-token T --telegram-allow ID] [--signal-tcp ADDR --signal-allow NUMBER] [--api-addr ADDR]  run as a service: answer chat messages from the allowed senders (Telegram, Signal) and/or expose the read-only monitor API
-  flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
-  flynn --version            print the version
-  flynn version [list]      print the running build, or list the releases that exist
-  flynn upgrade             replace this binary with a newer, signature-verified release
-  flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, -v/--verbose, --plain, --profile <dir> (run with --help for details).
-
-A goal spec file states the terms of a run: what must stay true while it works. Each
-term is audited after every step, before the goal is asked whether it is done, and a
-breach stops the run naming the term. Pass it with --goal-spec ("-" reads stdin):
-
-  {
-    "objective": "upgrade the http client and keep the suite green",
-    "stopCondition": "the client is upgraded and the suite passes",
-    "invariants": [
-      {"id": "public-api",
-       "statement": "the exported API of ./client does not change",
-       "check": "./dev/apidiff ./client"}
-    ],
-    "allowances": [{"action": "shell", "target": "prod"}]
-  }
-
-Every field is optional as long as the file states either an objective or one term;
-a file of nothing but terms takes its objective from the command line as usual. A
-term whose "check" is omitted is ruled on by the auditor model reading the run's
-record, which is weaker than running a command: write the check where you can. A term
-claiming something is not there needs one, since the record cannot show an absence.
-A check runs as semi-trusted work and needs a host that can contain it (the same
-requirement --require-proof carries); where it cannot be run, the run stops saying so
-rather than carrying on unaudited.`)
 }
 
 // defaultDataDir is the per-user state directory, so learning carries across
@@ -710,6 +540,13 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	}
 	defer func() { _ = store.Close() }()
 
+	// Checked against what is stored, so a misspelt slug or tool name stops the run here
+	// naming the valid ones.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), extAgent != nil, fanout, requireProof)
+	if err != nil {
+		return err
+	}
+
 	// An external agent exposes no model to distill through, so its run is sealed but
 	// skips learning.
 	var distiller learn.Distiller
@@ -738,6 +575,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		withGoalSpec(spec),
 		// Nil unless this install names an embedding model, which keeps lexical recall order.
 		withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(os.Stdout))),
+		withSelection(selPlan),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
@@ -747,7 +585,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		opts = append(opts, withPlanning())
 		// The repository's instruction files, if the operator allows them. An external agent
 		// CLI reads its own.
-		opts = append(opts, withProjectFiles(projectDecision(cwd, dataDir)))
+		opts = append(opts, withProjectFiles(projectDecisionFor(cwd, dataDir)))
 		// Planning records each item's verdict; this makes an unproven item stop the run.
 		if requireProof {
 			opts = append(opts, withLedgerProof())
@@ -840,6 +678,14 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	if err != nil {
 		return err
 	}
+	// A resume rebuilds the run's posture from its record and the selection from this
+	// invocation. The tool grant matters here; a resumed run offers no skills, so the
+	// skill rules have nothing to filter.
+	selPlan, err := resolveSelection(ctx, selectionConfig, store.Skills(), false, req.fanout != nil, req.cfg.proof)
+	if err != nil {
+		return err
+	}
+	req = req.withOptions(withSelection(selPlan))
 	_, _, _, err = req.execute(ctx)
 	if signer != nil {
 		sealResumed(ctx, os.Stdout, store, runID, signer, err)

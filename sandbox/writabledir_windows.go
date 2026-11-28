@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 
 	"golang.org/x/sys/windows"
@@ -11,13 +12,13 @@ import (
 // grantWritableDirs gives sid full access on each extra writable directory, such
 // as a CLI's credential store, after the workspace grant. A failure fails the
 // launch so writes do not fail partway through an episode.
-func (l *Local) grantWritableDirs(sid *windows.SID) error {
+func (l *Local) grantWritableDirs(ctx context.Context, sid *windows.SID) error {
 	dirs, err := l.writableTargets()
 	if err != nil {
 		return err
 	}
 	for _, dir := range dirs {
-		if err := grantDir(dir, sid); err != nil {
+		if err := l.grantDir(ctx, dir, sid); err != nil {
 			// ErrWriteGrant so the best-effort fallback never runs the child unconfined,
 			// where it could write the whole host.
 			return fmt.Errorf("%w: %s: %w", ErrWriteGrant, dir, err)
@@ -29,13 +30,13 @@ func (l *Local) grantWritableDirs(sid *windows.SID) error {
 // grantRestrictedWritableDirs serves the write-restricted tier, which gates writes
 // on the restricting SID, so a directory is writable exactly when it has an entry
 // for that SID.
-func (l *Local) grantRestrictedWritableDirs() error {
+func (l *Local) grantRestrictedWritableDirs(ctx context.Context) error {
 	dirs, err := l.writableTargets()
 	if err != nil {
 		return err
 	}
 	for _, dir := range dirs {
-		if err := grantRestrictedDir(dir, l.root); err != nil {
+		if err := l.grantRestrictedDir(ctx, dir); err != nil {
 			return fmt.Errorf("%w: %s: %w", ErrWriteGrant, dir, err)
 		}
 	}

@@ -1,0 +1,5 @@
+{
+  "export": {"max_rows": 500, "format": "csv"},
+  "api": {"max_page": 500},
+  "db": {"echo": false, "pool": 5}
+}

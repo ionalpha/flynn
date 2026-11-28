@@ -69,6 +69,8 @@ type Local struct {
 	// it (see kernelConfinementEnforceable).
 	probeOnce sync.Once
 	probeOK   bool
+	// grants remembers confirmed Windows directory grants (see ensureGrant).
+	grants grantMemo //nolint:unused // used only by the Windows launch paths
 }
 
 // LocalOption configures a Local sandbox.
@@ -335,7 +337,7 @@ func (l *Local) kernelConfinementEnforceable() bool {
 // probeConfinement launches a no-op command confined, with the fallback
 // bypassed, because only a real launch shows whether the host allows the setup.
 func (l *Local) probeConfinement() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(withProbe(context.Background()), 10*time.Second)
 	defer cancel()
 	name, args := shell("exit 0")
 	_, err := l.runShell(ctx, name, args, nil, true)

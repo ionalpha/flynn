@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
@@ -61,7 +60,7 @@ func runNotices(args []string, dataDir string) error {
 		case "--all":
 			all = true
 		default:
-			return errors.New("usage: flynn notices [--refresh] [--all]")
+			return usageErr("notices")
 		}
 	}
 

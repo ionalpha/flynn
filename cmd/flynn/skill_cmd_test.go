@@ -116,7 +116,7 @@ func TestSkillCommandRefusals(t *testing.T) {
 		wantErr  string
 	}{
 		{"no subcommand", []string{"skill"}, 2, "usage: flynn skill"},
-		{"unknown subcommand", []string{"skill", "frobnicate"}, 2, "usage: flynn skill"},
+		{"unknown subcommand", []string{"skill", "frobnicate"}, 2, `flynn skill: unknown command "frobnicate"`},
 		{"ls with an argument", []string{"skill", "ls", "extra"}, 2, "usage: flynn skill"},
 		{"show without a skill", []string{"skill", "show"}, 2, "usage: flynn skill"},
 		{"show an unknown skill", []string{"skill", "show", "no-such-skill"}, 1, "flynn skill ls"},
@@ -192,11 +192,56 @@ func TestSkillLsWithNothingToList(t *testing.T) {
 	}
 }
 
-// TestSkillABIsRoutedThroughTheSkillCommand: ab keeps its own usage and its own errors
-// under the new router.
+// TestSkillABIsRoutedThroughTheSkillCommand: ab keeps its own usage, reported as a usage
+// error that points at its page.
 func TestSkillABIsRoutedThroughTheSkillCommand(t *testing.T) {
 	got := runCLIIn(t, t.TempDir(), "skill", "ab")
-	if got.code != 1 || !strings.Contains(got.stderr, "usage: flynn skill ab") {
-		t.Fatalf("exit %d, stderr %q, want 1 and the ab usage", got.code, got.stderr)
+	if got.code != 2 || !strings.Contains(got.stderr, "usage: flynn skill ab") || !strings.Contains(got.stderr, "flynn help skill ab") {
+		t.Fatalf("exit %d, stderr %q, want 2 and the ab usage", got.code, got.stderr)
+	}
+}
+
+// TestSkillLsAndShowSayWhenAnUpdateWasWithheld: a person only learns that the pack
+// has a version they have not taken from the listing, so a diverged skill is marked
+// there and show says what to do about it. A skill that agrees with its pack is not.
+func TestSkillLsAndShowSayWhenAnUpdateWasWithheld(t *testing.T) {
+	ctx := context.Background()
+	skills := state.NewMemory().Skills()
+	for _, sk := range []state.Skill{
+		{Slug: "held", Name: "held", Description: "d", Body: "b", Scope: state.BundledScope, Diverged: true},
+		{Slug: "clean", Name: "clean", Description: "d", Body: "b", Scope: state.BundledScope},
+	} {
+		if _, err := skills.Upsert(ctx, sk); err != nil {
+			t.Fatalf("upsert %s: %v", sk.Slug, err)
+		}
+	}
+
+	var ls bytes.Buffer
+	if err := writeSkillList(ctx, skills, &ls); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, line := range strings.Split(ls.String(), "\n") {
+		switch {
+		case strings.HasPrefix(line, "held") && !strings.Contains(line, "bundled, diverged"):
+			t.Errorf("row %q does not say the update was withheld", line)
+		case strings.HasPrefix(line, "clean") && strings.Contains(line, "diverged"):
+			t.Errorf("row %q marks an agreeing skill as diverged", line)
+		}
+	}
+
+	var held, clean bytes.Buffer
+	if err := writeSkill(ctx, skills, "held", &held); err != nil {
+		t.Fatalf("show held: %v", err)
+	}
+	if err := writeSkill(ctx, skills, "clean", &clean); err != nil {
+		t.Fatalf("show clean: %v", err)
+	}
+	for _, want := range []string{"held (bundled, diverged, version 1)", "was not applied because this copy has been edited", "delete it"} {
+		if !strings.Contains(held.String(), want) {
+			t.Errorf("show of a diverged skill is missing %q:\n%s", want, held.String())
+		}
+	}
+	if strings.Contains(clean.String(), "diverged") {
+		t.Errorf("show of an agreeing skill mentions divergence:\n%s", clean.String())
 	}
 }

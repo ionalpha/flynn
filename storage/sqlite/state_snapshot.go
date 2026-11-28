@@ -109,6 +109,16 @@ func (s *Store) readStateSnapshot(ctx context.Context) (state.Snapshot, error) {
 		return snap, err
 	}
 
+	if err := s.scanRows(ctx, `SELECT record FROM model_usage ORDER BY at, call_id, run_id`, func(rows *sql.Rows) error {
+		r, err := scanUsageRecord(rows)
+		if err != nil {
+			return err
+		}
+		snap.ModelUsageRecords = append(snap.ModelUsageRecords, r)
+		return nil
+	}); err != nil {
+		return snap, err
+	}
 	if err := s.reads().QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, state.StateStream).Scan(&snap.LastSeq); err != nil {
 		return snap, err
@@ -175,5 +185,5 @@ func (s *Store) restoreStateSnapshot(ctx context.Context, tx *sql.Tx, snap state
 			return err
 		}
 	}
-	return nil
+	return projectModelUsage(ctx, tx, snap.ModelUsageRecords)
 }

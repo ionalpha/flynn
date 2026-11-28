@@ -19,10 +19,10 @@ func TestRenderEvent(t *testing.T) {
 		want    []string
 		absent  []string
 	}{
-		{"objective", session.Event{Kind: session.KindSessionStarted, Text: "do the thing"}, false, []string{"goal: do the thing"}, nil},
+		{"objective", session.Event{Kind: session.KindSessionStarted, Text: "do the thing"}, false, []string{"> do the thing"}, nil},
 		{"turn", session.Event{Kind: session.KindTurnStarted, Turn: 2}, false, []string{"turn 2"}, nil},
-		{"tool call default hides args", session.Event{Kind: session.KindToolCall, Tool: "bash", Input: json.RawMessage(`{"command":"ls"}`)}, false, []string{"-> bash"}, []string{"command", "ls"}},
-		{"tool call verbose shows args", session.Event{Kind: session.KindToolCall, Tool: "bash", Input: json.RawMessage(`{"command":"ls"}`)}, true, []string{"-> bash", "command", "ls"}, nil},
+		{"tool call default summarizes args", session.Event{Kind: session.KindToolCall, Tool: "bash", Input: json.RawMessage(`{"command":"ls"}`)}, false, []string{"→ bash ls"}, []string{"command"}},
+		{"tool call verbose shows args", session.Event{Kind: session.KindToolCall, Tool: "bash", Input: json.RawMessage(`{"command":"ls"}`)}, true, []string{"→ bash", "command", "ls"}, nil},
 		{"tool result hidden by default", session.Event{Kind: session.KindToolResult, Tool: "bash", Result: "the output"}, false, nil, []string{"the output"}},
 		{"tool result shown verbose", session.Event{Kind: session.KindToolResult, Tool: "bash", Result: "the output"}, true, []string{"the output"}, nil},
 		// The guarantee that matters: a tool failure is shown even at the default
@@ -166,7 +166,7 @@ func TestUsageFormatProperty(t *testing.T) {
 			m.add(tu)
 			in, outT, cr, cw = in+tu.InputTokens, outT+tu.OutputTokens, cr+tu.CacheReadTokens, cw+tu.CacheWriteTokens
 		}
-		if m.input != in || m.output != outT || m.cacheRead != cr || m.cacheWrite != cw {
+		if m.total.InputTokens != in || m.total.OutputTokens != outT || m.total.CacheReadTokens != cr || m.total.CacheWriteTokens != cw {
 			rt.Fatalf("meter totals drifted: got %+v, want in=%d out=%d cr=%d cw=%d", m, in, outT, cr, cw)
 		}
 		// summary is empty exactly when there is nothing worth showing.

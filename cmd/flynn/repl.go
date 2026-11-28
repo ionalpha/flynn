@@ -23,6 +23,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/storage/sqlite"
@@ -77,6 +78,11 @@ type replSession struct {
 	// line interface prints it. Nil discards it, so a non-interactive run is quiet.
 	notice func(string)
 
+	// grantStatus, when set, shows the first Windows sandbox grant of a large working
+	// directory, which can take minutes, instead of leaving the turn looking hung. Nil
+	// shows nothing.
+	grantStatus func(sandbox.GrantProgress)
+
 	// gates carries the session's approval policy and the prompter that resolves a
 	// pause. The full-screen shell installs its own prompter (the modal overlay) when it
 	// builds the host; the line interface installs none, so a listed action is refused
@@ -112,6 +118,10 @@ type replSession struct {
 	// carries the decision, so a turn appends it exactly once per run.
 	project         projectctx.Decision
 	projectRecorded bool
+
+	// selection is the session's skill and tool selection, checked once at the start. It is
+	// recorded with the project decision, once per run.
+	selection *selectionPlan
 
 	recalled []string
 	// skillset serves skill bodies for every turn and accumulates what the session
@@ -180,9 +190,9 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 		}
 		if _, err := s.runTurn(ctx, line, nil, sigCh); err != nil {
 			if errors.Is(err, context.Canceled) {
-				_, _ = fmt.Fprintln(s.out, "  (turn cancelled)")
+				s.plainBlock(blockCancelled, "turn cancelled")
 			} else {
-				_, _ = fmt.Fprintf(s.out, "  error: %v\n", err)
+				s.plainBlock(blockError, "error: "+err.Error())
 			}
 		}
 	}

@@ -522,7 +522,7 @@ flag.
 | --- | --- |
 | `flynn skill ls` | List the skills a run can be offered: the built-in pack and what this install learned |
 | `flynn skill show <skill>` | Print one skill: its purpose, how runs have used it, and its body |
-| `flynn skill ab <skill>` | Run a skill's exercises with and without it, paired, to measure whether it helps |
+| `flynn skill ab <skill>` | Run a skill's exercises with and without it (or two versions of it), paired, to measure whether it helps; reports tokens and cost per attempt and per arm, and `--max-cost` stops it at a spend |
 | `flynn memory ls [--pending]` | List what this install remembers: ids, sources, and whether each is in the starting digest |
 | `flynn memory promote <id>` | Add one of the agent's own memories to every later run's starting digest (`revoke <id>` removes it) |
 | `flynn memory forget <id>` | Delete a memory, including one pinned with `/remember` |

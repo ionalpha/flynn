@@ -1,0 +1,10 @@
+2026-03-02T08:00:01 web1 user=amir result=fail
+2026-03-02T08:00:09 web1 user=amir result=ok
+2026-03-02T08:01:13 web2 user=Mary Jones result=fail
+2026-03-02T08:01:20 web2 user=Mary Jones result=fail
+2026-03-02T08:02:00 web3 user=lena ip=10.0.4.7 result=fail
+2026-03-02T08:02:41 web3 user=lena ip=10.0.4.7 result=ok
+2026-03-02T08:03:05 web1 healthcheck result=ok
+2026-03-02T08:04:12 web3 user=Jo van Dyke ip=10.0.9.2 result=fail
+2026-03-02T08:05:30 web2 user=sam result=fail
+2026-03-02T08:06:02 web3 user=amir ip=10.0.1.1 result=fail

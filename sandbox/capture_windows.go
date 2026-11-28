@@ -28,15 +28,15 @@ func (l *Local) captureWriteRestricted(ctx context.Context, spec CaptureSpec) (E
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: capture: command not found: %s: %w", spec.Argv[0], err)
 	}
-	if err := grantRestrictedDir(l.root, l.root); err != nil {
+	if err := l.grantRestrictedDir(ctx, l.root); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
-	if err := l.grantRestrictedWritableDirs(); err != nil {
+	if err := l.grantRestrictedWritableDirs(ctx); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 	cmdline := windows.ComposeCommandLine(spec.Argv)
 	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
-	return launchWriteRestricted(ctx, appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
+	return launchWriteRestricted(ctx, appPath, cmdline, l.root, l.root, env, spec.Stdin, l.resLimits)
 }
 
 // captureAppContainer runs argv without cmd.exe and drains it through
@@ -55,13 +55,13 @@ func (l *Local) captureAppContainer(ctx context.Context, spec CaptureSpec) (Exec
 	}
 	defer func() { _ = windows.FreeSid(sid) }()
 
-	if err := grantDir(l.root, sid); err != nil {
+	if err := l.grantDir(ctx, l.root, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
-	if err := l.grantReadableDirs(sid); err != nil {
+	if err := l.grantReadableDirs(ctx, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
-	if err := l.grantWritableDirs(sid); err != nil {
+	if err := l.grantWritableDirs(ctx, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 

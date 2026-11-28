@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: cronwiz
+Version: 3.1.0
+Summary: Cron schedules for people in a hurry
+License: MIT
+Requires-Python: >=3.8
+Home-page: https://example.test/cronwiz
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Development Status :: 5 - Production/Stable

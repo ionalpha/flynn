@@ -33,15 +33,20 @@ func backgroundConfinementExpressible() bool { return false }
 // attributes; confined commands use runAppContainer.
 func (l *Local) confine(_ *exec.Cmd) error { return nil }
 
-// closePlatform revokes best effort, since a leftover entry names a SID unique to
-// this workspace. A profile delete failure is returned because the registered
-// identity and its folder persist unseen. CleanStaleProfiles collects profiles
-// from runs that crashed or skipped Close.
+// closePlatform leaves the working-directory grant in place on both tiers.
+// Revoking it rewrites the access list of every file under the root, which takes
+// minutes on a large tree, and an interactive session closes one Local per turn.
+// The entry names a SID derived from the root path that no principal holds
+// outside flynn's own tokens (the write-restricted token, or the AppContainer
+// whose profile is deleted below and derives the same SID if it is created
+// again), so it grants nothing to anyone else. The extra writable and readable
+// directories are revoked best effort. A profile delete failure is returned
+// because the registered identity and its folder persist unseen.
+// CleanStaleProfiles collects profiles from runs that crashed or skipped Close.
 func (l *Local) closePlatform() error {
 	scratchErr := l.removeScratch()
 	if l.hostReadable {
 		// The write-restricted tier has only write grants and no profile.
-		_ = revokeRestrictedDir(l.root, l.root)
 		l.revokeWritableDirs()
 		return scratchErr
 	}
@@ -71,15 +76,16 @@ func (l *Local) runWriteRestricted(ctx context.Context, args []string, stdin []b
 	if comspec == "" {
 		comspec = `C:\Windows\System32\cmd.exe`
 	}
-	if err := grantRestrictedDir(l.root, l.root); err != nil {
-		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
+	workdir, err := l.grantWorkdir(ctx, nil)
+	if err != nil {
+		return ExecResult{}, err
 	}
-	if err := l.grantRestrictedWritableDirs(); err != nil {
+	if err := l.grantRestrictedWritableDirs(ctx); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 	line := args[len(args)-1]
 	cmdline := `"` + comspec + `" /s /c "` + line + `"`
-	return launchWriteRestricted(ctx, comspec, cmdline, l.root, l.appContainerEnv(), stdin, l.resLimits)
+	return launchWriteRestricted(ctx, comspec, cmdline, l.root, workdir, l.appContainerEnv(), stdin, l.resLimits)
 }
 
 // runAppContainer uses an identity unique to the working directory, so two
@@ -96,13 +102,14 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 	}
 	defer func() { _ = windows.FreeSid(sid) }()
 
-	if err := grantDir(l.root, sid); err != nil {
-		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
+	workdir, err := l.grantWorkdir(ctx, sid)
+	if err != nil {
+		return ExecResult{}, err
 	}
-	if err := l.grantReadableDirs(sid); err != nil {
+	if err := l.grantReadableDirs(ctx, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
-	if err := l.grantWritableDirs(sid); err != nil {
+	if err := l.grantWritableDirs(ctx, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 
@@ -120,7 +127,35 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 	// understand. The loader finds the binary by the explicit application name.
 	line := args[len(args)-1]
 	cmdline := `"` + comspec + `" /s /c "` + line + `"`
-	return launchAppContainer(ctx, comspec, cmdline, l.root, l.appContainerEnv(), sid, caps, stdin, l.resLimits)
+	return launchAppContainer(ctx, comspec, cmdline, workdir, l.appContainerEnv(), sid, caps, stdin, l.resLimits)
+}
+
+// grantWorkdir grants the working directory and returns where the command runs.
+// sid is the AppContainer identity, or nil for the write-restricted tier.
+//
+// The confinement probe runs in the scratch directory instead and grants nothing
+// on the root: it asks whether the host allows the mechanism, and granting the
+// root would rewrite every file under it before the model is called at all. The
+// scratch directory gets the same grant as any other writable target. A refusal
+// on the root itself then surfaces on the first real command, which fails closed.
+func (l *Local) grantWorkdir(ctx context.Context, sid *windows.SID) (string, error) {
+	if isProbe(ctx) {
+		scratch, err := l.scratchDir()
+		if err != nil {
+			return "", fmt.Errorf("sandbox: %w", err)
+		}
+		return scratch, nil
+	}
+	var err error
+	if sid == nil {
+		err = l.grantRestrictedDir(ctx, l.root)
+	} else {
+		err = l.grantDir(ctx, l.root, sid)
+	}
+	if err != nil {
+		return "", fmt.Errorf("sandbox: grant working directory: %w", err)
+	}
+	return l.root, nil
 }
 
 // appContainerMoniker hashes the root to fit the name's length and character

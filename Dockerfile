@@ -17,7 +17,7 @@
 # misses the standard library fixes the toolchain line asks for.
 
 # ---- build stage --------------------------------------------------------------
-FROM golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 AS build
+FROM golang:1.27.4-trixie@sha256:430985542100b871e108ccc00e8dcc5eef08ca14ee5825e98ebf563d8ffec4ee AS build
 WORKDIR /src
 
 # Download modules first so the layer caches across source-only changes.
@@ -52,7 +52,7 @@ RUN install -d -o 65532 -g 65532 /data
 # the boundary around those commands, and in a container it needs the seccomp profile in
 # deploy/seccomp (see deploy/README.md). For real project work, copy this binary into an
 # image that has your toolchain instead; busybox is the out-of-the-box minimum.
-FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:12c2026b21e05857a4c730b4dbf812becf02b396cb7916166c8305f45f140ab0
+FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:7df9fac2f5d3927260696af33fc2391da26366825838a47337088ed78f854a0c
 
 # APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
 # posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits

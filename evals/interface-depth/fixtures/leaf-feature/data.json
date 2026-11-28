@@ -1,0 +1,6 @@
+{"orders": [
+  {"id": "o1", "customer_id": "c1", "month": "2026-01", "total_cents": 2000},
+  {"id": "o2", "customer_id": "c2", "month": "2026-01", "total_cents": 400},
+  {"id": "o3", "customer_id": "c1", "month": "2026-02", "total_cents": 1500},
+  {"id": "o4", "customer_id": "c3", "month": "2026-02", "total_cents": 900}
+]}

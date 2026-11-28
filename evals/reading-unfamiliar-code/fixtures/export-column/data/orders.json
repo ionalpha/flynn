@@ -1,0 +1,3 @@
+[{"id": "A1", "customer_id": "c1", "total_cents": 2500, "status": "paid"},
+ {"id": "A2", "customer_id": "c2", "total_cents": 990, "status": "open"},
+ {"id": "A3", "customer_id": "c2", "total_cents": 5000, "status": "paid"}]

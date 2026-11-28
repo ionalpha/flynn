@@ -8,7 +8,6 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/ionalpha/flynn/skill/skillrecall"
-	"github.com/ionalpha/flynn/state"
 )
 
 // Every term Keywords produces is a lowercased content word of the objective, and
@@ -50,18 +49,13 @@ func TestProp_KeywordsAreBoundedContentWordsOfTheObjective(t *testing.T) {
 func TestProp_RankSelectsDeterministicallyFromItsCandidates(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(0, 12).Draw(rt, "candidates")
-		cands := make([]state.Skill, n)
+		cands := make([]skillrecall.Candidate, n)
 		for i := range cands {
-			cands[i] = state.Skill{
-				ID:          fmt.Sprintf("id-%d", i),
-				Slug:        fmt.Sprintf("skill-%d", i),
-				Name:        rapid.StringMatching(`[a-z ]{0,20}`).Draw(rt, "name"),
-				Description: rapid.StringMatching(`[a-z ]{0,40}`).Draw(rt, "description"),
-				Reads:       rapid.IntRange(0, 30).Draw(rt, "reads"),
-			}
-			cands[i].Wins = rapid.IntRange(0, cands[i].Reads).Draw(rt, "wins")
-			if rapid.Bool().Draw(rt, "verified") {
-				cands[i].Tags = []string{"verified"}
+			cands[i] = skillrecall.Candidate{
+				Slug:     fmt.Sprintf("skill-%d", i),
+				Name:     rapid.StringMatching(`[a-z ]{0,20}`).Draw(rt, "name"),
+				Offer:    rapid.StringMatching(`[a-z ]{0,40}`).Draw(rt, "offer"),
+				Evidence: rapid.Float64Range(0, 2).Draw(rt, "evidence"),
 			}
 		}
 		limit := rapid.IntRange(-2, 8).Draw(rt, "limit")
@@ -80,21 +74,21 @@ func TestProp_RankSelectsDeterministicallyFromItsCandidates(t *testing.T) {
 		}
 		known := map[string]bool{}
 		for _, c := range cands {
-			known[c.ID] = true
+			known[c.Slug] = true
 		}
 		seen := map[string]bool{}
 		for _, s := range got {
-			if !known[s.ID] {
-				rt.Fatalf("ranked %s, which was not a candidate", s.ID)
+			if !known[s.Slug] {
+				rt.Fatalf("ranked %s, which was not a candidate", s.Slug)
 			}
-			if seen[s.ID] {
-				rt.Fatalf("ranked %s twice", s.ID)
+			if seen[s.Slug] {
+				rt.Fatalf("ranked %s twice", s.Slug)
 			}
-			seen[s.ID] = true
+			seen[s.Slug] = true
 		}
 		again := skillrecall.Rank(terms, cands, limit)
 		for i := range got {
-			if got[i].ID != again[i].ID {
+			if got[i].Slug != again[i].Slug {
 				rt.Fatalf("the same input ranked differently twice at position %d", i)
 			}
 		}

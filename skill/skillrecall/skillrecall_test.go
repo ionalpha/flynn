@@ -54,31 +54,54 @@ func TestRecallCapsTheOffer(t *testing.T) {
 	}
 }
 
-// Evidence breaks a tie and relevance does not lose to it. Two skills that say the
-// same thing are separated by a passing check and a confirmed record; a skill that
-// matches more of the objective still outranks a decorated one that matches less.
+// Evidence breaks a tie and relevance does not lose to it. Two candidates that say the
+// same thing are separated by their evidence; one that matches more of the objective
+// still outranks a decorated one that matches less. The candidates are literals: Rank
+// needs no storage type.
 func TestRankBreaksTiesOnEvidenceAndNeverOverRelevance(t *testing.T) {
 	same := "How to deploy the service."
-	plain := state.Skill{Slug: "plain", Name: "plain", Description: same}
-	verified := state.Skill{Slug: "verified-one", Name: "verified-one", Description: same, Tags: []string{"verified"}}
-	proven := state.Skill{Slug: "proven", Name: "proven", Description: same, Reads: 20, Wins: 19}
-
 	terms := skillrecall.Keywords("deploy the service")
-	ranked := skillrecall.Rank(terms, []state.Skill{plain, proven, verified}, 0)
-	if ranked[0].Slug != "verified-one" {
-		t.Errorf("ranked %s first, want the verified skill: a passing check outranks a record", ranked[0].Slug)
-	}
-	if ranked[1].Slug != "proven" {
-		t.Errorf("ranked %s second, want the proven one ahead of the plain one", ranked[1].Slug)
+	ranked := skillrecall.Rank(terms, []skillrecall.Candidate{
+		{Slug: "plain", Offer: same},
+		{Slug: "proven", Offer: same, Evidence: 0.8},
+		{Slug: "verified-one", Offer: same, Evidence: 1.5},
+	}, 0)
+	if got := candidateSlugs(ranked); strings.Join(got, ",") != "verified-one,proven,plain" {
+		t.Errorf("ranked %v, want the highest evidence first on equal relevance", got)
 	}
 
-	// Relevance dominates: an unverified skill that carries both terms beats a
-	// verified one that carries one.
-	narrow := state.Skill{Slug: "narrow", Name: "narrow", Description: "About deploys.", Tags: []string{"verified"}}
-	broad := state.Skill{Slug: "broad", Name: "broad", Description: "How to deploy the service."}
-	if got := skillrecall.Rank(terms, []state.Skill{narrow, broad}, 0); got[0].Slug != "broad" {
-		t.Errorf("ranked %s first; verification must break ties, not beat relevance", got[0].Slug)
+	// Relevance dominates: a candidate that carries both terms beats a decorated one
+	// that carries one.
+	got := skillrecall.Rank(terms, []skillrecall.Candidate{
+		{Slug: "narrow", Offer: "About deploy.", Evidence: 9},
+		{Slug: "broad", Offer: "How to deploy the service."},
+	}, 0)
+	if got[0].Slug != "broad" {
+		t.Errorf("ranked %s first; evidence must break ties, not beat relevance", got[0].Slug)
 	}
+}
+
+// Flynn's own call site fills Evidence from the "verified" tag and the read and win
+// record, so a passing check outranks a record and a record outranks neither.
+func TestRecallFillsEvidenceFromVerificationAndTheRecord(t *testing.T) {
+	same := "How to deploy the service."
+	store := library(t,
+		state.Skill{Slug: "plain", Name: "plain", Description: same},
+		state.Skill{Slug: "proven", Name: "proven", Description: same, Reads: 20, Wins: 19},
+		state.Skill{Slug: "verified-one", Name: "verified-one", Description: same, Tags: []string{"verified"}},
+	)
+	got := slugs(skillrecall.Recall(context.Background(), store, "deploy the service", 0))
+	if strings.Join(got, ",") != "verified-one,proven,plain" {
+		t.Errorf("Recall offered %v, want the verified skill, then the proven one, then the plain one", got)
+	}
+}
+
+func candidateSlugs(cs []skillrecall.Candidate) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.Slug
+	}
+	return out
 }
 
 // The best answer is offered however its name sorts. A store answers a term with
@@ -113,20 +136,16 @@ func TestRecallOffersTheBestMatchWhateverItsSlugSortsAs(t *testing.T) {
 // carry is why those few are here at all. Weighting every matched term the same is
 // how a skill takes another's objectives by being wordy rather than by being right.
 func TestRankWeighsARareTermAboveACommonOne(t *testing.T) {
-	var cands []state.Skill
+	var cands []skillrecall.Candidate
 	for _, slug := range []string{"a-common", "b-common", "c-common", "d-common"} {
-		cands = append(cands, state.Skill{
-			Slug: slug, Name: slug,
-			Description: "Everything about the service and the database.",
-		})
+		cands = append(cands, skillrecall.Candidate{Slug: slug, Offer: "Everything about the service and the database."})
 	}
 	// Carries one term the others do not, and one fewer of the terms they share.
-	rare := state.Skill{Slug: "e-rare", Name: "e-rare", Description: "Sharding the database."}
-	cands = append(cands, rare)
+	cands = append(cands, skillrecall.Candidate{Slug: "e-rare", Offer: "Sharding the database."})
 
 	terms := skillrecall.Keywords("sharding the database service")
 	if got := skillrecall.Rank(terms, cands, 0); got[0].Slug != "e-rare" {
-		t.Errorf("ranked %v; want e-rare first, since sharding separates it and database does not", slugs(got))
+		t.Errorf("ranked %v; want e-rare first, since sharding separates it and database does not", candidateSlugs(got))
 	}
 }
 

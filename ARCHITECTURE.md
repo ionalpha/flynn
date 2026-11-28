@@ -266,9 +266,10 @@ tiers:
 A port is stable when a conformance suite can say what a correct backend is, and
 every type its exported API names is stable too. `resource.Store` returns a
 `resource.Resource`, which embeds `envelope.Envelope` and is stamped from an
-`hlc.Clock`, so `envelope` and `hlc` are stable with it. The ports a host implements
-are `resource.Store` (with the optional `KeyLister` and `AnyScopeGetter`),
-`spine.Log`, `jobs.Queue` (with `Waker`) and `state.MemoryStore`; a backend must pass
+`hlc.Clock`, so `envelope` and `hlc` are stable with it. The ports a host
+implements are `resource.Store` (with the optional `KeyLister` and `AnyScopeGetter`),
+`spine.Log`, `jobs.Queue` (with `Waker`), `state.MemoryStore` and
+`state.UsageStore` (found through `state.UsageProvider`); a backend must pass
 `resourcetest`, `spinetest`, `jobstest`, `statetest` or `memory/memorytest`. Each
 suite sits under the package it checks, except `memory/memorytest`: `memory` is a
 concrete facade a host calls, its constructor is still changing, and the port it
@@ -280,14 +281,15 @@ arrives as a separate optional interface found by type assertion, the way
 `KeyLister` and `Waker` extend their ports, and a caller that does not find it
 refuses.
 
-Six places where a stable package exposes an unstable type are listed with reasons
+Seven places where a stable package exposes an unstable type are listed with reasons
 in `internal/rigor` (`ungatedExposures`): `agent.Config.Agent` is an
 `*archetypes.Spec`, `agent.Config` takes `governed` and `mission` types and
 `Agent.GoalResult` returns a `governed.Result`, `tools` hands out `mission.Tool`
-values, `sandbox.WithEgress` takes a `netguard.Policy`, and `capability` implements
-the `dispatch` ports. A break in those packages changes what the stable surface
-means while `dev/apidiff` reports it as a domain change. The test fails on a seventh
-exposure, and on an entry that stops being true.
+values, `sandbox.WithEgress` takes a `netguard.Policy`, `capability` implements
+the `dispatch` ports, and `state.UsageStore` stores and returns `usage.Record`
+values. A break in those packages changes what the stable surface means while
+`dev/apidiff` reports it as a domain change. The test fails on an eighth exposure,
+and on an entry that stops being true.
 
 `dev/apidiff` (a CI job, also runnable locally) compares the exported API of the
 newest release tag with the branch using `golang.org/x/exp/cmd/apidiff`, and gives
@@ -318,6 +320,23 @@ and the `bus` subscribers. The work queue (`reconcile.Queue`, rate-limited with
 backoff, modelled on client-go) is drained and then `ShutDown()`. Whoever starts a
 loop owns its lifetime and ties it to the context it was given. New long-lived
 goroutines follow the same rule. The race detector runs in CI.
+
+## Vocabulary
+
+Words that name two things in this repository. Use the qualified term in code, comments
+and issues, so a reader does not have to infer which one is meant.
+
+- **Model usage** is the tokens and cost of model calls. Package `usage` owns it:
+  `usage.Tokens` holds the four counters, `usage.Tokens.Total` is the one definition of a
+  total (input, which already contains cache reads, plus cache writes, plus output), and
+  `usage.Tokens.Add` is how counters accumulate. `llm.Usage` and `session.Usage` carry
+  the raw counters and convert to `usage.Tokens` to be added or totalled. Avoid
+  "consumption", "spend" (a budget's charge, in `budget`) and "metering" (what dispatch
+  charges) for the counters themselves.
+- **Memory usage** is how an instance has pushed and used a memory item: push counts,
+  organic and primed uses, and the times of each, as `state.MemoryUsage`. It has no tokens
+  in it. Avoid "access count" and "hits". The word comes from the row recording use of an
+  item, not from model calls.
 
 ## Package map
 

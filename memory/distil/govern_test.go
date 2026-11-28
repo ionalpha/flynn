@@ -76,8 +76,9 @@ func TestGovernedDistilChargesTheModelCall(t *testing.T) {
 	if _, err := NewGoverned(New(m), dispatch.WithHook(mt)).Distil(t.Context(), series(3)); err != nil {
 		t.Fatalf("Distil: %v", err)
 	}
-	if mt.tokens != 1000 {
-		t.Fatalf("metered tokens = %d, want 1000 (input, output and both cache sides)", mt.tokens)
+	// 900 input already contains the 50 cache reads; the 10 cache writes are on top.
+	if mt.tokens != 950 {
+		t.Fatalf("metered tokens = %d, want 950 (input 900, cache writes 10, output 40)", mt.tokens)
 	}
 }
 

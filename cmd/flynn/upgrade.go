@@ -57,7 +57,7 @@ func runVersion(args []string, dataDir string) error {
 	case "check":
 		return checkVersion(os.Stdout, os.Stderr, newUpdater(dataDir), *pre)
 	default:
-		return errors.New("usage: flynn version [list|check] [--pre]")
+		return unknownCommand("version", sub)
 	}
 }
 

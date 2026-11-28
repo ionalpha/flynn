@@ -420,7 +420,7 @@ func TestRunInteractiveTUIFallsBackWithoutRawMode(t *testing.T) {
 	if err := runInteractiveTUI(context.Background(), s); err != nil {
 		t.Fatalf("runInteractiveTUI: %v", err)
 	}
-	if !strings.Contains(buf.String(), "flynn interactive session in") {
+	if !strings.Contains(buf.String(), "/help for commands") {
 		t.Fatalf("the line interface did not take over:\n%s", buf.String())
 	}
 }
@@ -428,15 +428,15 @@ func TestRunInteractiveTUIFallsBackWithoutRawMode(t *testing.T) {
 // TestStatusHint pins the one-row hint under the badge: the composer's keys at idle, the
 // cancel affordance and the queue depth while a turn runs.
 func TestStatusHint(t *testing.T) {
-	idle := statusHint(false, 0)
+	idle := fitHints(statusHints(false, 0), 0)
 	if !strings.Contains(idle, "ctrl+d quits") {
 		t.Fatalf("idle hint = %q", idle)
 	}
-	busy := statusHint(true, 0)
+	busy := fitHints(statusHints(true, 0), 0)
 	if !strings.Contains(busy, "cancels") || strings.Contains(busy, "queued") {
 		t.Fatalf("busy hint with an empty queue = %q", busy)
 	}
-	queued := statusHint(true, 3)
+	queued := fitHints(statusHints(true, 3), 0)
 	if !strings.Contains(queued, "3 queued") {
 		t.Fatalf("busy hint with a queue = %q", queued)
 	}

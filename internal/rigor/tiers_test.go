@@ -504,6 +504,7 @@ var ungatedExposures = map[string]string{
 	"capability -> dispatch":  "capability.Admitter and ContainmentGate implement dispatch.Admitter and dispatch.Hook, so dispatch.Action and dispatch.Metering are in their signatures. dispatch is unstable until a suite states what a correct admitter does; promote it with that suite.",
 	"tools -> mission":        "tools hands the model its tools as mission.Tool values and mission.ResultSummarizer. mission is the large, moving orchestration package, so promoting it is not an option; the tool contract needs to move to a small stable package first.",
 	"tools/github -> mission": "the same mission.Tool exposure as tools, through the GitHub toolset.",
+	"state -> usage":          "state.UsageStore stores and returns usage.Record values. usage is new and the collectors and corrections that write records are not built yet, so a field may still be renamed; promote usage with a suite for what a valid record is once those land.",
 }
 
 // TestStableAPIOnlyNamesGatedTypes fails when an exported declaration of a stable

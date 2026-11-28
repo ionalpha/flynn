@@ -2,7 +2,9 @@
 
 Every directory here is one skill, shipped inside the binary and seeded into the
 reserved `@bundled` scope on start. Adding a skill to the product means adding a
-directory here; there is no registration step and no list to keep in sync.
+directory here; there is no registration step.
+Changing the text of a skill, or adding one, needs `./dev/packhistory` before you
+commit (see the last section).
 
 A skill directory follows the Agent Skills layout, which `skill/skillmd` implements
 and the conformance test in this package enforces on every directory below:
@@ -89,3 +91,13 @@ append to, so two skills authored in the same week conflict on text no reviewer 
 
 Neither this file nor `retrieval.txt` is a skill. `LoadAll` reads directories and
 ignores the rest.
+
+## Changing a skill
+
+An install that first ran an earlier release holds bundled skills with no record of
+what the pack wrote. The first start tells a copy of an old pack version, which it
+replaces, from a host's edit, which it keeps, by looking the copy up in
+`skill/bundled/pack_history.txt`: the digest of every version of every skill the pack
+has carried. After changing a skill, run `./dev/packhistory` and commit the file with
+the change; `TestEveryBundledSkillIsInThePackHistory` fails until you do. The file is
+generated from git history and the working tree, so do not edit it by hand.

@@ -21,9 +21,14 @@ import (
 // channel off, and no provider credential inherited from the developer's environment (a
 // resolved model would make the server go on to do real work). The returned spec names a
 // provider explicitly, so a missing credential is refused rather than answered by
-// whichever other provider happens to be configured.
+// whichever other provider happens to be configured. The home and config directories
+// point at a temporary one, so nothing the server reads comes from the developer's own.
 func serveEnv(t *testing.T) (dataDir, modelSpec string) {
 	t.Helper()
+	home := t.TempDir()
+	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA"} {
+		t.Setenv(k, home)
+	}
 	t.Setenv(notices.OffEnv, "1")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("FLYNN_API_TOKEN", "")
@@ -32,9 +37,8 @@ func serveEnv(t *testing.T) (dataDir, modelSpec string) {
 	for _, k := range provider.CredentialEnvVars() {
 		t.Setenv(k, "")
 	}
-	prior := modelSpecExplicit
+	keepRunGlobals(t)
 	modelSpecExplicit = true
-	t.Cleanup(func() { modelSpecExplicit = prior })
 	return t.TempDir(), "anthropic:claude-opus-4-8"
 }
 
@@ -173,10 +177,15 @@ func TestServeMonitorOnlyServesAndStops(t *testing.T) {
 // answer with, so a spec whose provider has no credential fails at start rather than
 // accepting messages it could never answer. Both channel adapters are assembled on the
 // way there, which is what makes this the configured-channel path.
+//
+// The deadline turns a resolved model, which would start serving, into a failure in
+// seconds in place of a hang until the test binary's timeout.
 func TestServeChannelNeedsAModel(t *testing.T) {
 	dataDir, spec := serveEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	args := []string{"--telegram-token", "test-token", "--telegram-allow", "7", "--signal-tcp", "127.0.0.1:7583", "--signal-allow", "+15551234567"}
-	err := runServeContext(context.Background(), args, spec, dataDir, serveGovernance{})
+	err := runServeContext(ctx, args, spec, dataDir, serveGovernance{})
 	if err == nil {
 		t.Fatal("expected serve to refuse to start with no model credential")
 	}

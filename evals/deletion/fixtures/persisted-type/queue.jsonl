@@ -1,0 +1,4 @@
+{"type": "invoice.created", "amount": 120.0}
+{"type": "invoice.legacy", "cents": 4550}
+{"type": "invoice.created", "amount": 30.5}
+{"type": "invoice.voided", "amount": 20.0}

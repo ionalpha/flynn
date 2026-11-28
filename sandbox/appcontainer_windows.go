@@ -188,14 +188,9 @@ const (
 )
 
 // grantDir adds an inheritable full-access entry for sid, merged so the user keeps
-// its own access.
-func grantDir(dir string, sid *windows.SID) error {
-	return mergeAccessEntry(dir, windows.EXPLICIT_ACCESS{
-		AccessPermissions: fileAllAccess,
-		AccessMode:        windows.SET_ACCESS,
-		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-		Trustee:           sidTrustee(sid, windows.TRUSTEE_IS_GROUP),
-	})
+// its own access, unless it is already there (see [Local.ensureGrant]).
+func (l *Local) grantDir(ctx context.Context, dir string, sid *windows.SID) error {
+	return l.ensureGrant(ctx, dir, sid, fileAllAccess, !l.isScratch(dir))
 }
 
 // jobActiveProcessLimit is set far above what a build uses, to stop a fork bomb.
@@ -561,8 +556,8 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 
 // launchWriteRestricted runs cmdline under root's write-restricted token; see
 // drainProcess.
-func launchWriteRestricted(ctx context.Context, appName, cmdline, root string, env *uint16, stdin []byte, resLimits ResourceLimits) (ExecResult, error) {
-	p, err := spawnWriteRestricted(appName, cmdline, root, env, confinedIO{stdinOnce: stdin}, resLimits)
+func launchWriteRestricted(ctx context.Context, appName, cmdline, root, dir string, env *uint16, stdin []byte, resLimits ResourceLimits) (ExecResult, error) {
+	p, err := spawnWriteRestricted(appName, cmdline, root, dir, env, confinedIO{stdinOnce: stdin}, resLimits)
 	if err != nil {
 		return ExecResult{}, err
 	}
