@@ -42,3 +42,6 @@ CLAUDE.md
 .DS_Store
 .idea/
 .vscode/
+
+# dev/board scratch output (attempt evidence, unpublished tables)
+/.cache/

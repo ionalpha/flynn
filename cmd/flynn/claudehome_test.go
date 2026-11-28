@@ -21,6 +21,9 @@ import (
 // The claude and codex backends' homes point at a temporary directory: building either
 // spawner creates its home, which would otherwise land in the real user's data directory.
 func TestMain(m *testing.M) {
+	if mode := os.Getenv(fakeCLIEnv); mode != "" {
+		os.Exit(runFakeAgentCLI(mode, os.Args[1:]))
+	}
 	dir, err := os.MkdirTemp("", "flynn-agent-homes-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

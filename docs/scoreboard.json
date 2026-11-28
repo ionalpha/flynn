@@ -1,0 +1,2115 @@
+{
+  "generated": "2026-11-28T12:03:16.3681115Z",
+  "prices": "docs/scoreboard-prices.json",
+  "planned": 72,
+  "arms": [
+    {
+      "name": "flynn",
+      "model": "anthropic:claude-sonnet-5-5",
+      "note": "Flynn's own loop with the bundled skill pack, configured as `skill ab` runs it"
+    },
+    {
+      "name": "claude-code",
+      "model": "claude-sonnet-5-5",
+      "note": "`claude -p --bare` with stream-json output; turns are its reported num_turns"
+    },
+    {
+      "name": "codex",
+      "model": "gpt-5.5",
+      "note": "`codex exec --json`; codex reports no model-call count, so turns are completed actions and messages"
+    },
+    {
+      "name": "flynn-claude",
+      "model": "claude-sonnet-5-5",
+      "skipped": true,
+      "reason": "claude is not signed in to a Claude subscription for Flynn. Flynn keeps its own Claude Code sign-in, separate from yours, at ~\\AppData\\Roaming\\flynn\\claude. Sign in to it once with Claude Code's own login: $env:CLAUDE_CONFIG_DIR = '~\\AppData\\Roaming\\flynn\\claude'; claude auth login --claudeai; Remove-Item Env:CLAUDE_CONFIG_DIR"
+    },
+    {
+      "name": "flynn-codex",
+      "model": "gpt-5.5",
+      "skipped": true,
+      "reason": "externagent: ~\\AppData\\Roaming\\npm\\codex.cmd is a launcher script but no vendored codex binary for x86_64-pc-windows-msvc was found beside it (looked for vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe)"
+    }
+  ],
+  "runs": [
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 24047,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 796,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 24035,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 8596,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0318775",
+      "priced": true,
+      "wallSeconds": 21.4916166,
+      "turns": 5,
+      "firstUseful": 4
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 11991,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 471,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11979,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1428,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0095019",
+      "priced": true,
+      "reportedUsd": "0.009502",
+      "wallSeconds": 25.3717798,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 82430,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1440,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 64384,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.165622",
+      "priced": true,
+      "wallSeconds": 52.3997122,
+      "turns": 19,
+      "firstUseful": 15
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 19753,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 795,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 19743,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 4088,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0201643",
+      "priced": true,
+      "wallSeconds": 14.3842887,
+      "turns": 4,
+      "firstUseful": 0
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 11991,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 533,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11979,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1422,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0101069",
+      "priced": true,
+      "reportedUsd": "0.010107",
+      "wallSeconds": 23.7768524,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 81152,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1410,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 64384,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.158332",
+      "priced": true,
+      "wallSeconds": 48.0695299,
+      "turns": 17,
+      "firstUseful": 13
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 22872,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 844,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 22862,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 999,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0132437",
+      "priced": true,
+      "wallSeconds": 13.2416506,
+      "turns": 4,
+      "firstUseful": 0
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 12723,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 872,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 12711,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1664,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0141751",
+      "priced": true,
+      "reportedUsd": "0.014175",
+      "wallSeconds": 20.4035775,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "deletion",
+      "fixture": "missing-rate",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 87720,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1470,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 79104,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.126732",
+      "priced": true,
+      "wallSeconds": 30.6535539,
+      "turns": 19,
+      "firstUseful": 15
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 31094,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3266,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 31076,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 7154,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0536886",
+      "priced": true,
+      "wallSeconds": 30.8037997,
+      "turns": 8,
+      "firstUseful": 6
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 11060,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1530,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11048,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2135,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0217663",
+      "priced": true,
+      "reportedUsd": "0.021766",
+      "wallSeconds": 23.8438423,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 116998,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1904,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 100096,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.191678",
+      "priced": true,
+      "wallSeconds": 42.7921353,
+      "turns": 21,
+      "firstUseful": 14
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 41225,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3008,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 41205,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 3343,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.042598",
+      "priced": true,
+      "wallSeconds": 29.1281017,
+      "turns": 9,
+      "firstUseful": 6
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 14208,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1553,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 14194,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2292,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0227074",
+      "priced": true,
+      "reportedUsd": "0.022707",
+      "wallSeconds": 22.4418875,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 83408,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1835,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 79360,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.11497",
+      "priced": true,
+      "wallSeconds": 35.1184163,
+      "turns": 15,
+      "firstUseful": 11
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 41767,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3956,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 41747,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 4189,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0542472",
+      "priced": true,
+      "wallSeconds": 34.7808473,
+      "turns": 9,
+      "firstUseful": 7
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 14180,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1449,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 14166,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2146,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0212996",
+      "priced": true,
+      "reportedUsd": "0.021300",
+      "wallSeconds": 23.0610472,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "external-integration",
+      "fixture": "retry-classified",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 116294,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2610,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 96896,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.223738",
+      "priced": true,
+      "wallSeconds": 81.5056444,
+      "turns": 18,
+      "firstUseful": 13
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 99010,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3642,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 98986,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 14146,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0817316",
+      "priced": true,
+      "wallSeconds": 36.9188836,
+      "turns": 11,
+      "firstUseful": 6
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 11360,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1261,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11348,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2009,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0187913",
+      "priced": true,
+      "reportedUsd": "0.018791",
+      "wallSeconds": 15.9508662,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 81814,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1682,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 73984,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.126602",
+      "priced": true,
+      "wallSeconds": 27.512303,
+      "turns": 18,
+      "firstUseful": 11
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 106085,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3584,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 106063,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 6569,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0629128",
+      "priced": true,
+      "wallSeconds": 34.0842443,
+      "turns": 10,
+      "firstUseful": 8
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 11642,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 930,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11630,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1742,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.014842",
+      "priced": true,
+      "reportedUsd": "0.014842",
+      "wallSeconds": 15.8891758,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 81425,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1448,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 73984,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.117637",
+      "priced": true,
+      "wallSeconds": 34.2245327,
+      "turns": 15,
+      "firstUseful": 11
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 70428,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2945,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 70410,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 5617,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0505695",
+      "priced": true,
+      "wallSeconds": 26.7078243,
+      "turns": 8,
+      "firstUseful": 4
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 11473,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 793,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 11461,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1594,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0130851",
+      "priced": true,
+      "reportedUsd": "0.013085",
+      "wallSeconds": 20.4225957,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "shared-state",
+      "fixture": "lost-update",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 67690,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1605,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 60288,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.115304",
+      "priced": true,
+      "wallSeconds": 35.401036,
+      "turns": 14,
+      "firstUseful": 11
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 44840,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2909,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 44820,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 8026,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.053677",
+      "priced": true,
+      "wallSeconds": 27.7153395,
+      "turns": 9,
+      "firstUseful": 6
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 10010,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1775,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 10000,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 3417,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0273125",
+      "priced": true,
+      "reportedUsd": "0.027312",
+      "wallSeconds": 17.4284965,
+      "turns": 7,
+      "firstUseful": 3
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 85614,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2211,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 77056,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.147648",
+      "priced": true,
+      "wallSeconds": 29.1498095,
+      "turns": 15,
+      "firstUseful": 11
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 44717,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2380,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 44697,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 3781,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0377622",
+      "priced": true,
+      "wallSeconds": 26.0484903,
+      "turns": 9,
+      "firstUseful": 3
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 9598,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1420,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 9588,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2646,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0217938",
+      "priced": true,
+      "reportedUsd": "0.021794",
+      "wallSeconds": 17.1857274,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 82792,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1408,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 75008,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.118664",
+      "priced": true,
+      "wallSeconds": 25.157936,
+      "turns": 16,
+      "firstUseful": 10
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 31050,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1802,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 31034,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1727,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0254729",
+      "priced": true,
+      "wallSeconds": 23.3550716,
+      "turns": 7,
+      "firstUseful": 5
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 10007,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1565,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 9997,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 3044,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0242797",
+      "priced": true,
+      "reportedUsd": "0.024280",
+      "wallSeconds": 20.9467402,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "software-quality",
+      "fixture": "split-quote",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 86706,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1626,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 76032,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.140166",
+      "priced": true,
+      "wallSeconds": 60.0804355,
+      "turns": 15,
+      "firstUseful": 9
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 20350,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1121,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 20336,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 5024,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0258316",
+      "priced": true,
+      "wallSeconds": 16.8234968,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 8568,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 918,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 8558,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1414,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0135908",
+      "priced": true,
+      "reportedUsd": "0.013591",
+      "wallSeconds": 35.0946917,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 97016,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1835,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 88704,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.140962",
+      "priced": true,
+      "wallSeconds": 55.252167,
+      "turns": 16,
+      "firstUseful": 12
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 23888,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1074,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 23874,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1802,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0176604",
+      "priced": true,
+      "wallSeconds": 13.1731912,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 8599,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 955,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 8589,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1458,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0140739",
+      "priced": true,
+      "reportedUsd": "0.014074",
+      "wallSeconds": 14.9958785,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 96327,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1653,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 87680,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.136665",
+      "priced": true,
+      "wallSeconds": 56.8814826,
+      "turns": 16,
+      "firstUseful": 12
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 24102,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1018,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 24088,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 652,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0142468",
+      "priced": true,
+      "wallSeconds": 13.5979631,
+      "turns": 6,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 8609,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1004,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 8599,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1443,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0145274",
+      "priced": true,
+      "reportedUsd": "0.014527",
+      "wallSeconds": 18.4528787,
+      "turns": 5,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "already-fixed",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 127092,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1697,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 117120,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.15933",
+      "priced": true,
+      "wallSeconds": 58.5811309,
+      "turns": 20,
+      "firstUseful": 13
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 38423,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1660,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 38407,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 9673,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0446552",
+      "priced": true,
+      "wallSeconds": 23.4921593,
+      "turns": 7,
+      "firstUseful": 5
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 13452,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1423,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 13440,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2527,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0219155",
+      "priced": true,
+      "reportedUsd": "0.021916",
+      "wallSeconds": 23.7205597,
+      "turns": 7,
+      "firstUseful": 3
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "unevaluated": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "ended": "aborted",
+      "error": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "tokens": {
+        "input": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "output": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheRead": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "reported"
+        }
+      },
+      "usd": "0",
+      "priced": true,
+      "wallSeconds": 61.2518394,
+      "turns": 2,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 33385,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2305,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 33367,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2898,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0336677",
+      "priced": true,
+      "wallSeconds": 22.8878997,
+      "turns": 8,
+      "firstUseful": 3
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 13397,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1431,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 13385,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2464,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0218325",
+      "priced": true,
+      "reportedUsd": "0.021833",
+      "wallSeconds": 24.6972621,
+      "turns": 8,
+      "firstUseful": 3
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "unevaluated": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "ended": "aborted",
+      "error": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "tokens": {
+        "input": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "output": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheRead": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "reported"
+        }
+      },
+      "usd": "0",
+      "priced": true,
+      "wallSeconds": 78.9007801,
+      "turns": 1,
+      "firstUseful": 0
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 51819,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2202,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 51801,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 5790,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0417111",
+      "priced": true,
+      "wallSeconds": 23.3574285,
+      "turns": 8,
+      "firstUseful": 4
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 13183,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1294,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 13171,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2295,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0200186",
+      "priced": true,
+      "reportedUsd": "0.020019",
+      "wallSeconds": 20.4991976,
+      "turns": 7,
+      "firstUseful": 3
+    },
+    {
+      "skill": "systematic-debugging",
+      "fixture": "wrong-layer",
+      "arm": "codex",
+      "repeat": 3,
+      "solved": false,
+      "unevaluated": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "ended": "aborted",
+      "error": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "tokens": {
+        "input": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "output": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheRead": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "reported"
+        }
+      },
+      "usd": "0",
+      "priced": true,
+      "wallSeconds": 59.7335467,
+      "turns": 1,
+      "firstUseful": 0
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 10776,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 902,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 10766,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 4614,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0216516",
+      "priced": true,
+      "wallSeconds": 16.1981667,
+      "turns": 4,
+      "firstUseful": 3
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 5851,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 455,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 5843,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 701,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0069028",
+      "priced": true,
+      "reportedUsd": "0.006903",
+      "wallSeconds": 15.7294094,
+      "turns": 3,
+      "firstUseful": 2
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "codex",
+      "repeat": 1,
+      "solved": false,
+      "unevaluated": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "ended": "aborted",
+      "error": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "tokens": {
+        "input": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "output": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheRead": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "reported"
+        }
+      },
+      "usd": "0",
+      "priced": true,
+      "wallSeconds": 115.0475466,
+      "turns": 1,
+      "firstUseful": 0
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 22477,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 971,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 22463,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1655,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0161218",
+      "priced": true,
+      "wallSeconds": 16.8992157,
+      "turns": 6,
+      "firstUseful": 4
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 7977,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 648,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 7967,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 974,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0097317",
+      "priced": true,
+      "reportedUsd": "0.009732",
+      "wallSeconds": 14.2242135,
+      "turns": 5,
+      "firstUseful": 3
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "codex",
+      "repeat": 2,
+      "solved": false,
+      "unevaluated": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "ended": "aborted",
+      "error": "stream disconnected before completion: You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.",
+      "tokens": {
+        "input": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "output": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheRead": {
+          "n": 0,
+          "basis": "reported"
+        },
+        "cacheWrite": {
+          "n": 0,
+          "basis": "reported"
+        }
+      },
+      "usd": "0",
+      "priced": true,
+      "wallSeconds": 72.122197,
+      "turns": 1,
+      "firstUseful": 0
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 15015,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 880,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 15003,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 4580,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0217743",
+      "priced": true,
+      "wallSeconds": 14.1779528,
+      "turns": 5,
+      "firstUseful": 3
+    },
+    {
+      "skill": "test-first",
+      "fixture": "bug-first",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": false,
+      "tokens": {
+        "input": {
+          "n": 6219,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 501,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 6209,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2535,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0119884",
+      "priced": true,
+      "reportedUsd": "0.011988",
+      "wallSeconds": 12.9946026,
+      "turns": 4,
+      "firstUseful": 3
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "flynn",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 62838,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3068,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 62820,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 11511,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0657755",
+      "priced": true,
+      "wallSeconds": 30.6508971,
+      "turns": 8,
+      "firstUseful": 3
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "claude-code",
+      "repeat": 1,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 48976,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2219,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 48952,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 6345,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0429957",
+      "priced": true,
+      "reportedUsd": "0.042996",
+      "wallSeconds": 36.4735512,
+      "turns": 12,
+      "firstUseful": 0
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "flynn",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 47284,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2580,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 47270,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 2959,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0379525",
+      "priced": true,
+      "wallSeconds": 24.86296,
+      "turns": 6,
+      "firstUseful": 4
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "claude-code",
+      "repeat": 2,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 8392,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 1132,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 8382,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 1580,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0161282",
+      "priced": true,
+      "reportedUsd": "0.016128",
+      "wallSeconds": 21.1190382,
+      "turns": 4,
+      "firstUseful": 0
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "flynn",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 68943,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 3022,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 68925,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 3878,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0468435",
+      "priced": true,
+      "wallSeconds": 34.431953,
+      "turns": 8,
+      "firstUseful": 4
+    },
+    {
+      "skill": "untrusted-input",
+      "fixture": "path-join",
+      "arm": "claude-code",
+      "repeat": 3,
+      "solved": true,
+      "tokens": {
+        "input": {
+          "n": 47747,
+          "basis": "derived"
+        },
+        "output": {
+          "n": 2582,
+          "basis": "derived"
+        },
+        "cacheRead": {
+          "n": 47723,
+          "basis": "derived"
+        },
+        "cacheWrite": {
+          "n": 5707,
+          "basis": "derived"
+        }
+      },
+      "usd": "0.0449078",
+      "priced": true,
+      "reportedUsd": "0.044908",
+      "wallSeconds": 45.5160282,
+      "turns": 12,
+      "firstUseful": 0
+    }
+  ]
+}

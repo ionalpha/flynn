@@ -39,6 +39,8 @@ func dispatchSkill(args []string, modelSpec, dataDir string, shell governed.Shel
 		return showSkill(dataDir, args[1], out)
 	case "ab":
 		return runSkillAB(args[1:], modelSpec, dataDir, shell, out)
+	case "board":
+		return runSkillBoard(args[1:], modelSpec, dataDir, shell, out)
 	default:
 		return unknownCommand("skill", args[0])
 	}

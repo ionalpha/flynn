@@ -434,7 +434,7 @@ func routeMemory(inv invocation, rest []string) int {
 }
 
 func routeSkill(inv invocation, rest []string) int {
-	if len(rest) > 1 && rest[1] == "ab" {
+	if len(rest) > 1 && (rest[1] == "ab" || rest[1] == "board") {
 		inv.noteShellPosture()
 	}
 	return inv.exit(dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.shell, inv.stdout))

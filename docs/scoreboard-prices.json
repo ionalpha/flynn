@@ -1,0 +1,26 @@
+{
+  "prices": [
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "effective": "2026-01-01",
+      "currency": "USD",
+      "input": "2",
+      "output": "10",
+      "cacheRead": "0.10",
+      "cacheWrite": "2.50",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing (read 2026-11-28; 5-minute cache write rate)"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "effective": "2026-01-01",
+      "currency": "USD",
+      "input": "5",
+      "output": "30",
+      "cacheRead": "0.50",
+      "cacheWrite": "0",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.5 (read 2026-11-28; standard rates, prompts up to 272K input tokens)"
+    }
+  ]
+}
