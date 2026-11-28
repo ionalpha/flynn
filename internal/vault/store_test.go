@@ -27,7 +27,7 @@ func TestStoreDeleteSealedFile(t *testing.T) {
 	if err := s.Delete(ctx, "ABSENT"); err != nil {
 		t.Fatalf("delete with no vault file: %v", err)
 	}
-	if s.fileExists() {
+	if exists, _ := s.fileExists(); exists {
 		t.Fatal("deleting from a nonexistent vault created one")
 	}
 
@@ -146,7 +146,7 @@ func TestSealedFileErrorsPropagate(t *testing.T) {
 		if err := s.Set(ctx, "K", secret.New("v")); !errors.Is(err, ErrNoPassphrase) {
 			t.Fatalf("an empty passphrase must not seal a vault: got %v, want ErrNoPassphrase", err)
 		}
-		if s.fileExists() {
+		if exists, _ := s.fileExists(); exists {
 			t.Fatal("a rejected passphrase still wrote a vault file")
 		}
 	})
