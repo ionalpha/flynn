@@ -220,6 +220,7 @@ func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selecto
 	c.mu.RLock()
 	ids := c.live[kind][scope]
 	out := make([]Resource, 0, len(ids))
+	//ordered:ok sorted below by name and ID
 	for id := range ids {
 		r := c.byID[id]
 		if !sel.Matches(r.Labels) {
@@ -228,7 +229,7 @@ func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selecto
 		out = append(out, r)
 	}
 	c.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
@@ -241,7 +242,9 @@ func (s *memStore) ListAll(_ context.Context, kind string, sel Selector) ([]Reso
 	c := s.core
 	c.mu.RLock()
 	out := make([]Resource, 0)
+	//ordered:ok sorted below by scope, name and ID
 	for _, ids := range c.live[kind] {
+		//ordered:ok sorted below by scope, name and ID
 		for id := range ids {
 			r := c.byID[id]
 			if !sel.Matches(r.Labels) {
@@ -251,7 +254,7 @@ func (s *memStore) ListAll(_ context.Context, kind string, sel Selector) ([]Reso
 		}
 	}
 	c.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return lessByScopeName(out[i], out[j]) })
+	sort.SliceStable(out, func(i, j int) bool { return lessByScopeName(out[i], out[j]) })
 	return out, nil
 }
 
@@ -261,13 +264,15 @@ func (s *memStore) ListKeys(_ context.Context, kind string) ([]Key, error) {
 	c := s.core
 	c.mu.RLock()
 	var out []Key
+	//ordered:ok sorted below by scope and name, unique within a kind
 	for scope, ids := range c.live[kind] {
+		//ordered:ok sorted below by scope and name, unique within a kind
 		for id := range ids {
 			out = append(out, Key{Kind: kind, Scope: scope, Name: c.byID[id].Name})
 		}
 	}
 	c.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return lessKey(out[i], out[j]) })
+	sort.SliceStable(out, func(i, j int) bool { return lessKey(out[i], out[j]) })
 	return out, nil
 }
 
@@ -501,6 +506,7 @@ type snapshotPayload struct {
 func (s *memStore) Snapshot(ctx context.Context) error {
 	s.core.mu.RLock()
 	resources := make([]Resource, 0, len(s.core.byID))
+	//ordered:ok MarshalSnapshot sorts by ID
 	for _, r := range s.core.byID {
 		resources = append(resources, r)
 	}
@@ -537,7 +543,7 @@ func (s *memStore) maybeSnapshot(ctx context.Context) {
 // Seq into the payload Replay restores. Every backend calls it, so all snapshot in
 // one format; records are sorted by id so the payload is deterministic.
 func MarshalSnapshot(resources []Resource, lastSeq int64) ([]byte, error) {
-	sort.Slice(resources, func(i, j int) bool { return resources[i].ID < resources[j].ID })
+	sort.SliceStable(resources, func(i, j int) bool { return resources[i].ID < resources[j].ID })
 	return json.Marshal(snapshotPayload{Resources: resources, LastSeq: lastSeq})
 }
 

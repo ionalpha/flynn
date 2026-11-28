@@ -79,7 +79,7 @@ func (l *MemoryLog) SaveSnapshot(_ context.Context, s Snapshot) error {
 		}
 	}
 	list = append(list, s)
-	sort.Slice(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
+	sort.SliceStable(list, func(i, j int) bool { return list[i].Seq < list[j].Seq })
 	l.snapshots[s.Stream] = list
 	return nil
 }

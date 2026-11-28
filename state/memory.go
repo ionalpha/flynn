@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -171,13 +173,14 @@ func (s *memSessions) List(_ context.Context) ([]Session, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]Session, 0, len(c.sessions))
+	//ordered:ok sorted below by creation time and ID
 	for _, ses := range c.sessions {
 		if ses.Deleted {
 			continue
 		}
 		out = append(out, ses)
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].CreatedAt.Before(out[j].CreatedAt)
 		}
@@ -257,15 +260,11 @@ func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
 	c := s.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if sk, ok := c.skillsByID[idOrSlug]; ok && !sk.Deleted {
-		return sk, nil
+	id, ok := c.resolveSkill(idOrSlug)
+	if !ok {
+		return Skill{}, ErrNotFound
 	}
-	for _, sk := range c.skillsByID {
-		if sk.Slug == idOrSlug && !sk.Deleted {
-			return sk, nil
-		}
-	}
-	return Skill{}, ErrNotFound
+	return c.skillsByID[id], nil
 }
 
 func (s *memSkills) List(_ context.Context, scope Scope) ([]Skill, error) {
@@ -273,12 +272,13 @@ func (s *memSkills) List(_ context.Context, scope Scope) ([]Skill, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]Skill, 0)
+	//ordered:ok sorted below by slug and ID
 	for _, sk := range c.skillsByID {
 		if sk.Scope == scope && !sk.Deleted {
 			out = append(out, sk)
 		}
 	}
-	sort.Slice(out, sliceSkillsBySlug(out))
+	sort.SliceStable(out, sliceSkillsBySlug(out))
 	return out, nil
 }
 
@@ -288,6 +288,7 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 	defer c.mu.Unlock()
 	q := strings.TrimSpace(query)
 	live := make([]Skill, 0, len(c.skillsByID))
+	//ordered:ok sorted below by slug and ID
 	for _, sk := range c.skillsByID {
 		if !sk.Deleted {
 			live = append(live, sk)
@@ -301,7 +302,7 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 			out = append(out, h.Item)
 		}
 	}
-	sort.Slice(out, sliceSkillsBySlug(out))
+	sort.SliceStable(out, sliceSkillsBySlug(out))
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -323,17 +324,22 @@ func (s *memSkills) Delete(ctx context.Context, idOrSlug string) error {
 	return c.record(ctx, ev)
 }
 
-// resolveSkill finds a live skill's id by id or slug. Callers hold mu.
+// resolveSkill finds a live skill's id by id or slug. A slug held in several
+// scopes resolves to the oldest, then the lowest ID, as the SQL backends order
+// it. Callers hold mu.
 func (c *core) resolveSkill(idOrSlug string) (string, bool) {
 	if sk, ok := c.skillsByID[idOrSlug]; ok && !sk.Deleted {
 		return idOrSlug, true
 	}
-	for id, sk := range c.skillsByID {
-		if sk.Slug == idOrSlug && !sk.Deleted {
-			return id, true
+	var found Skill
+	ok := false
+	for _, id := range slices.Sorted(maps.Keys(c.skillsByID)) {
+		sk := c.skillsByID[id]
+		if sk.Slug == idOrSlug && !sk.Deleted && (!ok || sk.CreatedAt.Before(found.CreatedAt)) {
+			found, ok = sk, true
 		}
 	}
-	return "", false
+	return found.ID, ok
 }
 
 // sliceSkillsBySlug breaks Slug ties by ID, since slugs repeat across scopes.
@@ -475,6 +481,7 @@ func recordsFor[T any](held map[string]T, memoryIDs []string, idOf func(T) strin
 		}
 	}
 	out := make([]T, 0, len(held))
+	//ordered:ok documented as unordered; callers sort
 	for _, rec := range held {
 		if want != nil && !want[idOf(rec)] {
 			continue

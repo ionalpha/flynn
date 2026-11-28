@@ -214,12 +214,14 @@ func validUTF8Value(v any) bool {
 	case string:
 		return utf8.ValidString(x)
 	case map[string]any:
+		//ordered:ok every bad entry gives the same false
 		for k, val := range x {
 			if !utf8.ValidString(k) || !validUTF8Value(val) {
 				return false
 			}
 		}
 	case map[any]any:
+		//ordered:ok every bad entry gives the same false
 		for k, val := range x {
 			if ks, ok := k.(string); ok && !utf8.ValidString(ks) {
 				return false

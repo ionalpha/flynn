@@ -2,7 +2,8 @@
 # Lint and format checks. Mirrors the CI "Lint & format" job:
 #   1. `go mod tidy` leaves go.mod/go.sum unchanged
 #   2. golangci-lint (govet, staticcheck, gosec, formatting, ...) is clean
-#   3. every script under dev/ is committed executable
+#   3. each rule in dev/rules.go reports its bad example and passes its good one
+#   4. every script under dev/ is committed executable
 #
 # CI pins golangci-lint to this version via golangci-lint-action; we pin the
 # same version here so local results match CI exactly. Run `dev/fmt` to fix
@@ -29,8 +30,16 @@ echo "==> go mod tidy (must leave go.mod/go.sum unchanged)"
 go mod tidy
 git diff --exit-code -- go.mod go.sum
 
+# golangci-lint keys cached results on its settings and not on the content of
+# dev/rules.go, so each version of the rules gets a cache directory of its own.
+cache="${GOLANGCI_LINT_CACHE:-$("$golangci" cache status | sed -n 's/^Dir: //p')}"
+export GOLANGCI_LINT_CACHE="$cache/rules-$(git hash-object dev/rules.go)"
+
 echo "==> golangci-lint run"
 "$golangci" run
+
+echo "==> lint rule examples"
+FLYNN_LINT_RULES=require go test ./internal/rigor -run LintRules -count=1
 
 # Workflows call these as ./dev/<name>. Windows ignores the mode bit, so a
 # script committed from there without +x passes every local run and fails

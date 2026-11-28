@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/ionalpha/flynn/internal/paging"
 )
 
 const (
@@ -144,23 +146,29 @@ func (c *client) pullRequest(ctx context.Context, number int) (PullRequest, erro
 }
 
 // changedFiles follows pagination up to Config.MaxFiles and cuts each patch to
-// Config.MaxPatchBytes.
+// Config.MaxPatchBytes. truncated is true unless the list is known to be whole, so
+// reaching the page cap reads as a partial diff rather than a complete one.
 func (c *client) changedFiles(ctx context.Context, number int) ([]ChangedFile, bool, error) {
-	var all []ChangedFile
-	url := fmt.Sprintf("%s?per_page=%d", c.prURL(number, "/files"), perPage)
-	for page := 0; page < maxPages && url != ""; page++ {
-		var batch []ChangedFile
-		next, err := c.doPaged(ctx, url, &batch)
-		if err != nil {
-			return nil, false, err
-		}
-		all = append(all, batch...)
-		if len(all) >= c.cfg.MaxFiles {
-			return truncatePatches(all[:c.cfg.MaxFiles], c.cfg.MaxPatchBytes), true, nil
-		}
-		url = next
+	files, complete, err := paging.Prefix(ctx, maxPages, c.cfg.MaxFiles, restPages[ChangedFile](c, c.prURL(number, "/files")))
+	if err != nil {
+		return nil, false, err
 	}
-	return truncatePatches(all, c.cfg.MaxPatchBytes), false, nil
+	return truncatePatches(files, c.cfg.MaxPatchBytes), !complete, nil
+}
+
+// restPages reads a REST list endpoint a page at a time: the first page from first
+// with the page size set, and each later one from the next link [client.doPaged]
+// returns.
+func restPages[T any](c *client, first string) paging.Fetch[T] {
+	return func(ctx context.Context, cursor string) ([]T, string, error) {
+		url := cursor
+		if url == "" {
+			url = fmt.Sprintf("%s?per_page=%d", first, perPage)
+		}
+		var batch []T
+		next, err := c.doPaged(ctx, url, &batch)
+		return batch, next, err
+	}
 }
 
 // doPaged returns the next page's URL, or "" on the last page.
@@ -249,21 +257,11 @@ func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 // reviewComments fails when it runs out of pages, because a finding missing
 // from a short list is never restated and so gets retracted.
 func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewComment, error) {
-	var all []ReviewComment
-	url := fmt.Sprintf("%s?per_page=%d", c.prURL(number, "/comments"), perPage)
-	for range maxPages {
-		var batch []ReviewComment
-		next, err := c.doPaged(ctx, url, &batch)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, batch...)
-		if next == "" {
-			return all, nil
-		}
-		url = next
+	all, err := paging.All(ctx, maxPages, restPages[ReviewComment](c, c.prURL(number, "/comments")))
+	if err != nil {
+		return nil, fmt.Errorf("github: reading the pages of review comments: %w", err)
 	}
-	return nil, fmt.Errorf("github: more than %d pages of review comments", maxPages)
+	return all, nil
 }
 
 func (c *client) createReviewComment(ctx context.Context, number int, headSHA string, f Finding) (ReviewComment, error) {
