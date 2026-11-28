@@ -6,6 +6,8 @@
 package tools
 
 import (
+	"time"
+
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -13,6 +15,8 @@ import (
 // Set is the default toolset over a sandbox.
 type Set struct {
 	sb sandbox.Sandbox
+	// searchTime bounds one grep or glob call; zero is [defaultSearchTime].
+	searchTime time.Duration
 }
 
 // New builds the toolset executing through sb.

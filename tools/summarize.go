@@ -49,7 +49,7 @@ func (globTool) SummarizeResult(input json.RawMessage, result string) string {
 		Pattern string `json:"pattern"`
 	}
 	_ = json.Unmarshal(input, &in)
-	return fmt.Sprintf("%q, %d files", in.Pattern, lineCount(result))
+	return fmt.Sprintf("%q, %d files", in.Pattern, hitCount(result))
 }
 
 // SummarizeResult describes a search by its pattern and how many lines matched.
@@ -58,7 +58,19 @@ func (grepTool) SummarizeResult(input json.RawMessage, result string) string {
 		Pattern string `json:"pattern"`
 	}
 	_ = json.Unmarshal(input, &in)
-	return fmt.Sprintf("%q, %d matches", in.Pattern, lineCount(result))
+	return fmt.Sprintf("%q, %d matches", in.Pattern, hitCount(result))
+}
+
+// hitCount counts a search result's lines, leaving out its notes and the
+// separators between context groups.
+func hitCount(result string) int {
+	n := lineCount(result)
+	for line := range strings.SplitSeq(result, "\n") {
+		if line == "--" || line == "no matches" || strings.HasPrefix(line, notePrefix) {
+			n--
+		}
+	}
+	return n
 }
 
 func firstLine(s string) string {
