@@ -54,18 +54,20 @@ func (m *writerModel) objectives() []string {
 	return append([]string(nil), m.seen...)
 }
 
-// slowQueue claims nothing until open, standing in for a process whose worker is
-// busy or polls later than its neighbour's.
+// slowQueue claims nothing until open is closed, standing in for a process whose
+// worker is busy or polls later than its neighbour's.
 type slowQueue struct {
 	jobs.Queue
-	open time.Time
+	open <-chan struct{}
 }
 
 func (q slowQueue) Claim(ctx context.Context, p jobs.ClaimParams) ([]jobs.Job, error) {
-	if time.Now().Before(q.open) {
+	select {
+	case <-q.open:
+		return q.Queue.Claim(ctx, p)
+	default:
 		return nil, nil
 	}
-	return q.Queue.Claim(ctx, p)
 }
 
 // processBackends opens its own handle on the shared database, as a process does.
@@ -113,7 +115,9 @@ func TestGoalsSharingADatabaseRunOnlyInTheirOwnProcess(t *testing.T) {
 	runA := assembleIn(t, modelA, processBackends(t, db), dirA)
 	startRuntime(t, runA)
 	backB := processBackends(t, db)
-	backB.Jobs = slowQueue{Queue: backB.Jobs, open: time.Now().Add(time.Second)}
+	open := make(chan struct{})
+	time.AfterFunc(time.Second, func() { close(open) })
+	backB.Jobs = slowQueue{Queue: backB.Jobs, open: open}
 	runB := assembleIn(t, modelB, backB, dirB)
 
 	resB, err := runB.Do(ctx, goal.Spec{Objective: "goal B"})
