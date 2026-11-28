@@ -6,11 +6,11 @@ toolchain go1.27.4
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/aymanbagabas/go-udiff v0.4.1
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/aymanbagabas/go-udiff v0.4.2
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/google/go-cmp v0.7.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0
@@ -20,7 +20,7 @@ require (
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 	pgregory.net/rapid v1.3.0
 )
 
