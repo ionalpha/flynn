@@ -189,7 +189,14 @@ type meteredModel struct {
 	// stays out of log because checks read the staged transcript, and a skill's own words
 	// there could satisfy a check that greps for them.
 	system string
+	// firstEdit is the returned call whose response first asked to write or edit a file,
+	// counted from one, and zero until one does.
+	firstEdit int
 }
+
+// editTools are the native tools whose use counts as a first useful action on a board:
+// the run has stopped reading and started changing the work.
+var editTools = map[string]bool{"write": true, "edit": true}
 
 // newMeteredModel wraps inner. A nil price leaves every turn unpriced. clk dates each
 // turn, because a price table row is chosen by the time of the call.
@@ -224,7 +231,21 @@ func (m *meteredModel) Generate(ctx context.Context, req llm.Request) (llm.Respo
 	writeMessage(&m.log, resp.Message)
 	m.last = resp.Message.TextContent()
 	m.cost = m.cost.Add(m.price.turn(resp.Usage, m.clk.Now()))
+	if m.firstEdit == 0 {
+		for _, blk := range resp.Message.Blocks {
+			if blk.ToolUse != nil && editTools[blk.ToolUse.Name] {
+				m.firstEdit = m.cost.Turns
+				break
+			}
+		}
+	}
 	return resp, nil
+}
+
+func (m *meteredModel) firstUseful() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.firstEdit
 }
 
 func (m *meteredModel) snapshot() (skillab.Cost, string, string) {

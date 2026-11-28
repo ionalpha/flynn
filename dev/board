@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+# Run the effectiveness scoreboard: the bundled hard exercises, run by each arm, graded
+# by each exercise's verifier.
+#
+#   ./dev/board             every exercise, every arm, 3 repeats, capped at 25 USD
+#   ./dev/board --subset    the 8 exercises docs/scoreboard.md was built from, 3 repeats
+#   ./dev/board --cheap     3 exercises, 1 repeat, capped at 3 USD: a check the arms run
+#
+# Further arguments go to `flynn skill board` after these defaults, so they win:
+#   ./dev/board --subset --arms flynn,claude-code
+#
+# Keys come from Flynn's credential store (`flynn auth set anthropic`, `flynn auth set
+# openai`). An arm whose CLI is missing or has no key is skipped and listed as skipped.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+subset="systematic-debugging/already-fixed,systematic-debugging/wrong-layer,test-first/bug-first,untrusted-input/path-join,shared-state/lost-update,deletion/missing-rate,software-quality/split-quote,external-integration/retry-classified"
+cheap="systematic-debugging/already-fixed,test-first/bug-first,deletion/missing-rate"
+
+mode=full
+if [ "${1:-}" = "--subset" ] || [ "${1:-}" = "--cheap" ]; then
+  mode="${1#--}"
+  shift
+fi
+
+case "$mode" in
+  subset) set -- --only "$subset" --repeats 3 --max-cost 25 --out docs/scoreboard.json --markdown .cache/scoreboard-table.md "$@" ;;
+  cheap) set -- --only "$cheap" --repeats 1 --max-cost 3 --out .cache/scoreboard-cheap.json --markdown .cache/scoreboard-cheap.md "$@" ;;
+  *) set -- --repeats 3 --max-cost 25 --out .cache/scoreboard-full.json --markdown .cache/scoreboard-full.md "$@" ;;
+esac
+
+mkdir -p .cache
+echo "==> flynn skill board $*"
+exec go run ./cmd/flynn --model anthropic:claude-sonnet-5-5 skill board \
+  --exercises evals --prices docs/scoreboard-prices.json "$@"

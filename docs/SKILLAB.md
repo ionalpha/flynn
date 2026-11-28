@@ -2,6 +2,8 @@
 
 `flynn skill ab <skill>` runs a skill's exercises with and without a change and reports whether the change helped. This page covers the exercise file additions, how arms are chosen, what is scored and what a verdict does not say.
 
+To compare whole agents on the same exercises (Flynn against bare Claude Code and Codex), use `flynn skill board`; see [scoreboard.md](scoreboard.md).
+
 ## Choosing the arms
 
 By default the arms are the installed skill and no skill. Two flags change that:
