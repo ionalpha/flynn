@@ -90,7 +90,7 @@ func (h *sessionHost) paste() {
 	}
 	data, ok := h.clip.Image()
 	if !ok {
-		h.ui.Append(h.th.Render(theme.Status, "  no image on the clipboard"))
+		h.ui.Append(lineBlock(h.th, theme.Status, "no image on the clipboard"))
 		return
 	}
 	h.ui.PasteImage(editor.Attachment{MediaType: tuiterm.ImagePNG, Data: data})
@@ -106,7 +106,7 @@ func (h *sessionHost) externalEdit() {
 	var err error
 	h.ui.Suspend(func() { text, err = h.edit(initial) })
 	if err != nil {
-		h.ui.Append(h.th.Render(theme.Rejected, "  editor: "+err.Error()))
+		h.ui.Append(lineBlock(h.th, theme.Rejected, "editor: "+err.Error()))
 		return
 	}
 	h.ui.SetDraft(strings.TrimRight(text, "\r\n"))

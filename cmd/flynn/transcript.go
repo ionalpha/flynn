@@ -38,8 +38,8 @@ func newTranscriptView(th *theme.Theme) *transcriptView {
 
 // contentGutter is the left inset shared by the transcript's prose and diffs, so
 // they line up with the tool and report lines (already inset by the same amount)
-// instead of sitting flush against the terminal's left edge. Guttered content also
-// renders to a width reduced by the gutter on each side, leaving a right margin.
+// instead of sitting flush against the terminal's left edge. On the right it runs
+// to the window's last column.
 const contentGutter = 2
 
 // inset prefixes each content line with the gutter, so a block of prose or a diff
@@ -56,10 +56,10 @@ func inset(lines []string) []string {
 	return out
 }
 
-// bodyWidth is the width available to guttered content: the frame width less a
-// gutter on each side, floored at 1 so a narrow terminal still renders something.
+// bodyWidth is the width available to guttered content: the frame width less the
+// gutter, floored at 1 so a narrow terminal still renders something.
 func bodyWidth(width int) int {
-	if w := width - 2*contentGutter; w > 0 {
+	if w := width - contentGutter; w > 0 {
 		return w
 	}
 	return 1
@@ -76,13 +76,24 @@ func (v *transcriptView) prose(src string, width int) []string {
 	return inset(strings.Split(strings.TrimRight(text.Inert(src), "\n"), "\n"))
 }
 
-// lines renders one event into the scrollback lines that follow it, wrapped to
-// width, or nil when the event carries nothing the transcript shows. The
-// conversation events (assistant prose, tool calls, failures) render directly;
-// governance admissions and the per-turn bookkeeping fold into the status badge
-// instead, so the transcript stays the conversation and the boundaries that
-// interrupt it, not a log of every governed call.
+// lines is [transcriptView.block] rendered at width, or nil when the event
+// carries nothing the transcript shows.
 func (v *transcriptView) lines(ev session.Event, width int) []string {
+	if b := v.block(ev); b != nil {
+		return b.Render(width)
+	}
+	return nil
+}
+
+// block returns the transcript block for one event, or nil when it shows nothing.
+// What is shown is decided now, in event order; the layout is left to the shell,
+// which renders the block again after a width change.
+//
+// The conversation events (assistant prose, tool calls, failures) render
+// directly; governance admissions and the per-turn bookkeeping fold into the
+// status badge instead, so the transcript stays the conversation and the
+// boundaries that interrupt it, not a log of every governed call.
+func (v *transcriptView) block(ev session.Event) screen.Component {
 	switch ev.Kind {
 	case session.KindAssistant:
 		text := strings.TrimSpace(ev.Text)
@@ -90,7 +101,33 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 			return nil
 		}
 		v.lastAssistant = text
-		return v.prose(text, width)
+	case session.KindConverged:
+		text := strings.TrimSpace(ev.Text)
+		if text == "" || text == v.lastAssistant {
+			return nil
+		}
+	case session.KindActionCompleted:
+		// A clean completion is silent: the tool result already showed its outcome.
+		if ev.Fault == "" {
+			return nil
+		}
+	case session.KindToolCall, session.KindToolResult, session.KindActionRejected,
+		session.KindStalled, session.KindProjectContext, session.KindSelection:
+	default:
+		// session.started (the shell echoes the prompt itself), turn.started,
+		// turn.completed, and action.admitted carry no transcript line; their
+		// content lives in the status badge.
+		return nil
+	}
+	return screen.Func(func(width int) []string { return v.render(ev, width) })
+}
+
+// render lays out an event that [transcriptView.block] chose to show. It reads
+// nothing that changes between events, so it may run on the paint goroutine.
+func (v *transcriptView) render(ev session.Event, width int) []string {
+	switch ev.Kind {
+	case session.KindAssistant, session.KindConverged:
+		return v.prose(strings.TrimSpace(ev.Text), width)
 	case session.KindToolCall:
 		return v.toolCall(ev, width)
 	case session.KindToolResult:
@@ -103,18 +140,8 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		// next to the work it stopped, with the denial's fault class.
 		return layBlock(v.th, blockRejected, actionLabel(ev)+" rejected: "+faultText(ev.Fault), width)
 	case session.KindActionCompleted:
-		// A clean completion is silent (the tool result already showed its outcome);
-		// one that ran but errored surfaces the fault class as a warning.
-		if ev.Fault == "" {
-			return nil
-		}
+		// One that ran but errored surfaces the fault class as a warning.
 		return layBlock(v.th, blockWarning, actionLabel(ev)+" failed: "+ev.Fault, width)
-	case session.KindConverged:
-		text := strings.TrimSpace(ev.Text)
-		if text == "" || text == v.lastAssistant {
-			return nil
-		}
-		return v.prose(text, width)
 	case session.KindStalled:
 		return layBlock(v.th, blockError, "stalled: "+ev.Err, width)
 	case session.KindProjectContext:
@@ -124,9 +151,6 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 	case session.KindSelection:
 		return layBlock(v.th, blockNotice, selectionLine(ev), width)
 	default:
-		// session.started (the shell echoes the prompt itself), turn.started,
-		// turn.completed, and action.admitted carry no transcript line; their
-		// content lives in the status badge.
 		return nil
 	}
 }

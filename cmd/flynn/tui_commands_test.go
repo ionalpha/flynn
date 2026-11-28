@@ -37,7 +37,7 @@ func newSlashHost(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 		proj:     session.NewProjection(),
 	}
 	host.liveComp = liveStack{host.approval, host.panel, host.live}
-	s.notice = func(text string) { ui.Append(th.Render(theme.Muted, "  "+text)) }
+	s.notice = func(text string) { ui.Append(textBlock(th, blockNotice, text)) }
 	return host, ui
 }
 

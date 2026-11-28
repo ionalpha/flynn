@@ -57,10 +57,12 @@ type fakeUI struct {
 	live     screen.Component
 }
 
-func (f *fakeUI) Append(lines ...string) {
+func (f *fakeUI) Append(blocks ...screen.Component) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lines = append(f.lines, lines...)
+	for _, c := range blocks {
+		f.lines = append(f.lines, c.Render(f.Width())...)
+	}
 }
 
 func (f *fakeUI) SetLive(c screen.Component) {
@@ -192,7 +194,7 @@ func newHostForTest(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 	}
 	host.liveComp = liveStack{host.approval, host.panel, host.live}
 	// Mirror newSessionShell's out-of-band note wiring so tests exercise the real path.
-	s.notice = func(text string) { ui.Append(th.Render(theme.Muted, "  "+text)) }
+	s.notice = func(text string) { ui.Append(textBlock(th, blockNotice, text)) }
 	return host, ui
 }
 
@@ -596,7 +598,7 @@ func TestSessionShellEndToEnd(t *testing.T) {
 	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted(llmtest.SayText("first answer")))
 	pr, pw := io.Pipe()
 	out := &syncOut{}
-	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false, nil)
 	host.greet()
 
 	done := make(chan error, 1)
@@ -638,7 +640,7 @@ func TestSessionShellAltScreenEndToEnd(t *testing.T) {
 	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted(llmtest.SayText("alt answer")))
 	pr, pw := io.Pipe()
 	out := &syncOut{}
-	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, true)
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, true, nil)
 	host.greet()
 
 	done := make(chan error, 1)
@@ -688,7 +690,7 @@ func TestSessionShellFileCompletion(t *testing.T) {
 	s, _ := newREPL(t, dir, memStore(t), llmtest.NewScripted(llmtest.SayText("ok")))
 	pr, pw := io.Pipe()
 	out := &syncOut{}
-	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false, nil)
 	host.greet()
 
 	done := make(chan error, 1)

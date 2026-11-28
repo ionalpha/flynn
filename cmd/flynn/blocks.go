@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -95,6 +96,23 @@ func layBlock(th *theme.Theme, k blockKind, s string, width int) []string {
 	return out
 }
 
+// textBlock is [layBlock] as a transcript block, laid out at the shell's width.
+func textBlock(th *theme.Theme, k blockKind, s string) screen.Component {
+	return screen.Func(func(width int) []string { return layBlock(th, k, s, width) })
+}
+
+// lineBlock is a one-role report line within the transcript's gutter, wrapped to
+// the shell's width.
+func lineBlock(th *theme.Theme, role theme.Role, s string) screen.Component {
+	return screen.Func(func(width int) []string {
+		rows := strings.Split(screen.Wrap(text.Inert(s), bodyWidth(width)), "\n")
+		for i := range rows {
+			rows[i] = th.Render(role, rows[i])
+		}
+		return inset(rows)
+	})
+}
+
 // layRow is [layBlock] held to one row: whitespace runs collapse and s is cut to
 // fit rather than wrapped, for a summary that should not grow the transcript.
 func layRow(th *theme.Theme, k blockKind, s string, width int) string {
@@ -165,6 +183,25 @@ func sessionBanner(th *theme.Theme, model, cwd string, project projectctx.Decisi
 		paint(th, theme.Muted, shortPath(cwd)+" · "+projectState(project)),
 		paint(th, theme.Muted, "/help for commands"),
 	}
+}
+
+// bannerBlock is [sessionBanner] as a transcript block. In a window too narrow
+// for a row, every row is wrapped from its plain text and muted.
+func bannerBlock(th *theme.Theme, model, cwd string, project projectctx.Decision) screen.Component {
+	rows := sessionBanner(th, model, cwd, project)
+	plain := sessionBanner(nil, model, cwd, project)
+	return screen.Func(func(width int) []string {
+		if !slices.ContainsFunc(plain, func(r string) bool { return screen.Width(r) > width }) {
+			return rows
+		}
+		var out []string
+		for _, r := range plain {
+			for _, part := range strings.Split(screen.Wrap(r, width), "\n") {
+				out = append(out, paint(th, theme.Muted, part))
+			}
+		}
+		return out
+	})
 }
 
 // projectState is the banner's account of the instruction files: none found, or

@@ -87,44 +87,29 @@ func TestProp_TeardownReversesSetup(t *testing.T) {
 	})
 }
 
-func TestWatchResizeReportsOnlyChanges(t *testing.T) {
-	var mu sync.Mutex
-	w, h := 80, 24
-	size := func() (int, int, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		return w, h, nil
-	}
-	resized := make(chan [2]int, 8)
-	watcher := term.WatchResize(clock.System{}, 2*time.Millisecond, size, func(nw, nh int) {
-		resized <- [2]int{nw, nh}
-	})
+// A size the watcher has already reported is reported again: the caller may have
+// read a different one in between, and only a fresh report corrects it.
+func TestWatchResizeReportsEverySample(t *testing.T) {
+	clk := clock.NewManual(time.Unix(0, 0))
+	resized := make(chan [2]int)
+	watcher := term.WatchResize(clk, time.Second, func() (int, int, error) {
+		return 80, 24, nil
+	}, func(w, h int) { resized <- [2]int{w, h} })
 	defer watcher.Stop()
 
-	// No change: no report.
-	select {
-	case r := <-resized:
-		t.Fatalf("spurious resize %v", r)
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	mu.Lock()
-	w, h = 120, 40
-	mu.Unlock()
-	select {
-	case r := <-resized:
-		if r != [2]int{120, 40} {
-			t.Fatalf("resize = %v, want [120 40]", r)
+	deadline := time.After(2 * time.Second)
+	for seen := 0; seen < 3; {
+		clk.Advance(time.Second)
+		select {
+		case r := <-resized:
+			if r != [2]int{80, 24} {
+				t.Fatalf("size = %v, want [80 24]", r)
+			}
+			seen++
+		case <-time.After(time.Millisecond):
+		case <-deadline:
+			t.Fatalf("saw %d reports of an unchanged size, want 3", seen)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("resize never reported")
-	}
-
-	// Stable again: no repeat reports for the same size.
-	select {
-	case r := <-resized:
-		t.Fatalf("duplicate resize %v", r)
-	case <-time.After(20 * time.Millisecond):
 	}
 }
 

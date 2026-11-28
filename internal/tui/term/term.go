@@ -116,10 +116,12 @@ type Watcher struct {
 	done chan struct{}
 }
 
-// WatchResize polls size every interval and calls onResize on each change; the
-// caller already sized its first frame, so there is no initial call. A size
-// error skips that tick, since a terminal can be briefly unreadable (a detached
-// ConPTY during a window drag).
+// WatchResize polls size every interval and hands each reading to onResize, which
+// ignores one equal to the size it has. The watcher keeps no copy to compare with:
+// the caller also reads the size between ticks, so a window dragged away and back
+// within one interval would look unchanged here while the caller held the size in
+// between. A size error skips that tick, since a terminal can be briefly
+// unreadable (a detached ConPTY during a window drag).
 func WatchResize(timing clock.Timing, interval time.Duration, size func() (int, int, error), onResize func(w, h int)) *Watcher {
 	watcher := &Watcher{stop: make(chan struct{}), done: make(chan struct{})}
 	go watcher.run(timing, interval, size, onResize)
@@ -134,7 +136,6 @@ func (w *Watcher) Stop() {
 
 func (w *Watcher) run(timing clock.Timing, interval time.Duration, size func() (int, int, error), onResize func(int, int)) {
 	defer close(w.done)
-	lastW, lastH, _ := size()
 	for {
 		timer := timing.NewTimer(interval)
 		select {
@@ -143,11 +144,8 @@ func (w *Watcher) run(timing clock.Timing, interval time.Duration, size func() (
 			return
 		case <-timer.C():
 		}
-		curW, curH, err := size()
-		if err != nil || (curW == lastW && curH == lastH) {
-			continue
+		if curW, curH, err := size(); err == nil {
+			onResize(curW, curH)
 		}
-		lastW, lastH = curW, curH
-		onResize(curW, curH)
 	}
 }

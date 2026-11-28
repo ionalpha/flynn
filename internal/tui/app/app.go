@@ -17,6 +17,7 @@ package app
 
 import (
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,11 @@ type Config struct {
 	// it has no trigger token, so Suggest sees the whole composer line. Nil
 	// disables it.
 	Commands CommandCompleter
+	// Size reads the terminal's current size. Each frame calls it before laying
+	// anything out, so output appended just after a resize does not wait for the
+	// next Resize to learn the width. It runs under the shell's lock and must not
+	// block. Nil leaves Width, Height and Resize as the only sources.
+	Size func() (width, height int, err error)
 	// Marker maps the composer's content to its first-row gutter marker, so the
 	// host can show an input mode ("! " while the prompt is a shell command).
 	// Empty selects the default marker; a non-empty one is fitted to the gutter
@@ -115,6 +121,9 @@ const (
 	defaultHeight        = 24
 	defaultFrameInterval = 16 * time.Millisecond
 	defaultEscDelay      = 50 * time.Millisecond
+	// maxTranscript bounds the blocks kept for laying out again. A reflow drops
+	// older ones from the scrollback.
+	maxTranscript = 5000
 )
 
 // App is the running shell. Its feeding methods are safe from any goroutine.
@@ -125,21 +134,26 @@ type App struct {
 	quitOnce sync.Once
 	quit     chan struct{}
 
-	mu        sync.Mutex
-	painter   screen.Surface
-	editor    editor.Editor
-	history   history
-	live      screen.Component
-	status    string
-	statusFn  func(width int) string
-	finalized []string
-	width     int
-	height    int
-	resized   bool
-	menu      menu
-	accepted  []string
-	reader    *input.Reader
-	suspended bool
+	mu       sync.Mutex
+	painter  screen.Surface
+	editor   editor.Editor
+	history  history
+	live     screen.Component
+	status   string
+	statusFn func(width int) string
+	// transcript is every committed block, kept as source so a width change can
+	// lay it out again; pending is what the next frame commits. laidWidth is the
+	// width the committed rows were wrapped to.
+	transcript []screen.Component
+	pending    []screen.Component
+	laidWidth  int
+	width      int
+	height     int
+	resized    bool
+	menu       menu
+	accepted   []string
+	reader     *input.Reader
+	suspended  bool
 	// capture, when set, gets first claim on every event, ahead of the menu and
 	// composer. An unconsumed event falls through.
 	capture func(input.Event) bool
@@ -167,11 +181,12 @@ func New(cfg Config) *App {
 		cfg.Height = defaultHeight
 	}
 	a := &App{
-		cfg:     cfg,
-		quit:    make(chan struct{}),
-		painter: newSurface(cfg),
-		width:   cfg.Width,
-		height:  cfg.Height,
+		cfg:       cfg,
+		quit:      make(chan struct{}),
+		painter:   newSurface(cfg),
+		width:     cfg.Width,
+		height:    cfg.Height,
+		laidWidth: cfg.Width,
 	}
 	a.editor.SetKeymap(cfg.Keymap)
 	a.sched = screen.NewScheduler(cfg.Timing, cfg.FrameInterval, a.paint)
@@ -222,14 +237,16 @@ func (a *App) Quit() {
 	a.quitOnce.Do(func() { close(a.quit) })
 }
 
-// Append commits caller-styled lines to the scrollback above the live region on
-// the next frame. They become ordinary terminal output and are never repainted.
-func (a *App) Append(lines ...string) {
-	if len(lines) == 0 {
+// Append commits blocks to the scrollback above the live region on the next
+// frame. A block is rendered at the width of that frame, and again whenever the
+// width changes, so it must give the same content each time. Render runs on the
+// paint goroutine under the shell's lock and must not call back into the shell.
+func (a *App) Append(blocks ...screen.Component) {
+	if len(blocks) == 0 {
 		return
 	}
 	a.mu.Lock()
-	a.finalized = append(a.finalized, lines...)
+	a.pending = append(a.pending, blocks...)
 	a.mu.Unlock()
 	a.sched.Request()
 }
@@ -350,13 +367,26 @@ func (a *App) Suspend(run func()) {
 }
 
 // Resize records a new size. The next frame repaints from scratch, since the
-// terminal rewrapped the old rows and the painter's diff base is stale.
+// terminal rewrapped the old rows and the painter's diff base is stale; after a
+// width change it also lays the transcript out again. The current size is
+// ignored, so a poller may report every reading.
 func (a *App) Resize(width, height int) {
 	a.mu.Lock()
+	changed := a.setSizeLocked(width, height)
+	a.mu.Unlock()
+	if changed {
+		a.sched.Request()
+	}
+}
+
+// setSizeLocked records a size and reports whether it differs from the last.
+func (a *App) setSizeLocked(width, height int) bool {
+	if width == a.width && height == a.height {
+		return false
+	}
 	a.width, a.height = width, height
 	a.resized = true
-	a.mu.Unlock()
-	a.sched.Request()
+	return true
 }
 
 // Width returns the current width in cells, for a host that renders its own
@@ -459,23 +489,47 @@ func (a *App) paint() {
 	if a.suspended {
 		return
 	}
+	if a.cfg.Size != nil {
+		if w, h, err := a.cfg.Size(); err == nil && w > 0 && h > 0 {
+			a.setSizeLocked(w, h)
+		}
+	}
 	resized := a.resized
 	a.resized = false
 	if resized {
 		a.painter.Resize(a.width, a.height)
 	}
 	frame := a.composeLocked()
-	finalized := a.finalized
-	a.finalized = nil
-	switch {
-	case len(finalized) > 0:
+	reflow := a.width != a.laidWidth && len(a.transcript) > 0
+	a.laidWidth = a.width
+	fresh := a.pending
+	a.pending = nil
+	a.transcript = append(a.transcript, fresh...)
+	if over := len(a.transcript) - maxTranscript; over > 0 {
+		a.transcript = slices.Delete(a.transcript, 0, over)
+	}
+	if reflow {
+		a.painter.Reflow(a.layoutLocked(a.transcript), frame)
+		return
+	}
+	switch lines := a.layoutLocked(fresh); {
+	case len(lines) > 0:
 		// Insert rewrites the whole frame, so it covers a resize too.
-		a.painter.Insert(finalized, frame)
+		a.painter.Insert(lines, frame)
 	case resized:
 		a.painter.Repaint(frame)
 	default:
 		a.painter.Paint(frame)
 	}
+}
+
+// layoutLocked renders blocks to rows at the current width.
+func (a *App) layoutLocked(blocks []screen.Component) []string {
+	var lines []string
+	for _, b := range blocks {
+		lines = append(lines, b.Render(a.width)...)
+	}
+	return lines
 }
 
 // composeLocked renders the live region top to bottom. The painter keeps the
