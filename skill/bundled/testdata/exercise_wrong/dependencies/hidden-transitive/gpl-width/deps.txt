@@ -1,0 +1,2 @@
+# Runtime dependencies, one per line: name and version specifier.
+textmeasure==1.1.0

@@ -1,0 +1,4 @@
+[Service]
+# Slow links: raise this on the host.
+Environment=SYNC_TIMEOUT=30
+ExecStart=/usr/bin/python3 /opt/sync/sync.py /etc/sync.ini

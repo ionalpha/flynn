@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -164,7 +165,7 @@ func logonSessionSID(token windows.Token) (*windows.SID, error) {
 // spawnWriteRestricted gives the child the container tier's envelope: only the
 // launch pipes inherited, created suspended into its job, and mitigation policies
 // applied at creation.
-func spawnWriteRestricted(appName, cmdline, root string, env *uint16, io confinedIO, resLimits ResourceLimits) (*acProcess, error) {
+func spawnWriteRestricted(appName, cmdline, root, dir string, env *uint16, io confinedIO, resLimits ResourceLimits) (*acProcess, error) {
 	sid, err := workspaceRestrictSID(root)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
@@ -175,18 +176,18 @@ func spawnWriteRestricted(appName, cmdline, root string, env *uint16, io confine
 		return nil, fmt.Errorf("sandbox: restricted token: %w", err)
 	}
 	defer func() { _ = token.Close() }() // the child holds its own reference once created
-	return spawnConfined(appName, cmdline, root, env, nil, token, io, resLimits)
+	return spawnConfined(appName, cmdline, dir, env, nil, token, io, resLimits)
 }
 
 // grantRestrictedDir is the tier's only write grant. It is inheritable, so what
 // the child creates stays writable to it.
-func grantRestrictedDir(dir, root string) error {
-	sid, err := workspaceRestrictSID(root)
+func (l *Local) grantRestrictedDir(ctx context.Context, dir string) error {
+	sid, err := workspaceRestrictSID(l.root)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = windows.FreeSid(sid) }()
-	return grantDir(dir, sid)
+	return l.grantDir(ctx, dir, sid)
 }
 
 // revokeRestrictedDir is best-effort because a leftover entry names a SID no

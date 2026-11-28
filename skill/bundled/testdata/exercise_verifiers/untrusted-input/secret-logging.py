@@ -64,6 +64,24 @@ with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         show("traceback", lambda: "".join(traceback.format_exception(type(e), e, e.__traceback__)))
         logging.getLogger("x").exception("charge failed")
 
+import transport
+
+
+class Down:
+    def post(self, url, headers, body):
+        raise transport.TransportError(url, headers)
+
+
+with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    try:
+        app.start(env, Down()).charge(500)
+        fails.append("a charge that could not connect did not raise")
+    except Exception as e:
+        show("str(connection error)", lambda: str(e))
+        show("repr(connection error)", lambda: repr(e))
+        show("connection error traceback", lambda: "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        logging.getLogger("x").exception("charge failed")
+
 if charged != "ch_1" or not t.calls or t.calls[0][1].get("Authorization") != "Bearer " + CANARY:
     fails.append("the client no longer authenticates with the key")
 for label, text in shown + [("log", sink.getvalue()), ("stdout", out.getvalue()), ("stderr", err.getvalue())]:

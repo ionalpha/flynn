@@ -15,6 +15,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/migrate"
 )
 
@@ -33,6 +34,34 @@ import (
 // One connection, because SQLite serialises writers anyway and one connection keeps a
 // ":memory:" database alive with a consistent view. OpenReadPool opens the read side.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("sqlitex: migrations fs: %w", err)
+	}
+	return open(ctx, dsn, sub)
+}
+
+// open is [Open] over the migrations directory itself. A database that does not exist
+// yet starts as a copy of the migrated image of its set ([migratedImage]), so the
+// migrations replay once per process instead of once per open.
+func open(ctx context.Context, dsn string, migrations fs.FS) (*sql.DB, error) {
+	memory := dsn == ":memory:"
+	key := imageKey(dsn, migrations)
+	var img []byte
+	if key != "" {
+		img = cachedImage(key)
+		if !memory {
+			if img == nil {
+				img = migratedImage(ctx, migrations, key)
+			}
+			if img != nil {
+				// Losing the race to create the file, or a filesystem without hard
+				// links, leaves SQLite to create it and the migrations to run.
+				_ = fsatomic.CreateFile(dsn, img, 0o600)
+			}
+		}
+	}
+
 	db, err := sql.Open("sqlite", dsn+dsnPragmas+WriteTxLock)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
@@ -42,15 +71,18 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
 	}
-
-	sub, err := fs.Sub(migrationsFS, "migrations")
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("sqlitex: migrations fs: %w", err)
+	if memory && img != nil {
+		if err := loadImage(ctx, db, img); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlitex: load migrated image: %w", err)
+		}
 	}
-	if err := migrate.Run(ctx, db, sub); err != nil {
+	if err := migrate.Run(ctx, db, migrations); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitex: migrate: %w", err)
+	}
+	if memory && key != "" && img == nil {
+		storeImage(ctx, db, key)
 	}
 	return db, nil
 }
@@ -106,7 +138,10 @@ func isBusy(err error) bool {
 // buys nothing.
 const dsnPragmas = "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
 	"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
-	"&_pragma=cache_size(-8000)&_pragma=temp_store(2)"
+	"&_pragma=cache_size(" + cacheSize + ")&_pragma=temp_store(2)"
+
+// cacheSize is the page cache in the form PRAGMA cache_size takes: negative is KiB.
+const cacheSize = "-8000"
 
 // WriteTxLock makes every transaction on a write handle take the write lock at BEGIN
 // (BEGIN IMMEDIATE). A deferred transaction holds only a read snapshot until its first

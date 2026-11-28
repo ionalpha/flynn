@@ -34,7 +34,7 @@ type deployArgs struct {
 // an extension named "--name".
 func parseDeployArgs(args []string) (deployArgs, error) {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return deployArgs{}, errors.New("usage: flynn deploy <extension> [--name svc] [--target t] [json-input]")
+		return deployArgs{}, usageErr("deploy")
 	}
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -226,7 +226,7 @@ func runServices(args []string, dataDir string) error {
 	case "rm", "remove":
 		run = servicesRemove
 	default:
-		return fmt.Errorf("services: unknown subcommand %q (want ls or rm)", args[0])
+		return unknownCommand("services", args[0])
 	}
 	ctx := context.Background()
 	rt, err := openIntegrationRuntime(ctx, dataDir)
@@ -256,7 +256,7 @@ func servicesList(ctx context.Context, rt *integrationRuntime, out io.Writer, _ 
 
 func servicesRemove(ctx context.Context, rt *integrationRuntime, out io.Writer, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: flynn services rm <name>")
+		return usageErr("services rm")
 	}
 	if err := rt.svc.Delete(ctx, args[0]); err != nil {
 		return err

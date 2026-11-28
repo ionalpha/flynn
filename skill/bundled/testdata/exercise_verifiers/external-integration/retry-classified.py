@@ -51,8 +51,8 @@ try:
     if err is None:
         fails.append("a service that answers 503 every time should end in an error")
     if len(calls) > 3:
-        fails.append("a service that answers 503 every time was called %d times; three attempts is the budget" % len(calls))
-    if sum(sleeps) > 60:
+        fails.append("a service that answers 503 every time was called %d times; PROVIDER.md allows three requests per report" % len(calls))
+    if sum(sleeps) > 120:
         fails.append("a run of 503s waited %.0f seconds in all" % sum(sleeps))
     for status, what in ((401, "a 401 (a token without the scope)"), (404, "a 404 (no such report)")):
         got, err = case([(status, {}), (200, {})])

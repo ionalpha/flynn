@@ -20,48 +20,64 @@ import (
 // stopped. A tool error is shown at any verbosity, since a failure must never be
 // silent.
 func renderEvent(w io.Writer, ev session.Event, verbose bool) {
+	block := func(k blockKind, s string) {
+		for _, l := range layBlock(nil, k, s, 0) {
+			_, _ = fmt.Fprintln(w, l)
+		}
+	}
 	switch ev.Kind {
 	case session.KindSessionStarted:
-		_, _ = fmt.Fprintf(w, "goal: %s\n", ev.Text)
+		block(blockUser, ev.Text)
 	case session.KindTurnStarted:
-		_, _ = fmt.Fprintf(w, "  turn %d\n", ev.Turn)
+		block(blockNotice, fmt.Sprintf("turn %d", ev.Turn))
 	case session.KindAssistant:
 		if verbose {
 			if t := strings.TrimSpace(ev.Text); t != "" {
-				_, _ = fmt.Fprintf(w, "    %s\n", oneLine(t, 200))
+				_, _ = fmt.Fprintln(w, "  "+text.Inert(oneLine(t, 200)))
 			}
 		}
 	case session.KindToolCall:
+		detail := toolTarget(ev.Input)
 		if verbose {
-			_, _ = fmt.Fprintf(w, "  -> %s %s\n", ev.Tool, oneLine(string(ev.Input), 120))
-		} else {
-			_, _ = fmt.Fprintf(w, "  -> %s\n", ev.Tool)
+			detail = oneLine(string(ev.Input), 120)
 		}
+		_, _ = fmt.Fprintln(w, toolHead(nil, ev.Tool, detail, 0))
 	case session.KindToolResult:
 		switch {
 		case ev.IsError:
-			_, _ = fmt.Fprintf(w, "  !! %s failed: %s\n", ev.Tool, oneLine(ev.Result, 200))
+			block(blockToolError, ev.Tool+" failed: "+oneLine(ev.Result, 200))
 		case verbose:
-			_, _ = fmt.Fprintf(w, "     %s\n", oneLine(ev.Result, 200))
+			block(blockToolResult, ev.Tool+": "+oneLine(ev.Result, 200))
 		}
 	case session.KindTurnCompleted:
 		if verbose && ev.StopReason != "" {
-			_, _ = fmt.Fprintf(w, "  (turn %d ended: %s)\n", ev.Turn, ev.StopReason)
+			block(blockNotice, fmt.Sprintf("turn %d ended: %s", ev.Turn, ev.StopReason))
 		}
 		if ev.Usage != nil {
-			_, _ = fmt.Fprintf(w, "  %s\n", formatUsage(*ev.Usage))
+			block(blockNotice, formatUsage(*ev.Usage))
 		}
 	case session.KindConverged:
-		_, _ = fmt.Fprintf(w, "\n%s\n", ev.Text)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, text.Inert(ev.Text))
 	case session.KindStalled:
-		_, _ = fmt.Fprintf(w, "\nstalled: %s\n", ev.Err)
+		_, _ = fmt.Fprintln(w)
+		block(blockError, "stalled: "+ev.Err)
 	case session.KindProjectContext:
-		_, _ = fmt.Fprintf(w, "  %s\n", projectContextLine(ev))
+		block(blockNotice, projectContextLine(ev))
+	case session.KindSelection:
+		block(blockNotice, selectionLine(ev))
 	default:
 		// Governance and record events (action.*, record.*) share the run's stream but
 		// are not shown in the flat text transcript this renderer draws; the interactive
 		// session renders them inline and in its panels.
 	}
+}
+
+// selectionLine is the transcript line for a run's skill and tool selection. It is the
+// readout of what the run was offered, drawn from the recorded event so a live run and
+// a later `flynn inspect` say the same thing.
+func selectionLine(ev session.Event) string {
+	return "selection: " + ev.Reason + "; " + strings.ReplaceAll(ev.Text, "\n", "; ")
 }
 
 // projectContextLine is the transcript line for a project-file trust decision: whether

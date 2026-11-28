@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/governed"
+	"github.com/ionalpha/flynn/internal/selection"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/skill/skilltool"
@@ -32,7 +32,7 @@ func runMCP(args []string, dataDir string) error {
 	// keeps the flags after the verb, since flag parsing stops at the first
 	// non-flag argument.
 	if len(args) < 1 || args[0] != "serve" {
-		return errors.New("usage: flynn mcp serve [--read-only] [--workdir DIR]")
+		return usageErr("mcp serve")
 	}
 	fs := flag.NewFlagSet("mcp serve", flag.ContinueOnError)
 	readOnly := fs.Bool("read-only", false, "expose only the read tools (read, glob, grep); deny write, edit, and shell")
@@ -89,7 +89,10 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	if n := networkNotice(shell); n != "" && !readOnly {
 		_, _ = fmt.Fprintln(logw, n, "Serve with --read-only to expose no shell.")
 	}
-	kit, err := governed.NewKit(ctx, store.Log(), governed.WithWorkDir(dir), governed.WithSkills(skilltool.New(store.Skills())),
+	// skill_read serves through the data directory's selection, so a skill selection.json
+	// denies is no more readable by a client than by Flynn's own runs.
+	served := selection.Skills(store.Skills(), selectionConfig)
+	kit, err := governed.NewKit(ctx, store.Log(), governed.WithWorkDir(dir), governed.WithSkills(skilltool.New(served)),
 		governed.WithShellPolicy(shell))
 	if err != nil {
 		return err

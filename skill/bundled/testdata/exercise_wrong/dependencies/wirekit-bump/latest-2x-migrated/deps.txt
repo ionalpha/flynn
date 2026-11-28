@@ -1,0 +1,2 @@
+wirekit==2.4.2
+tinylog==0.7.3

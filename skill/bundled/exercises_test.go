@@ -122,7 +122,8 @@ func TestExercisesHaveFixtures(t *testing.T) {
 // solution from testdata/exercise_solutions, and each tempting wrong answer from
 // testdata/exercise_wrong. A fixture with no solution is an exercise whose right
 // answer is to change nothing: the shipped tree must pass, and at least one wrong
-// answer must exist to fail it. CI must run it: a skip there would report every
+// answer must exist to fail it. Every tree is staged first, as a trial's is, so the
+// harness directory ([skillab.HarnessDir]) and the held-out files are present. CI must run it: a skip there would report every
 // verifier as checked when none was.
 func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
@@ -150,6 +151,11 @@ func TestExerciseVerifiersTellAnswersApart(t *testing.T) {
 			}
 			if overlayDir != "" {
 				overlay(t, testdata, overlayDir, work)
+			}
+			// A trial stages the harness directory before any verifier runs, so a
+			// verifier that lists or scans the tree must be graded with it present.
+			if err := set.Stage(e, work, "report", "transcript"); err != nil {
+				t.Fatalf("%s: stage: %v", exerciseLabel(slug, e), err)
 			}
 			ok, out := passes(t, work, e.Verify)
 			lastOutput = out
@@ -274,4 +280,37 @@ func passes(t *testing.T, dir, line string) (bool, string) {
 		t.Fatalf("verifier did not run: %v", err)
 	}
 	return res.ExitCode == 0, res.Output
+}
+
+// ownerOnlyTempDir matches the tempfile calls that create a directory. Since Python
+// 3.12.4 they give it a Windows ACL naming only its owner, SYSTEM and Administrators,
+// and a process inside Flynn's Windows sandbox cannot open a directory that does not
+// grant its sandbox identity, so a test written this way fails on Windows CI and
+// passes on a machine with an older Python.
+var ownerOnlyTempDir = regexp.MustCompile(`\b(mkdtemp|TemporaryDirectory)\s*\(`)
+
+// Every Python file an exercise ships or runs (fixture, verifier, solution, wrong
+// answer) makes its scratch directories with os.makedirs in the working tree instead.
+func TestExercisePythonMakesNoOwnerOnlyTempDir(t *testing.T) {
+	for _, root := range []string{evalRoot, "testdata"} {
+		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(p) != ".py" {
+				return err
+			}
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			for i, line := range strings.Split(string(src), "\n") {
+				if ownerOnlyTempDir.MatchString(line) {
+					t.Errorf("%s:%d: %s makes a directory the Windows sandbox cannot open; use os.makedirs in the working tree",
+						filepath.ToSlash(p), i+1, strings.TrimSpace(line))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
 }

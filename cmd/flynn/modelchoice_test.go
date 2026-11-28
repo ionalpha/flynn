@@ -342,15 +342,20 @@ func TestNoKeysOnATerminalRunsFirstSetup(t *testing.T) {
 
 // TestPromptsThatCloseUnansweredAreRefused proves a terminal that ends before the
 // operator answers is a refusal and saves nothing, rather than taking the suggestion.
+// With no key the question is first-run setup, with one it is the one-key question.
 func TestPromptsThatCloseUnansweredAreRefused(t *testing.T) {
-	keyedEnv(t, "openai")
-	dir := t.TempDir()
-	askWith(t, true, "")
-	if _, _, _, err := resolveModelOrOnboard(context.Background(), builtinSpec, modelUnchosen, dir); err == nil {
-		t.Fatal("a closed prompt on the one-key question was answered")
-	}
-	if got, ok := readActiveModel(dir); ok {
-		t.Errorf("saved %q without an answer", got)
+	for name, keyed := range map[string][]string{"first-run setup": nil, "one-key question": {"openai"}} {
+		t.Run(name, func(t *testing.T) {
+			keyedEnv(t, keyed...)
+			dir := t.TempDir()
+			askWith(t, true, "")
+			if _, _, _, err := resolveModelOrOnboard(context.Background(), builtinSpec, modelUnchosen, dir); err == nil {
+				t.Fatal("a closed prompt was answered")
+			}
+			if got, ok := readActiveModel(dir); ok {
+				t.Errorf("saved %q without an answer", got)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,5 @@
+# Runtime dependencies, one per line: name and version specifier.
+# cronlet: cron next-fire-time. MIT (LICENSE file checked), released 2026-05, no
+# dependencies. cronwiz is the popular pick but its LICENSE file is GPL-3.0; tickspec
+# has had no release since 2021.
+cronlet==1.4.0
